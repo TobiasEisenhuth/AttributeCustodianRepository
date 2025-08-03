@@ -97,7 +97,7 @@ bool aes_decrypt(const uint8_t* ciphertext, size_t ciphertext_len,
 }
 
 void server() {
-    std::cout << "[server] Starting...\n";
+    std::println("[server] Starting...");
 
     OQS_KEM* kem = OQS_KEM_new(KEM_NAME);
     assert(kem);
@@ -117,15 +117,15 @@ void server() {
     addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        std::cerr << "Port already in use. Exiting.\n";
+        std::println(stderr, "Port already in use. Exiting.");
         close(sockfd);
         return;
     }
     listen(sockfd, 1);
 
-    std::cout << "[server] Waiting for connection...\n";
+    std::println("[server] Waiting for connection...");
     int client = accept(sockfd, nullptr, nullptr);
-    std::cout << "[server] Client connected.\n";
+    std::println("[server] Client connected.");
 
     // Send public key
     send_all(client, pk.data(), pk.size());
@@ -137,11 +137,11 @@ void server() {
     OQS_KEM_decaps(kem, ss_server.data(), ct.data(), sk.data());
 
     for (size_t i = 0; i < kem->length_shared_secret; ++i)
-        std::printf("%02x", ss_server[i]);
+        std::print("{:02x}", ss_server[i]);
     std::println();
 
 
-    std::cout << "[server] Shared secret established.\n";
+    std::println("[server] Shared secret established.");
 
     // Receive encrypted message
     uint8_t iv[AES_IV_LEN], tag[AES_TAG_LEN];
@@ -156,9 +156,10 @@ void server() {
     recv_all(client, ciphertext, msg_len);
 
     if (aes_decrypt(ciphertext, msg_len, ss_server.data(), iv, tag, plaintext)) {
-        std::cout << "[server] Received (decrypted): " << plaintext << "\n";
+        std::string_view message(reinterpret_cast<const char*>(plaintext), msg_len);
+        std::println("[server] Received (decrypted): {}", message);
     } else {
-        std::cout << "[server] Decryption failed.\n";
+        std::println("[server] Decryption failed.");
     }
 
     OQS_KEM_free(kem);
@@ -167,7 +168,7 @@ void server() {
 }
 
 void client() {
-    std::cout << "[client] Starting...\n";
+    std::println("[client] Starting...");
 
     OQS_KEM* kem = OQS_KEM_new(KEM_NAME);
     assert(kem);
@@ -184,10 +185,10 @@ void client() {
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
     while (connect(sockfd, (sockaddr*)&addr, sizeof(addr)) < 0) {
-        std::cerr << "[client] Waiting for server...\n";
+        std::println(stderr, "[client] Waiting for server...");
         std::this_thread::sleep_for(std::chrono::seconds(1));
     };
-    std::cout << "[client] Connected to server.\n";
+    std::println("[client] Connected to server.");
 
     // Receive public key
     recv_all(sockfd, pk.data(), pk.size());
@@ -197,10 +198,10 @@ void client() {
 
     // Send ciphertext
     send_all(sockfd, ct.data(), ct.size());
-    std::cout << "[client] Shared secret established.\n";
+    std::println("[client] Shared secret established.");
 
     for (size_t i = 0; i < kem->length_shared_secret; ++i)
-        std::printf("%02x", ss_client[i]);
+        std::print("{:02x}", ss_client[i]);
     std::println();
 
     std::string msg = "Started from the bottom now we're here!";
@@ -225,7 +226,7 @@ void client() {
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "Usage: ./pqchat [server|client]\n";
+        std::println(stderr, "Usage: ./pqchat [server|client]");
         return 1;
     }
 
@@ -235,7 +236,7 @@ int main(int argc, char* argv[]) {
     } else if (mode == "client") {
         client();
     } else {
-        std::cerr << "Invalid mode: " << mode << "\n";
+        std::println(stderr, "Invalid mode: {}", mode);
         return 1;
     }
 

@@ -1,0 +1,147 @@
+Problem space
+
+Nutzerinnen und Nutzer gehen im Laufe des Lebens verschiedenste Geschäftsbeziehungen, z.B. mit Banken, Versicherungen, Versandhäuser, Mobilfunkanbieter, Energieversorger etc., ein. Dabei werden notwendigerweise personenbezogene Daten, häufig Kontaktdaten wie Wohnanschrift, E-Mail-Adresse, Telefonummer, etc., hinterlegt.
+
+In der Regel werden diese Daten einmalig bei Kontoeröffnung, Vertragsabschluss, Registrierung, etc., erfasst. Nach dem Motto "fire and forget", entstehen dabei isolierte und verteilte Kopien. Die Konfidenz in die Korrektheit der hinterlegten Daten sinkt mit zunehmender Zeit. Gleichzeitig verlieren Nutzerinnen und Nutzer mit steigenden Geschäftsbeziehungen, leichter den Überblick über die Zuordnung von kommunizierten personenbezogenen Daten zu Geschäftspartnern.
+
+Offensichtlich Offenbart sich
+
+Zugegeben sperriger Name
+
+Vision:
+
+Daten Integrität
+
+Stärkung der Selbstbestimmung und Rückgabe der Kontrolle über personenbezogenen digitalen Daten von Nutzerinnen und Nutzern. Geboten durch eine sichere, Privatsphäre schützende, nachvollziehbare und benutzerfreundliche Plattform zur Verwaltung, Einsicht und Weitergabe coherenter sensibler Informationen.
+
+Sicherheit und Schutz der Privatsphäre:
+
+Durch den Einsatz bewährter kryptographischer Verfahren, darunter Ende-zu-Ende-Verschlüsselung und Proxy-Re-Encryption, gewährleistet das System, dass alle geteilten Informationen nur vom berechtigten Empfänger entschlüsselt werden können. Technisch garantiert, ohne notwendiges Vertrauen in den Plattformbetreiber.
+
+Verwaltung:
+
+Der Verschlüsselung übergestülpte Funktionalität zur feingranularen Moderation der Zugriffesrechte auf einzelen Informationsfragmenten (Name, Geburtsurkunde, Straßenname der Wohnanschrift, etc). Z.B. Freigaben und Aufkündigungen, bis hin zu Löschungsanträgen für zuvor geteilte Informationen. Konzeptionell treuhändisch durch die Plattform verwaltet und somit auf Vertrauensbasis.
+
+Strategie:
+
+Promot it as ...
+Moonshot
+Say no
+Ground Customer needs and problems - what value is going to be created for the user - Problem space
+-> Boom you have by accident another solved problem
+Timeframe
+Kano Model
+Problemspace
+Competion???
+
+MVP
+
+Willkür
+Ausländischer Staatlicher
+
+MVP-Server:
++ Profil anlegen (Business Profil + Privatperson Profil)
+	+ Autorisierung
+	+ Authentisierung
+	+ Recoverystrategie bzw. Profilwiederherstellung
++ Informationen verwalten (hinzufügen, updaten, löschen, über API steuerbar)
++ Informationen teilen (freigeben, über API abrufbar machen)
+
+MVP-Client Privatperson
++ Passwort manager für sym_key und secret_key
++ Key Generierung (sym_key, asym_keys, re-encrypt_keys)
++ Einfache GUI (unverschlüsselte Spiegelung der verschlüsselten Serverseitigen personenbezogenen Infromationen und Funktionalitäten)
++ Handshake mit Business
+
+MVP-Client Business
++ API (authentification, request)
++ Handshake mit Privatperson
+
+Strategie:
++ MVP launch in Firmengruppe + Kunden zur Verfügung stellen
++ Itterative Entwicklung
++ Im Zuge der Monetarisierung - Partnern, der freien Wirtschaft, und dem Öffentlichen Dienst anbieten.
++ Freemium für Privatkunden
++ Internationale Vermarktung
+
+Monitarisierung:
+1. Pay as you go - 
+
+Fokus auf Server und Business Clients
+
+Umzug Hochzeit selten und deswegen nicht präsent im Alltag
+flexibel benneung attribut
+Reduktion der Komplexität
+Konsolidiert
+unbekannt verzogener Privatpersonen
+Schattendatenbanken
+informationelle Selbstbestimmung
+Dialogmarketing
+20.000.000 €/Jahr
+Umweltaspekt
+angesichts von 100.000 falsch adressierten Schreiben täglich
+Rund jede:r zehnte Umziehende informiert bei einem Umzug nicht einen einzigen Vertragspartner.
+Auslandsumzüge bleiben unberücksichtigt!
+Jung + Single & Paare + mittlerer und vor allem hoher Bildungsstand + Alte Bundesländer + zur Miete
+
+"Die Zielgruppe der Umziehenden gilt vielen Unternehmen als
+besonders attraktiv. Und das zu Recht: Umziehende sind nicht
+nur außergewöhnlich kauffreudig, sondern auch im hohen
+Maße wechselaffin."
+
+Private use - Hochzeitseinladungen - Geburtsbekanntmachungen etc.
+
+Variable Informationen:
+Wohnanschrift
+Telefonnummer
+E-Mail-Adresse
+Bankverbindung
+Nachname
+Familienstand
+Staatsangehörigkeit
+
+Optional:
+Aufenhaltsstatus
+Arbeitgeber
+Beruf
+Anzahl Kinder
+KFZ Führerschein
+Fluglizenz
+Bootsführerschein
+Selbstständigkeit
+
+Konstante Informationen:
+Schulabschluss
+Promotionstitl
+Geburtsdatum
+Geburtsurkunde
+Schwerbehindertenausweis
+
+Unseriöse Databroker verdrängen
+first mover
+
+
+
+Nutzer
++ Überblick
++ Verwaltung (teilen, updaten, löschen)
+
+Unternehmen
++ Aktuelle Datensätze
+
++ Bequeme
+
+Versicherungen
+Banken
+Energieversorger
+Versandthandel
+PayPal (fraktioniert)
+
+
+Im B2C-Kontext bedeutet das Teilen personenbezogener Daten meist, einmaliges Hinterlegen eines Datensatzes. Ein wenig nach dem Motto „fire and forget“. Dabei entstehen verteilte Kopien, deren Konfidenz in die Korrektheit, für Unternehmen, mit der Zeit sinken. Wer nicht aktiv dokumentiert, wann und wo welche Daten mit welchem Unternehmen geteilt wurden, verliert dabei leicht den Überblick.
+
+Das bleibt solange folgenlos, bis sich doch mal die Rufnummer mit dem Mobilfunkanbieterwechsel ändert, der Nachname durch Heirat angepasst oder der Wohnsitz verlegt wird.
+
+Allein in Deutschland betrifft letzteres, über 8.4 Millionen Menschen pro Jahr. Das sind rund 23.000 Umzüge pro Tag. Für die Deutsche Post, Grund genug mit der PostAdress, einen Dienstleister zur Adresspflege und Adressvermarktung zu gründen. Ein Joint Venture mit Bertelsmann, dass als Grundlage u. a. Daten von Einwohnermeldeämtern, anderen Datenbanken, aber vor allem auch Postkund:innen selbst, verwendet. Bei einem Umzug, entscheiden sich nämlich die Hälfte der Kund:innen für einen Nachsendeauftrag, und können sich dabei optional entscheiden die Neue Anschrift für „... Vertrags- und Kommunikationspartnern zur Aktualisierung zur Verfügung ...“ zu stellen.
+
+Es stellt sich nämlich heraus, dass Unternehmen bereits ein großes Interesse an integren Datensätzen haben. Besonders wenn es sich um Kontaktdaten handelt. Gleichzeitig sind Kund:innen offensichtlich bereit, aktiv Dienstleistungen in Anspruch zu nehmen, um Daten mit, für sie wichtigen, Unternehmen, aktuell zu halten.

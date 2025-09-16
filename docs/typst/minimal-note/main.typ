@@ -2,7 +2,7 @@
 #show: style-algorithm
 
 #show: minimal-note.with(
-  title: [Confidential Relay Service - CRS \ Skizze einer Produktidee],
+  title: [Confidential Relay Service (CRS) \ Skizze einer Produktidee],
   author: [Tobias Eisenhuth],
   date: datetime.today().display("[month repr:long], [year]")
 )
@@ -14,27 +14,25 @@
 = Problem Space 
 == Fire & Forget
 
-Im B2C-Kontext heißt „Daten teilen“ meist: Kundeninnenstammdaten werden initial und einmalig, z.B. bei Kontoeröffnung oder Vertragsabschluss, beim jeweiligen Unternehmen hinterlegt. So entstehen verteilte Kopien, deren Datenqualität aus Unternehmenssicht mit der Zeit sinkt. Wer als Kunden nicht dokumentiert, wann und welche Informationen mit welchem Unternehmen geteilt wurden, verliert schnell den Überblick.
-Das fällt spätestens dann auf, wenn sich doch etwas ändert: die Rufnummer nach Anbieterwechsel, der Nachname durch Heirat oder die Wohnanschrift beim Umzug. In Deutschland ziehen *jährlich* immerhin ca. *8,4 Mio. Menschen* um. Im Schnitt *23.000 pro Tag* #super[#link("https://docs.postadress.de/umzugsstudie.pdf")[\[1\]]].
+Im B2C-Kontext heißt „Daten teilen“ meist: Kundendaten werden initial und einmalig – etwa bei Kontoeröffnung oder Vertragsabschluss – beim jeweiligen Unternehmen hinterlegt. So entstehen verteilte und isolierte Kopien, deren Datenqualität aus Unternehmenssicht mit der Zeit sinkt. Wer als Kunde nicht dokumentiert, wann und welche Informationen mit welchem Unternehmen geteilt wurden, verliert schnell den Überblick. Das fällt oft erst beiläufig auf wenn ein Geschäftsablauf auf Basis veralteter Daten scheitert und Unternehmen auf alternative Daten zurückgreifen müssern, oder aufwendige Nachverfolgung anstellen. Seien es veraltete Rufnummern nach dem Anbieterwechsel, der Nachname der sich durch Heirat ändert, oder die Anschrift beim Umzug. In Deutschland ziehen jährlich immerhin ca. *8,4 Mio. Menschen* um – im Schnitt *23.000 pro Tag* #super[#link("https://docs.postadress.de/umzugsstudie.pdf")[\[1\]]].
 
 == Self-Service heute
 
 Die Deutsche Post erkennt und bedient den Bedarf an Adresspflege und Adressvermarktung mit einem eigenen Joint Venture mit Bertelsmann – der PostAdress.
 
-
 #set quote(block: true)
-#quote(attribution: [Webauftritt Deutsch Post 
+#quote(attribution: [Webauftritt Deutsche Post 
   #super[
     #link("https://www.deutschepost.de/de/p/postadress.html")[\[2\]]
   ]
 ])[
-  "Die Deutsche Post Adress bietet Ihnen ganzheitliche Adressmanagement-Branchen-Lösungen, mit denen Sie den effizienten Kontakt zu Seinen Kunden sicherstellen. Mit uns überprüfen, korrigieren, aktualisieren, bereinigen und pflegen Sie Seine Kundenadressen optimal." 
+  "Die Deutsche Post Adress bietet Ihnen ganzheitliche Adressmanagement-Branchen-Lösungen, mit denen Sie den effizienten Kontakt zu Ihren Kunden sicherstellen. Mit uns überprüfen, korrigieren, aktualisieren, bereinigen und pflegen Sie Ihre Kundenadressen optimal." 
 ]
 
-Die Datenbasis speist sich u. a. aus Einwohnermeldedaten, weiteren Datenbanken #super[#link("https://www.deutschepost.de/de/p/postadress/kompetenzen/adressermittlung.html?an=Basis-Recherche")[\[3\]]], und aus Angaben von PostKunden selbst, im Rahmen des Nachsendeauftrags #super[#link("https://docs.postadress.de/umzugsstudie.pdf")[\[1\]]].
-Das zeigt: Unternehmen haben ein Interesse an integren Kontaktdaten. Gleichzeitig sind Kunden bereit, aktiv an der Pflege mitzuwirken.
+Die Datenbasis speist sich u. a. aus Einwohnermeldedaten, weiteren Datenbanken #super[#link("https://www.deutschepost.de/de/p/postadress/kompetenzen/adressermittlung.html?an=Basis-Recherche")[\[3\]]], und aus Angaben von Postkunden im Rahmen des Nachsendeauftrags #super[#link("https://docs.postadress.de/umzugsstudie.pdf")[\[1\]]].  
+Das zeigt: Unternehmen haben ein starkes Interesse an aktuellen Kontaktdaten. Gleichzeitig sind Kunden bereit, aktiv an der Pflege mitzuwirken.
 
-Mittlerweile haben Self-Service Angebote zur Pflege von Stammdaten direkt in Portalen und Smartphone-Apps von Unternhemen einzug gefunden. Beispielsweise:
+Mittlerweile haben Self-Service-Angebote zur Pflege von Stammdaten direkt in Portalen und Smartphone-Apps von Unternehmen Einzug gefunden. Beispiele:
 
 #align(center, [
   #table(
@@ -42,6 +40,7 @@ Mittlerweile haben Self-Service Angebote zur Pflege von Stammdaten direkt in Por
     columns: 4,
     [*Unternehmen*], [*Produkt*], [*Selbstverwaltete Attribute*],[*Vermarktung*],
     [Deutsche Post], [Nachsendeauftrag], [Adresse],[Ja],
+    [Lidl], [Lidl-Plus-App], [Adresse, Telefon, E-Mail],[Nein],
     [Sparkassen], [Banking-App], [Adresse, Telefon, E-Mail],[Nein],
     [Allianz], [Webportal], [Adresse, Bankverbindung],[Nein],
     [Allianz Direct], [Webportal], [Adresse, Telefon, E-Mail],[Nein],
@@ -50,80 +49,91 @@ Mittlerweile haben Self-Service Angebote zur Pflege von Stammdaten direkt in Por
 ])
 
 #orange-box(
-"Pain Point",
-"1. Als Kunden, fehlt mir der Überblick über meine Geschäftsbeziehungen um die Auswirkungen meiner veralteten Stammdaten zu verstehen.
-2. Als Kunden, muss ich bei Veränderung, proaktiv an verschiedenen Stellen die selbe Information nachpflegen. ")
+"Pain Points",
+"1. Als Kunde fehlt mir der Überblick über meine Geschäftsbeziehungen und die Auswirkungen veralteter Stammdaten.  
+2. Bei Änderungen müssen dieselben Information proaktiv an verschiedenen Stellen nachpflegen werden."
+)
 
 = Solution Space
 == Single Source of Truth
 
-Die konzeptionelle Lösung ist offenichtlich – eine zentrale Datenbank, die für Unternehmen als single source of Truth dient.
+Die konzeptionelle Lösung liegt auf der Hand: eine zentrale Datenbank, die für Unternehmen als *Single Source of Truth* dient.
 
-Innerhalb unternehmensweiter netzwerkübergreifender Applikationen gang und gäbe, existiert bis dato kein unternehmenübergreifender Anbieter einer direkt an die IT-Infrastruktur von Unternehmen angebundene Lösung. Das liegt wohl weniger an Fragen der technischen Umsetzungs, sondern eher an berechtigten Bedenken an den Datenschutz. Damit ein solcher Dienst für Unternehmen und Kunden gleichermaßen überhaupt Akzeptanz findet, und damit kommerziell Erfolgreich sein kann, müssen aus meiner Sicht folgende Eigenschaften gegeben sein:
+Innerhalb von Unternehmensnetzwerken ist ein solcher Ansatz etabliert. Bis dato gibt es jedoch keinen unternehmensübergreifenden Anbieter, der eine direkt an die IT-Infrastruktur angebundene Lösung bietet. Ursache sind weniger technische Hürden als vielmehr berechtigte Datenschutzbedenken.  
+Damit ein solcher Dienst Akzeptanz bei Unternehmen und Kunden findet – und kommerziell erfolgreich sein kann – müssen folgende Eigenschaften erfüllt sein:
 
 #[
   #set enum(numbering: "1. a)")
   + *Privatsphäre und Sicherheit*
-    + Zero Trust Architektur
-      - Die Datenbank könnte prinzipiell öffentlich zugänglich sein ohne dabei geheime Daten preiszugeben.
-  + *Feature*
-    + Übersicht über Geschäftsbeziehungen bieten
-      - Wer hält welche Daten über mich?
-    + Selbstverwatlung beliebiger personenbezogener Daten (atomare Informationen wie Telefonnummer, als auch ganze Dateien wie Geburtsurkunden)
+    + Zero-Trust-Architektur
+      - Die Datenbank könnte prinzipiell öffentlich zugänglich sein, ohne dabei geheime Daten preiszugeben.
+  + *Funktionalitäten*
+    + Übersicht über Geschäftsbeziehungen
+      - Welches Unternehmen (oder Organisation) hält welche Daten über mich?
+    + Selbstverwaltung beliebiger personenbezogener Daten (von atomaren Informationen wie Telefonnummern bis hin zu Dokumenten wie Geburtsurkunden)
       - Teilen
       - Aktualisieren
-      - Löschen und Löschungsantrag an Empfänger stellen
+      - Löschen (inkl. Löschungsantrage an Empfänger)
       - Berechtigungen verwalten
-    + 
 ]
 
 == Enter Confidential Relay Service (CRS)
 
-Ein online Dienst, der die obigen Anforderungen an Sicherheit und Privatsphäre basierend auf dem Konzept des Proxy-Re-Encryption technisch sicherstellt, und die Funktionalitäten des Self-Service auf Basis einer Übersicht der Geschäftsbeziehungen. Dazu eine Client-App für Kunden, und eine REST-Schnittschelle für Unternhemen. Der Fokus liegt im folgenden ausschließlich auf das technischen Kernkonzept, da dies die Grundlage für die Machbarkeit darstellt.
+Der CRS ist ein Onlinedienst, der die obigen Anforderungen an Sicherheit und Privatsphäre basierend auf dem Konzept der Proxy-Re-Encryption technisch sicherstellt. Er ergänzt diese Basis um Self-Service-Funktionalitäten auf Grundlage einer Übersicht der Geschäftsbeziehungen.  
+Dazu gehören eine Client-App für Kunden sowie eine REST-Schnittstelle für Unternehmen. Im Folgenden liegt der Fokus auf dem technischen Kernkonzept, da dies die Grundlage für die Machbarkeit darstellt.
 
 == Pièce de résistance
 
-Die Idee hinter der Proxy-Re-Encryption ist eine Ende zu Ende Verschlüsselung zu realisieren, bei der ein bereits unter key_pair_A verschlüsseltes Geheimnis, einem Empfänger unter key_pair_B offenbart werden kann. Die dafür notwendige Transformation von einer Verschlüsselung in die Andere ergibt sich mittels des transform_key_A2B. Dieser wird aus private_key_A und public_key_B erstellt. Wie der Name suggeriert, übernimmt die Transformation, im standard Schema, ein Proxy. – _@re-encrypt-simple _
+Die Proxy-Re-Encryption ermöglicht Ende-zu-Ende-Verschlüsselung, bei der ein bereits unter *key_pair_A* verschlüsseltes Geheimnis für einen Empfänger unter *key_pair_B* zugänglich gemacht werden kann.  
+Die notwendige Transformation ergibt sich mittels des *transform_key_A2B*, welcher aus *private_key_A* und *public_key_B* erzeugt wird. Diese Transformation übernimmt – wie der Name suggeriert – ein Proxy.
 
 #figure(
   image("re-encrypt-simple.png", width: 70%), caption: [
-    Re-encryption Schema zwischen Alice -> Bob, über einen Proxy "Cipher Relay".
+    Re-Encryption-Schema zwischen Alice → Bob über einen Proxy („Cipher Relay“).
   ],
 )<re-encrypt-simple>
 
-#green-box("Garantie:", "Das Gehemnis wir zu keinem Zeitpunkt gegebüber dem \"Cipher Relay\" offenbart. Der Schutz und die Privatsphäre an den personenbezogenen Daten der Nutzerinnen ist damit gewährleistet.")
+#green-box("Garantie:", "Das Geheimnis wird zu keinem Zeitpunkt gegenüber dem \"Cipher Relay\" offenbart. Die Privatsphäre des Nutzer ist damit gewährleistet.")
 
-Auf gleiche Weise lässt sich auch ein transform_key_A2C, transform_key_A2D, usw. erstellen und beim "Cipher Relay" hinterlegen. 
+Analog lassen sich auch *transform_key_A2C*, *transform_key_A2D* usw. erzeugen und beim „Cipher Relay“ hinterlegen.
 
 #figure(
   image("re-encrypt-multi.png", width: 90%), caption: [
-    _cipher_A_ lässt sich mit entsprechendem _transform_keyA2X_ in _cipher_X_.
+    _cipher_A_ lässt sich mit entsprechendem _transform_keyA2X_ in _cipher_X_ überführen.
   ],
 )
 
-#green-box("Erkenntnis:", "1. Der \"Cipher Relay\" Dienst, muss nur den ciper_A und die entsprechenden transform keys halten, um seine Aufgabe wahr nehmen zu können. \n1.2 Eine Aktualisierung von cipher_A (inkl. neuem nonce) lässt sich ohne Neuverhandeln der Schlüssel weiterproagieren. (trivial)  \n3. Löschen des transform_key_A2X kappt das Verhältnis zu Partei_X endgültig.")
+#green-box("Erkenntnisse:", "1. Der \"Cipher Relay\"-Dienst muss nur _cipher_A_ und die entsprechenden Transform-Keys halten, um seine Aufgabe zu erfüllen.  
+2. Eine Aktualisierung von _cipher_A_ (inkl. neuem Nonce) kann ohne Neuverhandlung der Schlüssel propagiert werden.  
+3. Das Löschen eines _transform_key_A2X_ beendet die Beziehung zu Partei_X endgültig.")
 
-== Use case
+== Use Case
 
-Eine Kunden möchte online oder vorort ein Konto bei einer Bank eröffnen. Der Geschäftsprozess unterscheidet sich erstmal nicht, bis es zum Austasch der personenbezogenen Daten kommt. Dieser Schritt findet digital, entweder online oder z.B. in einee Smartphone App und unernehmsseitig einer API statt. Die Bank, sendet eine entsprechende Anfrage über den CRS-Dienst an die Kunden, mit dem Ersuchen nach einem bestimmten Satz personenbezogener Daten. Die Kundnin bestätigt den Zugriff auf die angefragten Felder und ergänzt ggf. Infromationen die noch nicht im CRS hinterlegt wurden. Im nächten Schritt findet die notwendige Kommunikation (Verschlüsselter online Kanal, oder persönlich in der Filiale z.B. QR-code und Scanner) und Generierung der Schlüssel statt. Die Identitäskontrolle ist ausdrücklich kein Feature des Dienstes, und muss wie gehabt erfolgen.
+Ein Kunde möchte online oder vor Ort ein Konto bei einer Bank eröffnen. Der angestammte Geschäftsprozess unterscheidet sich zunächst nicht, bis es zum Austausch personenbezogener Daten kommt.
+Dieser Schritt findet digital statt – entweder online (z. B. via App und API) oder in der Filiale (z. B. via QR-Code und Scanner).  
+Die Bank stellt über den CRS-Dienst eine Anfrage nach bestimmten personenbezogenen Daten. Der Kunde bestätigt den Zugriff auf die angefragten Felder, ergänzt ggf. Informationen, die noch nicht im CRS hinterlegt sind, und hinterlegt eine Berechtigungsstrategie – einmaliges Teilen oder weiterleiten von Aktualisierungen.
+Anschließend erfolgt die notwendige Kommunikation und Schlüsselgenerierung. Die Identitätskontrolle ist ausdrücklich kein Feature des Dienstes und muss wie gehabt durch die Bank erfolgen.
+
+Aktualisiert ein Kunde später seine Daten, so werden diese bei entsprechender Berechtigung an die Bank weitergeleitet.
 
 == Caveat
 
-Die weiter notwendigen Kunstgriffe, die solch einen Dienst erst möglichen machen, sind hier für den gorben Abriss zunächst unterschlagen. Themen wie das Mischen von symetrischen und asymetrischen Verschlüsselungsverfahren zur Effizientzsteigerung z.B.
+Weiter notwendigen Kunstgriffe, die solch einen Dienst erst möglichen machen,z.B. das Mischen von symetrischen und asymetrischen Verschlüsselungsverfahren zur Effizientzsteigerung, sind hier bewusst ausgespart.
 
-Oder der Speicheroverhead der Schlüssel, der die ursprüngliche Datenmenge nicht unerheblich aufbläht (Schlussendlich auch eine Frage der verwendeten Algorithmen). Besonders für kleine atomare Informationen wie die Hausnummer ist das Verhältnis von Daten zu Overhead ungünstig, wenn auch absolut doch im Rahmen. Hier stellt sich die Frage wie feingranular die technische Gewährleistung des Schutzes der Daten gehen soll. Z.B. könnten auch mehrere Informationen unter einem transform_key in einem Paket zusammengefasst werden, und die feingranulare Verteilung vertrauensvoll durch den CRS, über Berechtigungen geregelt sein. Im Falle eines Lecks beim CRS, würden gegenüber einem Unternehmen, dass nur Berechtigungen für einen Teil eines Pakets inne hat, potenziell die gesammten Daten dieses Pakets offenbart.
+Oder aber der Speicheroverhead der Schlüssel, der die ursprüngliche Datenmenge nicht unerheblich aufbläht (Schlussendlich auch eine Frage der verwendeten Algorithmen). Hier sind verschiedene Wege gangbar je nach Abwägung von technisch garantiertem Datenschutz und systematisch garantiertem Datenschutz.
 
-== Abgrenzungen - Der Confidential Relay Service
+== Abgrenzungen – Der Confidential Relay Service
 
-1. ist kein Databroker - weder werden Nutzerprofile erstellt noch vermarktet.
-2. ist kein Löschungsdienst wie Incogni oder DeletMe.
-3. ist kein Identityservice wie VerifyMe, oder die AusweisApp.
-4. ist kein Backupserver für vertraulische Dokumente.
+1. ist kein Data Broker – es werden weder Nutzerprofile erstellt noch vermarktet.
+2. ist kein Löschungsdienst wie Incogni oder DeleteMe.
+3. ist kein Identity Service wie VerifyMe oder die AusweisApp.
+4. ist kein Backupserver für vertrauliche Dokumente.
 
 == Fun Fact
 
-Eine Blaupause für den Confidential Relay Service findet sich in wieder in einer Arbeit von _Hannes Zach et al._ "Using Proxy Re-Encryption for Secure Data Management
-in an Ambient Assisted Living Application" #super[#link("https://cs.emis.de/LNI/Proceedings/Proceedings251/71.pdf")[\[4\]]], das jüngst im Zuge eigener Recherchen , Es beschreibt einen analogen Anwendungsfall mit einigen Paralellen in der technischen Konzeption, und änhliche Argumenten. 
+Eine Blaupause für den Confidential Relay Service findet sich in einer Arbeit von _Hannes Zach et al._:  
+*"Using Proxy Re-Encryption for Secure Data Management in an Ambient Assisted Living Application"* #super[#link("https://cs.emis.de/LNI/Proceedings/Proceedings251/71.pdf")[\[4\]]].  
+Die Arbeit beschreibt einen analogen Anwendungsfall mit ähnlicher technischer Konzeption und Argumentation. 
 
 = Strategie
 == Kano Grid
@@ -132,22 +142,37 @@ in an Ambient Assisted Living Application" #super[#link("https://cs.emis.de/LNI/
   #table(
     align: left,
     columns: 6,
-    [*Kathegorie*], [*Attribut*], [*Meldeamt*], [*PostAdress*], [*Acxionm*], [*CRS*],
-    [must have], [Sicherheit], [Mittel], [Mittel], [Mittel], [Hoch],
-    [performance], [Datenart], [Meldedaten], [Adressdaten], [Adressdaten & \ Verhaltensdaten ],[beliebige Daten],
-    [performance], [Geschäftsfeld], [Rechtssachen], [Marketing], [Marketing],[Datenpflege],
-    [performance], [Datenqualität], [Hoch], [Hoch], [Hoch], [Hoch],
-    [delighter], [Transparenz], [Niedrig], [Niedrig], [-], [Hoch],
-    [delighter], [Datenhoheit], [-], [Niedrig], [-], [Hoch],
+    [*Kategorie*], [*Attribut*], [*Meldeamt*], [*PostAdress*], [*Acxiom*], [*CRS*],
+    [Must-have], [Sicherheit], [Mittel], [Mittel], [Mittel], [Hoch],
+    [Performance], [Datenart], [Meldedaten], [Adressdaten], [Adress- & Verhaltensdaten],[beliebige Daten],
+    [Performance], [Geschäftsfeld], [Rechtssachen], [Marketing], [Marketing],[Datenpflege],
+    [Performance], [Datenqualität], [Hoch], [Hoch], [Hoch], [Hoch],
+    [Delighter], [Transparenz], [Niedrig], [Niedrig], [-], [Hoch],
+    [Delighter], [Datenhoheit], [-], [Niedrig], [-], [Hoch],
   )
 ])
 
-= Monitarisierung
+= Monetarisierung
+== Strategie
 
-Da der Marktwert des CRS auf einen Kundenstamm angewiesen ist, sind die fundamentalen Grundfunktionalitäten für Kunden frei. Unternehmen zahlen einen monatlichen Betrag der von der Anzahl an Abonnierten Daten abhängig ist. Also proportional zum Nutzen, und wiederkehrend.
+Da der Marktwert des CRS auf einem breiten Kundenstamm basiert, sind die fundamentalen Grundfunktionalitäten für Endkunden kostenlos.  
+Unternehmen zahlen einen monatlichen Betrag, abhängig von der Anzahl der abonnierten Daten – proportional zum kontinuierlichen Nutzen.
 
-Kundenseitig ist ebenfalls ein Freemium denkbar für erweiterten Speicher oder peer to peer Dienste. Z.B. möchte eine Kunden seine Mobilfunknummer im privaten an andere Nutzer im Freundeskreis teilen, so ist das für den Sender kostenpflichtig und für den Empfänger weiterhin kostenlos.
+Auch auf Kundenseite ist ein Freemium-Modell denkbar, z. B. für erweiterten Speicher oder Peer-to-Peer-Dienste.  
+Beispiel: Ein Kunde möchte seine Mobilfunknummer privat mit Freunden teilen. Für den Sender ist dieser Dienst kostenpflichtig, für den Empfänger bleibt er kostenlos.
+
+== Preisfindung
+
+Die Preisgestaltung kann derzeit nicht belastbar abgeleitet werden.
 
 = Marketing
+== Strategie
 
-Aufbau des Dienstes als Self-Service für eigenen Kundenstamm, aufweiten auf Kundenstamm von Partner und schließlich voll Kommerzialisieren. Dabei zunächst Fokus auf Kunden-Marktanteil, und späterer gradueller Anpassung der Monitarisierung durch Unternehmen an den Marktwert durch Kundenstamm.
+Der Markteintritt erfolgt stufenweise:
+1. Aufbau des CRS als Self-Service für die Verwaltung von Kundenstammdaten, zunächst für den eigenen Kundenstamm (z. B. Lidl- und Kaufland-Kunden im Rahmen einer Zusammenarbeit mit STACKIT).
+2. Ausweitung auf ausgewählte Geschäftskunden von STACKIT sowie deren Kundenstämme.
+3. Kommerzialisierung und Skalierung auf den breiteren Markt.
+
+In der ersten Phase liegt der Fokus auf der Gewinnung von privaten Nutzer und damit die Erhöhung des Marktpotential. Leicht verzögert erfolgt die Vermarktung an Unternehmen, und orientiert sich am aktuellen Marktwert, der sich durch die wachsende Nutzerzahl des Self-Service ergibt.
+
+Ein zentrales Prinzip ist, dass sich der Dienst nahtlos in die Prozesse der Unternehmen einfügt und dabei die Komplexität der zugrunde liegenden Kryptographie vollständig abstrahiert. Dadurch wird die Lösung für Unternehmen einfach integrierbar und ohne tiefes Spezialwissen nutzbar.

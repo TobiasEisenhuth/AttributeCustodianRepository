@@ -162,6 +162,8 @@ Unternehmen zahlen einen monatlichen Betrag, abhängig von der Anzahl der abonni
 Auch auf Nutzerseite ist eine Monetarisierung nach dem Freemium-Modell denkbar, z. B. für erweiterten Speicher oder Peer-to-Peer-Dienste.  
 Beispiel: Ein Nutzer möchte seine Mobilfunknummer privat mit Freunden teilen. Für den Sender ist dieser Dienst kostenpflichtig, für den Empfänger bleibt er kostenlos.
 
+free resource packs
+
 == Preisfindung
 
 Zur Einordnung: 

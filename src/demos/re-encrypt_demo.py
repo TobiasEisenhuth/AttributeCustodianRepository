@@ -1,9 +1,23 @@
-# pip install umbral
+import base64
 from umbral import SecretKey, Signer, encrypt, generate_kfrags, reencrypt, decrypt_reencrypted
 
-class Sender:
+class Network:
     def __init__(self, name):
         self.name = name
+        self.payload_store = {}
+    
+    def accept_payload(self, recipient, key, payload):
+        if recipient not in self.payload_store:
+            self.payload_store[recipient] = {}
+        self.payload_store[recipient][key] = payload
+    
+    def serve_payload(self, recipient, key):
+        return self.payload_store[recipient][key]
+
+class Sender:
+    def __init__(self, name, network):
+        self.name = name
+        self.network = network
         self.key_store = {}
         self.transforms_store = {}
 
@@ -36,6 +50,20 @@ class Sender:
 
     def get_pk(self, secret_name):
         return self.key_store[secret_name]["pk"]
+# ---
+    def add_new_secret(self, secret_name, secret_value):
+        pk = self.key_gen(secret_name)
+        capsule, cipher = encrypt(pk, secret_value)
+        secret_name_b64 = base64.b64encode(bytes(secret_name.encode("utf-8"))).decode("utf-8")
+        capsule_b64 = base64.b64encode(bytes(capsule)).decode("ascii")
+        cipher_b64 = base64.b64encode(bytes(capsule)).decode("ascii")
+        print(base64.b64decode(secret_name_b64).decode("utf-8"))
+
+    def send_out(self, recipient, key, payload):
+        self.network.accept_payload(recipient, key, payload)
+
+    def serialize(payload):
+        return 
 
 class Proxy:
     def __init__(self, name):
@@ -87,8 +115,10 @@ class Receiver:
             cipher,
         )
 
-alice = Sender("alice")
-david = Sender("david")
+net = Network("www")
+
+alice = Sender("alice", net)
+david = Sender("david", net)
 bob = Receiver("bob")
 charlie = Receiver("charlie")
 ursula = Proxy("ursula")

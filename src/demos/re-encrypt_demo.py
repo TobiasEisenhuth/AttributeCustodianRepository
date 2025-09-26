@@ -8,11 +8,15 @@ class Sender:
         self.transforms_store = {}
 
     def key_gen(self, secret_name):
-        sk = SecretKey.random()
-        pk = sk.public_key()
-        singe_sk = SecretKey.random()
-        singer = Signer(singe_sk)
-        self.key_store[secret_name] = {"sk": sk, "pk": pk, "singe_sk": singe_sk, "singer": singer}
+        if secret_name not in self.key_store:
+            sk = SecretKey.random()
+            pk = sk.public_key()
+            singe_sk = SecretKey.random()
+            singer = Signer(singe_sk)
+            self.key_store[secret_name] = {"sk": sk, "pk": pk, "singer": singer}
+            return pk
+        else:
+            return self.key_store[secret_name]["pk"]
 
     def encrypt_secret(self, secret_name, secret_value):
         self.key_gen(secret_name)

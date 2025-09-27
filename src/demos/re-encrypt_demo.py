@@ -1,18 +1,19 @@
+import msgpack
 import base64
 from umbral import SecretKey, Signer, encrypt, generate_kfrags, reencrypt, decrypt_reencrypted
+
+print()
 
 class Network:
     def __init__(self, name):
         self.name = name
-        self.payload_store = {}
+        self.key_value_store = {}
     
-    def accept_payload(self, recipient, key, payload):
-        if recipient not in self.payload_store:
-            self.payload_store[recipient] = {}
-        self.payload_store[recipient][key] = payload
+    def accept_payload(self, key, value):
+        self.key_value_store[key] = value
     
-    def serve_payload(self, recipient, key):
-        return self.payload_store[recipient][key]
+    def serve_payload(self, key):
+        return self.key_value_store[key]
 
 class Sender:
     def __init__(self, name, network):
@@ -34,7 +35,7 @@ class Sender:
 
     def encrypt_secret(self, secret_name, secret_value):
         self.key_gen(secret_name)
-        return encrypt(self.key_store[secret_name]["pk"], secret_value)
+        return encrypt(self.key_store[secret_name]["pk"], secret_value.encode("utf-8"))
 
     def grant_access(self, receiver, secret_name, receiver_public_key):
         kfrags = generate_kfrags(
@@ -51,16 +52,43 @@ class Sender:
     def get_pk(self, secret_name):
         return self.key_store[secret_name]["pk"]
 # ---
-    def add_new_secret(self, secret_name, secret_value):
+    def add_or_update_secret(self, secret_name, secret_value):
         pk = self.key_gen(secret_name)
-        capsule, cipher = encrypt(pk, secret_value)
-        secret_name_b64 = base64.b64encode(bytes(secret_name.encode("utf-8"))).decode("utf-8")
-        capsule_b64 = base64.b64encode(bytes(capsule)).decode("ascii")
-        cipher_b64 = base64.b64encode(bytes(capsule)).decode("ascii")
-        print(base64.b64decode(secret_name_b64).decode("utf-8"))
+        capsule, cipher = encrypt(pk, secret_value.encode("utf-8"))
+        capsule_bytes = bytes(capsule)
+        
+        print()
+        print(capsule_bytes)
+        print()
+        print(cipher)
+        print()
 
-    def send_out(self, recipient, key, payload):
-        self.network.accept_payload(recipient, key, payload)
+        data = {
+            'secret_name': secret_name,
+            'capsule': capsule_bytes,
+            'ciphertext': cipher
+        }
+        payload_id = self.name + secret_name
+        self.send_out(payload_id, msgpack.packb(data, use_bin_type=True))
+
+    def send_out(self, key, payload):
+        self.network.accept_payload(key, payload)
+
+    def request_in(self, secret_name):
+        payload_id = self.name + secret_name
+        return self.network.serve_payload(payload_id)
+
+    def print_payload(self, secret_name):
+        payload = self.request_in(secret_name)
+        data = msgpack.unpackb(payload, raw=False)
+        assert secret_name == data['secret_name']
+        capsule_bytes = data['capsule']
+        cipher = data['ciphertext']
+        print()
+        print(capsule_bytes)
+        print()
+        print(cipher)
+        print()
 
     def serialize(payload):
         return 
@@ -128,9 +156,12 @@ number = "main_residence_street_number"
 #zip = "main_residence_zip_code"
 #town = "main_residence_town"
 
-ursula.register_secret(alice.name, street, alice.encrypt_secret(street, "Dunkingstreet".encode("utf-8")))
-ursula.register_secret(alice.name, number, alice.encrypt_secret(number, "55".encode("utf-8")))
-ursula.register_secret(david.name, street, david.encrypt_secret(street, "Mainstreet".encode("utf-8")))
+alice.add_or_update_secret(street, "Newstreet")
+alice.print_payload(street)
+
+ursula.register_secret(alice.name, street, alice.encrypt_secret(street, "Dunkingstreet"))
+ursula.register_secret(alice.name, number, alice.encrypt_secret(number, "55"))
+ursula.register_secret(david.name, street, david.encrypt_secret(street, "Mainstreet"))
 
 alice.grant_access(bob.name, street, bob.key_gen(alice.name, street))
 alice.grant_access(bob.name, number, bob.key_gen(alice.name, number))

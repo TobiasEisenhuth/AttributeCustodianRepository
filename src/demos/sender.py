@@ -7,7 +7,6 @@ from protocol import *
 
 SENDER_ID = "alice"
 
-# In-memory key store and inbound FIFO for access requests (for future CLI)
 key_store: dict = {}
 access_requests_q: "queue.Queue[dict]" = queue.Queue()
 
@@ -63,7 +62,6 @@ def _auto_grant_worker():
                 shares=1
             )
 
-            # Notify Bob via his server (homogeneous pattern)
             ack_payload = {
                 "sender_id": SENDER_ID,
                 "secret_id": secret_id,
@@ -73,7 +71,6 @@ def _auto_grant_worker():
             outbox.send(RECEIVER_HOST, RECEIVER_PORT, encode_msg(GRANT_ACCESS_RECEIVER, ack_payload), expect_reply=False)
             print(f"[Sender] Notified Receiver '{receiver_id}' for '{secret_id}'.")
 
-            # Send kfrags to Proxy
             payload_proxy = {
                 "sender_id": SENDER_ID,
                 "receiver_id": receiver_id,
@@ -95,11 +92,10 @@ def handle_client(conn, addr):
             return
         msg = decode_msg(data)
         if msg["action"] == REQUEST_ACCESS:
-            # enqueue for FIFO processing
+
             req = msg["payload"]
             access_requests_q.put(req)
-            # immediate ack to the TCP caller that we accepted the request (optional)
-            send_msg(conn, encode_msg("OK", {"queued": True}))
+
             print(f"[Sender] Queued access request from {req['receiver_id']} for '{req['secret_id']}'.")
         else:
             send_msg(conn, make_error("Unsupported action for Sender"))

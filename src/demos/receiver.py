@@ -9,7 +9,6 @@ RECEIVER_ID = "bob"
 key_store = {}
 artifact_store = {}
 
-# FIFO for async incoming messages (e.g., GRANT_ACCESS_RECEIVER)
 inbox_q = {}
 
 def _get_q(action: str):
@@ -46,9 +45,8 @@ def handle_client(conn, addr):
                 "sender_public_key": PublicKey.from_bytes(sender_public_key_bytes),
                 "verifying_key":     PublicKey.from_bytes(verifying_key_bytes)
             }
-            # enqueue for possible UI consumption
+
             _get_q(GRANT_ACCESS_RECEIVER).put(payload)
-            send_msg(conn, encode_msg("OK", {"stored": True}))
             print(f"[Receiver] Stored grant for '{secret_id}' from '{sender_id}'.")
         else:
             send_msg(conn, make_error("Unsupported action for Receiver"))
@@ -62,7 +60,6 @@ def handle_client(conn, addr):
         conn.close()
 
 def run_server():
-    # start receiver's inbound server (homogeneous structure)
     threading.Thread(target=_server_loop, daemon=True).start()
 
 def _server_loop():
@@ -76,14 +73,12 @@ def _server_loop():
             threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
 
 def request_access(sender_id, secret_id):
-    # ensure Bob has a keypair for this (sender,secret)
     public_key = key_store.get(sender_id, {}).get(secret_id, {}).get("public_key") or key_gen(sender_id, secret_id)
     payload = {
         "receiver_id": RECEIVER_ID,
         "secret_id": secret_id,
         "receiver_public_key": bytes(public_key)
     }
-    # fire and forget: Alice will notify us asynchronously on our server
     outbox.send(SENDER_HOST, SENDER_PORT, encode_msg(REQUEST_ACCESS, payload), expect_reply=False)
     print(f"[Receiver] Requested access to '{secret_id}' from '{sender_id}'.")
 
@@ -125,10 +120,8 @@ def request_and_decrypt(sender_id, secret_id):
     print(f"[Receiver] Decrypted '{secret_id}' from '{sender_id}': {plaintext.decode()}")
 
 if __name__ == "__main__":
-    # homogeneous: start Bob's server first
     run_server()
 
-    # demo flow
     request_access("alice", "street")
     input("[Receiver] Press Enter after Alice grants access...\n")
     request_and_decrypt("alice", "street")

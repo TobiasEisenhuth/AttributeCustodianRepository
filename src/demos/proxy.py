@@ -39,13 +39,13 @@ def handle_secret(payload):
     sender_id = payload["sender_id"]
     secret_id = payload["secret_id"]
 
-    if sender_id not in secret_store:
-        secret_store[sender_id] = {}
-
-    secret_store[sender_id][secret_id] = {
+    secret_store.setdefault(sender_id, {})[secret_id] = {
         "capsule": Capsule.from_bytes(payload["capsule"]),
-        "ciphertext": payload["ciphertext"]
+        "ciphertext": payload["ciphertext"],
+        "sender_public_key": PublicKey.from_bytes(payload["sender_public_key"]),
+        "sender_verifying_key": PublicKey.from_bytes(payload["sender_verifying_key"])
     }
+
     print(f"[Proxy] Stored secret '{secret_id}' from '{sender_id}'.")
 
 def handle_grant_access(payload):
@@ -53,20 +53,16 @@ def handle_grant_access(payload):
     receiver_id = payload["receiver_id"]
     secret_id = payload["secret_id"]
     kfrags = [KeyFrag.from_bytes(b) for b in payload["kfrags"]]
-    if sender_id not in grant_store:
-        grant_store[sender_id] = {}
-        if receiver_id not in grant_store[sender_id]:
-            grant_store[sender_id][receiver_id] = {}
-            if secret_id not in grant_store[sender_id][receiver_id]:
-                grant_store[sender_id][receiver_id][secret_id]= {
-                    "kfrags": kfrags
-            }
+    grant_store.setdefault(sender_id, {}).setdefault(receiver_id, {})[secret_id] = {"kfrags": kfrags}
+
     print(f"[Proxy] Stored GRANT_ACCESS: {receiver_id} -> {secret_id} ({sender_id})")
 
 def handle_request_secret(payload, conn):
+
     receiver_id = payload["receiver_id"]
     sender_id = payload["sender_id"]
     secret_id = payload["secret_id"]
+    receiver_public_key_bytes = payload["receiver_public_key"]
 
     if sender_id not in secret_store or secret_id not in secret_store[sender_id]:
         send_msg(conn, make_error(f"Unknown secret '{secret_id}'"))
@@ -79,9 +75,15 @@ def handle_request_secret(payload, conn):
     ciphertext = secret_store[sender_id][secret_id]["ciphertext"]
     kfrags = grant_store[sender_id][receiver_id][secret_id]["kfrags"]
 
+    verified_kfrags = [kf.verify(
+                        verifying_pk=secret_store[sender_id][secret_id]["sender_verifying_key"],
+                        delegating_pk=secret_store[sender_id][secret_id]["sender_public_key"],
+                        receiving_pk=PublicKey.from_bytes(receiver_public_key_bytes))
+                    for kf in kfrags]
+
     cfrags = list()
-    for kfrag in kfrags:
-        cfrag = reencrypt(capsule=capsule, kfrag=kfrag)
+    for vkfrag in verified_kfrags:
+        cfrag = reencrypt(capsule=capsule, kfrag=vkfrag)
         cfrags.append(cfrag)
 
     response = {

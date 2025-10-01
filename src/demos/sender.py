@@ -25,14 +25,19 @@ def key_gen(secret_id):
     return key_store[secret_id]["public_key"]
 
 def add_or_update_secret(secret_id, secret_value):
+
     public_key = key_gen(secret_id)
     capsule, ciphertext = encrypt(public_key, secret_value.encode("utf-8"))
+    
     payload = {
         "sender_id": SENDER_ID,
         "secret_id": secret_id,
         "capsule": bytes(capsule),
-        "ciphertext": ciphertext
+        "ciphertext": ciphertext,
+        "sender_public_key": bytes(key_store[secret_id]["public_key"]),
+        "sender_verifying_key": bytes(key_store[secret_id]["verifying_key"])
     }
+    
     msg = encode_msg(ADD_OR_UPDATE_SECRET, payload)
     with socket.create_connection((PROXY_HOST, PROXY_PORT)) as sock:
         send_msg(sock, msg)
@@ -54,28 +59,24 @@ def handle_client(conn, addr):
                 print(f"[Sender] Unknown secret_id '{secret_id}'")
                 return
 
-            receiver_public_key = PublicKey.from_bytes(receiver_public_key_bytes)
-            delegating_secret_key = key_store[secret_id]["secret_key"]
-            signer = key_store[secret_id]["signer"]
-            verifying_key = key_store[secret_id]["verifying_key"]
-
             kfrags = generate_kfrags(
-                delegating_sk=delegating_secret_key,
-                receiving_pk=receiver_public_key,
-                signer=signer,
+                delegating_sk=key_store[secret_id]["secret_key"],
+                receiving_pk=PublicKey.from_bytes(receiver_public_key_bytes),
+                signer=key_store[secret_id]["sender_signer"],
                 threshold=1,
                 shares=1
             )
 
-            payload_receiver = {
+            ack_payload = {
                 "sender_id": SENDER_ID,
                 "secret_id": secret_id,
                 "public_key": bytes(key_store[secret_id]["public_key"]),
                 "verifying_key": bytes(key_store[secret_id]["verifying_key"])
             }
-            msg_receiver = encode_msg(GRANT_ACCESS_RECEIVER, payload_receiver)
-            with socket.create_connection((RECEIVER_HOST, RECEIVER_PORT)) as sock:
-                send_msg(sock, msg_receiver) 
+
+            msg_ack = encode_msg(GRANT_ACCESS_RECEIVER, ack_payload)
+            send_msg(conn, msg_ack)
+            print(f"[Sender] Sent GRANT_ACCESS_RECEIVER for '{secret_id}' to Receiver.")
 
             payload_proxy = {
                 "sender_id": SENDER_ID,
@@ -87,7 +88,7 @@ def handle_client(conn, addr):
             with socket.create_connection((PROXY_HOST, PROXY_PORT)) as sock:
                 send_msg(sock, msg_proxy)
                
-            print(f"[Sender] Sent GRANT_ACCESS_PROXY/RECEIVER for '{secret_id}' to Proxy.")
+            print(f"[Sender] Sent GRANT_ACCESS_PROXY for '{secret_id}' to Proxy.")
     except Exception as e:
         print(f"[Sender] Error: {e}")
     finally:
@@ -106,5 +107,5 @@ def run_server():
 if __name__ == "__main__":
     print(f"[Sender] Starting sender '{SENDER_ID}'...")
     add_or_update_secret("street", "Dunking Street")
-    add_or_update_secret("number", "42")
+    #add_or_update_secret("number", "42")
     run_server()

@@ -15,20 +15,20 @@ RECEIVER_PORT = 7000
 
 # ===== Actions =====
 # Alice
-ADD_OR_UPDATE_SECRET = "ADD_OR_UPDATE_SECRET"
-DELETE_SECRET        = "DELETE_SECRET"
-GRANT_ACCESS_PROXY   = "GRANT_ACCESS_PROXY"
-GRANT_ACCESS_RECEIVER= "GRANT_ACCESS_RECEIVER"
-REVOKE_ACCESS        = "REVOKE_ACCESS"
+ADD_OR_UPDATE_SECRET  = "ADD_OR_UPDATE_SECRET"
+DELETE_SECRET         = "DELETE_SECRET"
+GRANT_ACCESS_PROXY    = "GRANT_ACCESS_PROXY"
+GRANT_ACCESS_RECEIVER = "GRANT_ACCESS_RECEIVER"
+REVOKE_ACCESS         = "REVOKE_ACCESS"
 
 # Ursula (proxy) -> Bob
-RESPONSE_SECRET      = "RESPONSE_SECRET"
+RESPONSE_SECRET       = "RESPONSE_SECRET"
 
 # Bob
-REQUEST_ACCESS       = "REQUEST_ACCESS"
-REQUEST_SECRET       = "REQUEST_SECRET"
+REQUEST_ACCESS        = "REQUEST_ACCESS"
+REQUEST_SECRET        = "REQUEST_SECRET"
 
-ERROR                = "ERROR"
+ERROR                 = "ERROR"
 
 # ===== Message codec =====
 def encode_msg(action: str, payload: dict) -> bytes:
@@ -62,37 +62,25 @@ def _recvall(sock: socket.socket, n: int) -> Optional[bytes]:
     return bytes(buf)
 
 # ===== Outbound per-endpoint FIFO =====
-# in protocol.py
-
 class _OutboxWorker(threading.Thread):
-    def __init__(self, endpoint, q, connect_timeout=5.0, io_timeout=10.0, retries=2):
+    def __init__(self, endpoint: Tuple[str, int], q: "queue.Queue[tuple]"):
         super().__init__(daemon=True)
         self.endpoint = endpoint
         self.q = q
-        self.connect_timeout = connect_timeout
-        self.io_timeout = io_timeout
-        self.retries = retries
 
     def run(self):
         host, port = self.endpoint
         while True:
             msg_bytes, expect_reply, reply_q = self.q.get()
             try:
-                attempt = 0
-                while True:
-                    try:
-                        with socket.create_connection((host, port), timeout=self.connect_timeout) as sock:
-                            sock.settimeout(self.io_timeout)
-                            send_msg(sock, msg_bytes)
-                            if expect_reply:
-                                resp = recv_msg(sock)
-                                reply_q.put(resp)
-                            break
-                    except Exception as e:
-                        attempt += 1
-                        if attempt > self.retries:
-                            if expect_reply: reply_q.put(e)
-                            break
+                with socket.create_connection((host, port)) as sock:
+                    send_msg(sock, msg_bytes)
+                    if expect_reply:
+                        resp = recv_msg(sock)
+                        reply_q.put(resp)
+            except Exception as e:
+                if expect_reply:
+                    reply_q.put(e)
             finally:
                 self.q.task_done()
 

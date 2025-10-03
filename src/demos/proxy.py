@@ -6,8 +6,8 @@ from protocol import *
 
 PROXY_ID = "ursula"
 
-secret_store = {}
-grant_store  = {}
+secret_store = {}  # sender_id -> secret_id -> {...}
+grant_store  = {}  # sender_id -> receiver_id -> secret_id -> {kfrags}
 
 def handle_client(conn, addr):
     try:
@@ -20,13 +20,16 @@ def handle_client(conn, addr):
 
         if action == ADD_OR_UPDATE_SECRET:
             handle_secret(payload)
+        elif action == DELETE_SECRET:
+            handle_delete_secret(payload)
         elif action == GRANT_ACCESS_PROXY:
             handle_grant_access(payload)
+        elif action == REVOKE_ACCESS:
+            handle_revoke_access(payload)
         elif action == REQUEST_SECRET:
             handle_request_secret(payload, conn)
         else:
             print(f"[Proxy] Unknown action: {action}")
-            send_msg(conn, make_error("Unknown action"))
     except Exception as e:
         try:
             send_msg(conn, make_error(f"Proxy error: {e}"))
@@ -42,20 +45,43 @@ def handle_secret(payload):
     secret_store.setdefault(sender_id, {})[secret_id] = {
         "capsule": Capsule.from_bytes(payload["capsule"]),
         "ciphertext": payload["ciphertext"],
-        "sender_public_key":   PublicKey.from_bytes(payload["sender_public_key"]),
-        "sender_verifying_key":PublicKey.from_bytes(payload["sender_verifying_key"])
+        "sender_public_key":    PublicKey.from_bytes(payload["sender_public_key"]),
+        "sender_verifying_key": PublicKey.from_bytes(payload["sender_verifying_key"]),
     }
     print(f"[Proxy] Stored secret '{secret_id}' from '{sender_id}'.")
+
+def handle_delete_secret(payload):
+    sender_id = payload["sender_id"]
+    secret_id = payload["secret_id"]
+    if sender_id in secret_store and secret_id in secret_store[sender_id]:
+        del secret_store[sender_id][secret_id]
+        # Also drop any grants for this secret
+        if sender_id in grant_store:
+            for receiver_id in list(grant_store[sender_id].keys()):
+                grant_store[sender_id][receiver_id].pop(secret_id, None)
+        print(f"[Proxy] Deleted secret '{secret_id}' from '{sender_id}'.")
+    else:
+        print(f"[Proxy] Delete: secret '{secret_id}' not found for '{sender_id}'.")
 
 def handle_grant_access(payload):
     sender_id   = payload["sender_id"]
     receiver_id = payload["receiver_id"]
     secret_id   = payload["secret_id"]
     kfrags = [KeyFrag.from_bytes(b) for b in payload["kfrags"]]
-    grant_store.setdefault(sender_id, {}).setdefault(receiver_id, {})[secret_id] = {
-        "kfrags": kfrags
-    }
+    grant_store.setdefault(sender_id, {}).setdefault(receiver_id, {})[secret_id] = { "kfrags": kfrags }
     print(f"[Proxy] Stored GRANT_ACCESS: {receiver_id} -> {secret_id} ({sender_id})")
+
+def handle_revoke_access(payload):
+    sender_id   = payload["sender_id"]
+    receiver_id = payload["receiver_id"]
+    secret_id   = payload["secret_id"]
+    if (sender_id in grant_store and
+        receiver_id in grant_store[sender_id] and
+        secret_id in grant_store[sender_id][receiver_id]):
+        del grant_store[sender_id][receiver_id][secret_id]
+        print(f"[Proxy] Revoked access: {receiver_id} -> {secret_id} ({sender_id})")
+    else:
+        print(f"[Proxy] Revoke: no grant to revoke for {receiver_id}:{secret_id} ({sender_id})")
 
 def handle_request_secret(payload, conn):
     receiver_id = payload["receiver_id"]
@@ -66,16 +92,15 @@ def handle_request_secret(payload, conn):
     if sender_id not in secret_store or secret_id not in secret_store[sender_id]:
         send_msg(conn, make_error(f"Unknown secret '{secret_id}'"))
         return
-    if (sender_id not in grant_store or
-        receiver_id not in grant_store[sender_id] or
-        secret_id not in grant_store[sender_id][receiver_id]):
+    if sender_id not in grant_store or receiver_id not in grant_store[sender_id] or secret_id not in grant_store[sender_id][receiver_id]:
         send_msg(conn, make_error(f"No grant for {receiver_id} -> {secret_id}"))
         return
 
-    capsule       = secret_store[sender_id][secret_id]["capsule"]
-    ciphertext    = secret_store[sender_id][secret_id]["ciphertext"]
-    delegating_pk = secret_store[sender_id][secret_id]["sender_public_key"]
-    verifying_pk  = secret_store[sender_id][secret_id]["sender_verifying_key"]
+    rec = secret_store[sender_id][secret_id]
+    capsule       = rec["capsule"]
+    ciphertext    = rec["ciphertext"]
+    delegating_pk = rec["sender_public_key"]
+    verifying_pk  = rec["sender_verifying_key"]
     receiving_pk  = PublicKey.from_bytes(receiver_public_key_bytes)
     kfrags        = grant_store[sender_id][receiver_id][secret_id]["kfrags"]
 
@@ -103,7 +128,7 @@ def handle_request_secret(payload, conn):
 def run_server():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
         server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_sock.bind((PROXY_HOST, PROXY_PORT))
+        server_sock.bind(('0.0.0.0', PROXY_PORT))
         server_sock.listen()
         print(f"[Proxy] Listening on {PROXY_HOST}:{PROXY_PORT}...")
         while True:

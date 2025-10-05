@@ -1,18 +1,76 @@
 import os
 import socket
 import threading
+import msgpack
 from umbral import SecretKey, pre, decrypt_reencrypted, CapsuleFrag
 from umbral.keys import PublicKey
 from protocol import *
 
 RECEIVER_ID = "bob"
 
-store = {}
+# ===== Persistence config =====
+RECEIVER_STORE_FILE = os.getenv("RECEIVER_STORE_FILE", "receiver_store.msgpack")
+RECEIVER_STORE_PASS = os.getenv("RECEIVER_STORE_PASS")  # optional passphrase
+MAGIC_PLAIN = b"ACRP"  # Receiver plain
+MAGIC_ENC   = b"ACRE"  # Receiver encrypted
+
+store = {}  # sender_id -> secret_id -> {secret_key, public_key, sender_public_key, verifying_key}
 
 # ===== Util =====
 def fp(b: bytes) -> str:
     import hashlib
     return hashlib.sha256(b).hexdigest()[:10]
+
+# ===== Persistence =====
+def _serialize_receiver_store(st: dict) -> dict:
+    out = {}
+    for sid, m in st.items():
+        out[sid] = {}
+        for sec_id, rec in m.items():
+            out[sid][sec_id] = {
+                "secret_key":        (bytes(rec["secret_key"]) if rec.get("secret_key") else None),
+                "public_key":        (bytes(rec["public_key"]) if rec.get("public_key") else None),
+                "sender_public_key": (bytes(rec["sender_public_key"]) if rec.get("sender_public_key") else None),
+                "verifying_key":     (bytes(rec["verifying_key"]) if rec.get("verifying_key") else None),
+            }
+    return out
+
+def _deserialize_receiver_store(obj: dict) -> dict:
+    st = {}
+    for sid, m in (obj or {}).items():
+        st[sid] = {}
+        for sec_id, rec in (m or {}).items():
+            st[sid][sec_id] = {
+                "secret_key":        (SecretKey.from_bytes(rec["secret_key"]) if rec.get("secret_key") else None),
+                "public_key":        (PublicKey.from_bytes(rec["public_key"]) if rec.get("public_key") else None),
+                "sender_public_key": (PublicKey.from_bytes(rec["sender_public_key"]) if rec.get("sender_public_key") else None),
+                "verifying_key":     (PublicKey.from_bytes(rec["verifying_key"]) if rec.get("verifying_key") else None),
+            }
+    return st
+
+def save_state():
+    try:
+        save_store(RECEIVER_STORE_FILE, _serialize_receiver_store(store), RECEIVER_STORE_PASS, MAGIC_PLAIN, MAGIC_ENC)
+    except Exception as e:
+        print(f"[Receiver] Warning: failed to save store: {e}")
+
+def load_state():
+    global store
+    try:
+        obj = load_store(RECEIVER_STORE_FILE, RECEIVER_STORE_PASS, MAGIC_PLAIN, MAGIC_ENC)
+        if obj is not None:
+            store = _deserialize_receiver_store(obj)
+            total_grants = sum(
+                1 for m in store.values() for rec in m.values()
+                if rec.get("sender_public_key") and rec.get("verifying_key")
+            )
+            total_keys = sum(
+                1 for m in store.values() for rec in m.values()
+                if rec.get("public_key")
+            )
+            print(f"[Receiver] Loaded store: {total_keys} keypairs, {total_grants} grants.")
+    except Exception as e:
+        print(f"[Receiver] Warning: failed to load store: {e}")
 
 # ===== Inbound server (for GRANT_ACCESS_RECEIVER) =====
 def handle_client(conn, addr):
@@ -48,6 +106,7 @@ def handle_client(conn, addr):
                 print(f"[Receiver] Warning: verifying_key rotated for ({sender_id}, {secret_id}). Overwriting artifact.")
             srow["verifying_key"] = new_verify_pk
 
+            save_state()  # persist grant update
             # fire-and-forget: no reply (avoid Broken pipe)
             print(f"[Receiver] Stored grant for '{secret_id}' from '{sender_id}'.")
         else:
@@ -80,6 +139,7 @@ def key_gen(sender_id, secret_id):
     public_key = secret_key.public_key()
     srow["secret_key"] = secret_key
     srow["public_key"] = public_key
+    save_state()  # persist key creation
     return public_key
 
 def request_access(sender_id, secret_id):
@@ -212,5 +272,6 @@ def menu_loop():
             input("Unknown choice. Enter to continue...")
 
 if __name__ == "__main__":
+    load_state()
     threading.Thread(target=run_server, daemon=True).start()
     menu_loop()

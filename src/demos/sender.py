@@ -129,6 +129,38 @@ def _grant(receiver_id: str, secret_id: str, recv_pk_b: bytes):
     outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(GRANT_ACCESS_PROXY, payload_proxy), expect_reply=False)
     print(f"[Sender] Granted '{secret_id}' to '{receiver_id}' via Proxy.")
 
+# ===== NEW: list grants from proxy =====
+def list_grants_remote():
+    req = encode_msg(LIST_GRANTS, {"sender_id": SENDER_ID})
+    resp_bytes = outbox.send(PROXY_HOST, PROXY_PORT, req, expect_reply=True)
+    if not resp_bytes:
+        print("[Sender] Error: no response from proxy.")
+        return
+    msg = decode_msg(resp_bytes)
+    if msg["action"] == ERROR:
+        print(f"[Sender] Error: {msg['payload']['error']}")
+        return
+    if msg["action"] != GRANTS_SUMMARY:
+        print(f"[Sender] Unexpected reply: {msg['action']}")
+        return
+    summary = msg["payload"]  # {"by_secret": {sid: [rid,...]}, "totals": {...}}
+    by_secret = summary.get("by_secret", {})
+    totals = summary.get("totals", {})
+    # Pretty print tree
+    print("=== Grants (as stored on Proxy) ===")
+    print(f"Secrets: {totals.get('secrets', 0)} | Grants: {totals.get('grants', 0)}")
+    if not by_secret:
+        print("(no secrets at proxy)")
+        return
+    for sid in sorted(by_secret.keys()):
+        receivers = by_secret[sid]
+        if receivers:
+            print(f"- {sid}/")
+            for r in receivers:
+                print(f"    -> {r}")
+        else:
+            print(f"- {sid}/  (no receivers)")
+
 # ===== Server (inbound) =====
 def handle_client(conn, addr):
     try:
@@ -170,7 +202,8 @@ def menu_loop():
         print("2) Delete secret")
         print("3) Process pending access requests (Y/n per request)")
         print("4) Revoke access (receiver_id, secret_id)")
-        print("5) Quit")
+        print("5) List my grants (from Proxy)")
+        print("6) Quit")
         choice = input("> ").strip()
 
         if choice == "1":
@@ -192,6 +225,9 @@ def menu_loop():
             revoke_access(rid, sid)
             input("OK. Enter to continue...")
         elif choice == "5":
+            list_grants_remote()
+            input("Enter to continue...")
+        elif choice == "6":
             break
         else:
             input("Unknown choice. Enter to continue...")

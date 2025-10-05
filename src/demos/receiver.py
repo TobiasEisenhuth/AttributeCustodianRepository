@@ -1,20 +1,18 @@
 import os
 import socket
 import threading
-import msgpack
 from umbral import SecretKey, pre, decrypt_reencrypted, CapsuleFrag
 from umbral.keys import PublicKey
 from protocol import *
 
 RECEIVER_ID = "bob"
 
-# ===== Persistence config =====
+# ===== Persistence config (encrypted only) =====
 RECEIVER_STORE_FILE = os.getenv("RECEIVER_STORE_FILE", "receiver_store.msgpack")
-RECEIVER_STORE_PASS = os.getenv("RECEIVER_STORE_PASS")  # optional passphrase
-MAGIC_PLAIN = b"ACRP"  # Receiver plain
-MAGIC_ENC   = b"ACRE"  # Receiver encrypted
+MAGIC_ENC = b"ACRE"  # Alice Client Receiver Encrypted
 
 store = {}  # sender_id -> secret_id -> {secret_key, public_key, sender_public_key, verifying_key}
+_RECEIVER_PASS: str = ""  # set at startup
 
 # ===== Util =====
 def fp(b: bytes) -> str:
@@ -50,27 +48,23 @@ def _deserialize_receiver_store(obj: dict) -> dict:
 
 def save_state():
     try:
-        save_store(RECEIVER_STORE_FILE, _serialize_receiver_store(store), RECEIVER_STORE_PASS, MAGIC_PLAIN, MAGIC_ENC)
+        save_store_encrypted(RECEIVER_STORE_FILE, _serialize_receiver_store(store), _RECEIVER_PASS, MAGIC_ENC)
     except Exception as e:
-        print(f"[Receiver] Warning: failed to save store: {e}")
+        print(f("[Receiver] Warning: failed to save store: {e}"))
 
-def load_state():
-    global store
-    try:
-        obj = load_store(RECEIVER_STORE_FILE, RECEIVER_STORE_PASS, MAGIC_PLAIN, MAGIC_ENC)
-        if obj is not None:
-            store = _deserialize_receiver_store(obj)
-            total_grants = sum(
-                1 for m in store.values() for rec in m.values()
-                if rec.get("sender_public_key") and rec.get("verifying_key")
-            )
-            total_keys = sum(
-                1 for m in store.values() for rec in m.values()
-                if rec.get("public_key")
-            )
-            print(f"[Receiver] Loaded store: {total_keys} keypairs, {total_grants} grants.")
-    except Exception as e:
-        print(f"[Receiver] Warning: failed to load store: {e}")
+def load_state_or_init():
+    global store, _RECEIVER_PASS
+    _RECEIVER_PASS, obj = require_password_and_load(RECEIVER_STORE_FILE, MAGIC_ENC, role_label="Receiver")
+    store = _deserialize_receiver_store(obj)
+    total_grants = sum(
+        1 for m in store.values() for rec in m.values()
+        if rec.get("sender_public_key") and rec.get("verifying_key")
+    )
+    total_keys = sum(
+        1 for m in store.values() for rec in m.values()
+        if rec.get("public_key")
+    )
+    print(f"[Receiver] Loaded store: {total_keys} keypairs, {total_grants} grants.")
 
 # ===== Inbound server (for GRANT_ACCESS_RECEIVER) =====
 def handle_client(conn, addr):
@@ -272,6 +266,6 @@ def menu_loop():
             input("Unknown choice. Enter to continue...")
 
 if __name__ == "__main__":
-    load_state()
+    load_state_or_init()
     threading.Thread(target=run_server, daemon=True).start()
     menu_loop()

@@ -2,15 +2,66 @@ import os
 import socket
 import threading
 import queue
+import msgpack
 from umbral import SecretKey, Signer, encrypt, generate_kfrags
 from umbral.keys import PublicKey
 from protocol import *
 
 SENDER_ID = "alice"
 
+# ===== Persistence config =====
+SENDER_STORE_FILE = os.getenv("SENDER_STORE_FILE", "sender_store.msgpack")
+SENDER_STORE_PASS = os.getenv("SENDER_STORE_PASS")  # optional passphrase (AES-GCM if 'cryptography' is installed)
+MAGIC_PLAIN = b"ACSP"  # Alice store plain
+MAGIC_ENC   = b"ACSE"  # Alice store encrypted
+
 # State
 key_store: dict = {}                         # secret_id -> keys
 access_requests_q: "queue.Queue[dict]" = queue.Queue()  # FIFO of pending REQUEST_ACCESS
+
+# ===== Persistence (serialize keys only; signer is reconstructed) =====
+def _serialize_sender_store(ks: dict) -> dict:
+    out = {}
+    for sid, rec in ks.items():
+        out[sid] = {
+            "secret_key": bytes(rec["secret_key"]),
+            "public_key": bytes(rec["public_key"]),
+            "signing_key": bytes(rec["signing_key"]),
+            "verifying_key": bytes(rec["verifying_key"]),
+        }
+    return out
+
+def _deserialize_sender_store(obj: dict) -> dict:
+    ks = {}
+    for sid, rec in (obj or {}).items():
+        sk  = SecretKey.from_bytes(rec["secret_key"])
+        pk  = PublicKey.from_bytes(rec["public_key"])
+        ssk = SecretKey.from_bytes(rec["signing_key"])
+        vpk = PublicKey.from_bytes(rec["verifying_key"])
+        ks[sid] = {
+            "secret_key":    sk,
+            "public_key":    pk,
+            "signing_key":   ssk,
+            "verifying_key": vpk,
+            "signer":        Signer(ssk),
+        }
+    return ks
+
+def save_state():
+    try:
+        save_store(SENDER_STORE_FILE, _serialize_sender_store(key_store), SENDER_STORE_PASS, MAGIC_PLAIN, MAGIC_ENC)
+    except Exception as e:
+        print(f"[Sender] Warning: failed to save store: {e}")
+
+def load_state():
+    global key_store
+    try:
+        obj = load_store(SENDER_STORE_FILE, SENDER_STORE_PASS, MAGIC_PLAIN, MAGIC_ENC)
+        if obj is not None:
+            key_store = _deserialize_sender_store(obj)
+            print(f"[Sender] Loaded {len(key_store)} secrets from store.")
+    except Exception as e:
+        print(f"[Sender] Warning: failed to load store: {e}")
 
 # ===== Crypto key mgmt =====
 def key_gen(secret_id: str):
@@ -27,6 +78,7 @@ def key_gen(secret_id: str):
             "verifying_key":  verifying_key,
             "signer":         signer
         }
+        save_state()
     return key_store[secret_id]["public_key"]
 
 def add_or_update_secret(secret_id: str, secret_value: str):
@@ -46,7 +98,8 @@ def add_or_update_secret(secret_id: str, secret_value: str):
 def delete_secret(secret_id: str):
     payload = {"sender_id": SENDER_ID, "secret_id": secret_id}
     outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(DELETE_SECRET, payload), expect_reply=False)
-    key_store.pop(secret_id, None)
+    if key_store.pop(secret_id, None) is not None:
+        save_state()
     print(f"[Sender] Requested delete for '{secret_id}'.")
 
 def revoke_access(receiver_id: str, secret_id: str):
@@ -171,6 +224,8 @@ def process_requests():
 
 if __name__ == "__main__":
     print(f"[Sender] Starting sender '{SENDER_ID}'...")
+    load_state()
+
     # (optional) preload
     add_or_update_secret("street", "Dunking Street")
     add_or_update_secret("number", "42")

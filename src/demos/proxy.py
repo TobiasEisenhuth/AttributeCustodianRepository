@@ -121,6 +121,30 @@ def load_grant_kfrags(sender_id: str, receiver_id: str, secret_id: str) -> list[
     kfrag_bytes_list = msgpack.unpackb(blob, raw=False)
     return [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
 
+def list_grants_for_sender(sender_id: str) -> dict:
+    """Return {by_secret: {secret_id: [receiver_id, ...]}, totals:{...}}"""
+    by_secret: dict[str, list[str]] = {}
+    total_grants = 0
+    with get_conn() as conn:
+        # gather all secrets for sender (even without grants)
+        secrets = [r[0] for r in conn.execute(
+            "SELECT secret_id FROM secrets WHERE sender_id=%s", (sender_id,)
+        ).fetchall()]
+        for sec in secrets:
+            by_secret.setdefault(sec, [])
+        # gather all grants
+        rows = conn.execute(
+            "SELECT secret_id, receiver_id FROM grants WHERE sender_id=%s ORDER BY secret_id, receiver_id",
+            (sender_id,)
+        ).fetchall()
+    for sec_id, recv_id in rows:
+        by_secret.setdefault(sec_id, []).append(recv_id)
+        total_grants += 1
+    return {
+        "by_secret": by_secret,
+        "totals": {"secrets": len(by_secret), "grants": total_grants}
+    }
+
 # ---------- Network handlers (wire protocol unchanged) ----------
 
 def handle_client(conn, addr):
@@ -142,6 +166,8 @@ def handle_client(conn, addr):
             handle_revoke_access(payload)
         elif action == REQUEST_SECRET:
             handle_request_secret(payload, conn)
+        elif action == LIST_GRANTS:
+            handle_list_grants(payload, conn)
         else:
             print(f"[Proxy] Unknown action: {action}")
     except Exception as e:
@@ -215,6 +241,14 @@ def handle_request_secret(payload, conn):
     }
     send_msg(conn, encode_msg(RESPONSE_SECRET, response))
     print(f"[Proxy] Served secret '{secret_id}' for '{receiver_id}' from '{sender_id}'.")
+
+def handle_list_grants(payload, conn):
+    sender_id = payload.get("sender_id")
+    if not sender_id:
+        send_msg(conn, make_error("sender_id missing"))
+        return
+    summary = list_grants_for_sender(sender_id)
+    send_msg(conn, encode_msg(GRANTS_SUMMARY, summary))
 
 def run_server():
     init_db()

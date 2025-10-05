@@ -32,6 +32,10 @@ RESPONSE_SECRET       = "RESPONSE_SECRET"
 REQUEST_ACCESS        = "REQUEST_ACCESS"
 REQUEST_SECRET        = "REQUEST_SECRET"
 
+# NEW (Sender <-> Proxy)
+LIST_GRANTS           = "LIST_GRANTS"
+GRANTS_SUMMARY        = "GRANTS_SUMMARY"
+
 ERROR                 = "ERROR"
 
 # ===== Message codec =====

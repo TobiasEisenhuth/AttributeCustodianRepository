@@ -28,7 +28,7 @@ def _serialize_receiver_store(st: dict) -> dict:
         out[sid] = {}
         for sec_id, rec in m.items():
             out[sid][sec_id] = {
-                "secret_key":        (bytes(rec["secret_key"]) if rec.get("secret_key") else None),
+                "secret_key":        (rec["secret_key"].to_secret_bytes() if rec.get("secret_key") else None),
                 "public_key":        (bytes(rec["public_key"]) if rec.get("public_key") else None),
                 "sender_public_key": (bytes(rec["sender_public_key"]) if rec.get("sender_public_key") else None),
                 "verifying_key":     (bytes(rec["verifying_key"]) if rec.get("verifying_key") else None),

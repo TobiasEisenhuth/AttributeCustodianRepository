@@ -2,22 +2,20 @@ import os
 import socket
 import threading
 import queue
-import msgpack
 from umbral import SecretKey, Signer, encrypt, generate_kfrags
 from umbral.keys import PublicKey
 from protocol import *
 
 SENDER_ID = "alice"
 
-# ===== Persistence config =====
+# ===== Persistence config (encrypted only) =====
 SENDER_STORE_FILE = os.getenv("SENDER_STORE_FILE", "sender_store.msgpack")
-SENDER_STORE_PASS = os.getenv("SENDER_STORE_PASS")  # optional passphrase (AES-GCM if 'cryptography' is installed)
-MAGIC_PLAIN = b"ACSP"  # Alice store plain
-MAGIC_ENC   = b"ACSE"  # Alice store encrypted
+MAGIC_ENC = b"ACSE"  # Alice Client Store Encrypted
 
 # State
 key_store: dict = {}                         # secret_id -> keys
 access_requests_q: "queue.Queue[dict]" = queue.Queue()  # FIFO of pending REQUEST_ACCESS
+_SENDER_PASS: str = ""  # set at startup
 
 # ===== Persistence (serialize keys only; signer is reconstructed) =====
 def _serialize_sender_store(ks: dict) -> dict:
@@ -48,20 +46,17 @@ def _deserialize_sender_store(obj: dict) -> dict:
     return ks
 
 def save_state():
+    global _SENDER_PASS
     try:
-        save_store(SENDER_STORE_FILE, _serialize_sender_store(key_store), SENDER_STORE_PASS, MAGIC_PLAIN, MAGIC_ENC)
+        save_store_encrypted(SENDER_STORE_FILE, _serialize_sender_store(key_store), _SENDER_PASS, MAGIC_ENC)
     except Exception as e:
         print(f"[Sender] Warning: failed to save store: {e}")
 
-def load_state():
-    global key_store
-    try:
-        obj = load_store(SENDER_STORE_FILE, SENDER_STORE_PASS, MAGIC_PLAIN, MAGIC_ENC)
-        if obj is not None:
-            key_store = _deserialize_sender_store(obj)
-            print(f"[Sender] Loaded {len(key_store)} secrets from store.")
-    except Exception as e:
-        print(f"[Sender] Warning: failed to load store: {e}")
+def load_state_or_init():
+    global key_store, _SENDER_PASS
+    _SENDER_PASS, obj = require_password_and_load(SENDER_STORE_FILE, MAGIC_ENC, role_label="Sender")
+    key_store = _deserialize_sender_store(obj)
+    print(f"[Sender] Loaded {len(key_store)} secrets from store.")
 
 # ===== Crypto key mgmt =====
 def key_gen(secret_id: str):
@@ -182,6 +177,7 @@ def menu_loop():
             sid = input("secret_id: ").strip()
             val = input("secret_value: ").strip()
             add_or_update_secret(sid, val)
+            save_state()
             input("OK. Enter to continue...")
         elif choice == "2":
             sid = input("secret_id to delete: ").strip()
@@ -224,11 +220,11 @@ def process_requests():
 
 if __name__ == "__main__":
     print(f"[Sender] Starting sender '{SENDER_ID}'...")
-    load_state()
+    load_state_or_init()
 
     # (optional) preload
-    add_or_update_secret("street", "Dunking Street")
-    add_or_update_secret("number", "42")
+    #add_or_update_secret("street", "Dunking Street")
+    #add_or_update_secret("number", "42")
 
     threading.Thread(target=run_server, daemon=True).start()
     # CLI in main thread

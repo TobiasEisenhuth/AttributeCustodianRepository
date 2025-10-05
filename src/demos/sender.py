@@ -24,9 +24,9 @@ def _serialize_sender_store(ks: dict) -> dict:
     out = {}
     for sid, rec in ks.items():
         out[sid] = {
-            "secret_key": bytes(rec["secret_key"]),
+            "secret_key": rec["secret_key"].to_secret_bytes(),
             "public_key": bytes(rec["public_key"]),
-            "signing_key": bytes(rec["signing_key"]),
+            "signing_key": rec["signing_key"].to_secret_bytes(),
             "verifying_key": bytes(rec["verifying_key"]),
         }
     return out

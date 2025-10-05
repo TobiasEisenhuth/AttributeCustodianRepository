@@ -7,8 +7,7 @@ from protocol import *
 
 RECEIVER_ID = "bob"
 
-key_store = {}       # sender_id -> secret_id -> {secret_key, public_key}
-artifact_store = {}  # sender_id -> secret_id -> {sender_public_key, verifying_key}
+store = {}
 
 # ===== Util =====
 def fp(b: bytes) -> str:
@@ -31,10 +30,24 @@ def handle_client(conn, addr):
             sender_public_key_bytes = payload["public_key"]
             verifying_key_bytes     = payload["verifying_key"]
 
-            artifact_store.setdefault(sender_id, {})[secret_id] = {
-                "sender_public_key": PublicKey.from_bytes(sender_public_key_bytes),
-                "verifying_key":     PublicKey.from_bytes(verifying_key_bytes)
-            }
+            srow = store.setdefault(sender_id, {}).setdefault(secret_id, {
+                "secret_key": None,
+                "public_key": None,
+                "sender_public_key": None,
+                "verifying_key": None
+            })
+
+            new_sender_pk = PublicKey.from_bytes(sender_public_key_bytes)
+            new_verify_pk = PublicKey.from_bytes(verifying_key_bytes)
+
+            if srow["sender_public_key"] is not None and bytes(srow["sender_public_key"]) != sender_public_key_bytes:
+                print(f"[Receiver] Warning: sender_public_key rotated for ({sender_id}, {secret_id}). Overwriting artifact.")
+            srow["sender_public_key"] = new_sender_pk
+
+            if srow["verifying_key"] is not None and bytes(srow["verifying_key"]) != verifying_key_bytes:
+                print(f"[Receiver] Warning: verifying_key rotated for ({sender_id}, {secret_id}). Overwriting artifact.")
+            srow["verifying_key"] = new_verify_pk
+
             # fire-and-forget: no reply (avoid Broken pipe)
             print(f"[Receiver] Stored grant for '{secret_id}' from '{sender_id}'.")
         else:
@@ -54,11 +67,19 @@ def run_server():
 
 # ===== Actions =====
 def key_gen(sender_id, secret_id):
-    if sender_id in key_store and secret_id in key_store[sender_id]:
-        return key_store[sender_id][secret_id]["public_key"]
+    srow = store.setdefault(sender_id, {}).setdefault(secret_id, {
+        "secret_key": None,
+        "public_key": None,
+        "sender_public_key": None,
+        "verifying_key": None
+    })
+
+    if srow["public_key"] is not None:
+        return srow["public_key"]
     secret_key = SecretKey.random()
     public_key = secret_key.public_key()
-    key_store.setdefault(sender_id, {})[secret_id] = {"secret_key": secret_key, "public_key": public_key}
+    srow["secret_key"] = secret_key
+    srow["public_key"] = public_key
     return public_key
 
 def request_access(sender_id, secret_id):
@@ -72,10 +93,15 @@ def request_access(sender_id, secret_id):
     print(f"[Receiver] Requested access to '{secret_id}' from '{sender_id}'.")
 
 def request_and_decrypt(sender_id, secret_id):
-    if sender_id not in key_store or secret_id not in key_store[sender_id]:
+    if sender_id not in store or secret_id not in store[sender_id]:
         print("No keypair for that (sender, secret). Request access first.")
         return
-    if sender_id not in artifact_store or secret_id not in artifact_store[sender_id]:
+    srow = store[sender_id][secret_id]
+
+    if srow["secret_key"] is None or srow["public_key"] is None:
+        print("No keypair for that (sender, secret). Request access first.")
+        return
+    if srow["sender_public_key"] is None or srow["verifying_key"] is None:
         print("No grant stored yet from Alice. Wait for grant before requesting secret.")
         return
 
@@ -83,7 +109,7 @@ def request_and_decrypt(sender_id, secret_id):
         "receiver_id": RECEIVER_ID,
         "sender_id": sender_id,
         "secret_id": secret_id,
-        "receiver_public_key": bytes(key_store[sender_id][secret_id]["public_key"])
+        "receiver_public_key": bytes(srow["public_key"])
     }
     resp = outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(REQUEST_SECRET, payload), expect_reply=True)
 
@@ -99,16 +125,16 @@ def request_and_decrypt(sender_id, secret_id):
     cfrags = [
         cfrag.verify(
             capsule,
-            artifact_store[sender_id][secret_id]["verifying_key"],
-            artifact_store[sender_id][secret_id]["sender_public_key"],
-            key_store[sender_id][secret_id]["public_key"]
+            srow["verifying_key"],
+            srow["sender_public_key"],
+            srow["public_key"]
         )
         for cfrag in suspicious_cfrags
     ]
 
     plaintext = decrypt_reencrypted(
-        key_store[sender_id][secret_id]["secret_key"],
-        artifact_store[sender_id][secret_id]["sender_public_key"],
+        srow["secret_key"],
+        srow["sender_public_key"],
         capsule,
         cfrags,
         ciphertext
@@ -120,29 +146,43 @@ def clear():
     os.system("cls" if os.name == "nt" else "clear")
 
 def list_grants():
-    if not artifact_store:
-        print("(no grants)")
-        return
-    for s_id, m in artifact_store.items():
+    any_grant = False
+    for s_id, m in store.items():
         for sec_id, rec in m.items():
+            if rec.get("sender_public_key") is None or rec.get("verifying_key") is None:
+                continue
+            any_grant = True
             spk = fp(bytes(rec["sender_public_key"]))
             vpk = fp(bytes(rec["verifying_key"]))
             print(f"- sender={s_id} secret={sec_id} sender_pk={spk} verifying_pk={vpk}")
+    if not any_grant:
+        print("(no grants)")
 
 def list_keys():
-    if not key_store:
-        print("(no local keys)")
-        return
-    for s_id, m in key_store.items():
+    any_key = False
+    for s_id, m in store.items():
         for sec_id, rec in m.items():
+            if rec.get("public_key") is None:
+                continue
+            any_key = True
             print(f"- sender={s_id} secret={sec_id} recv_pk={fp(bytes(rec['public_key']))}")
+    if not any_key:
+        print("(no local keys)")
 
 def menu_loop():
     while True:
         clear()
+        total_grants = sum(
+            1 for m in store.values() for rec in m.values()
+            if rec.get("sender_public_key") is not None and rec.get("verifying_key") is not None
+        )
+        total_keys = sum(
+            1 for m in store.values() for rec in m.values()
+            if rec.get("public_key") is not None
+        )
         print("=== Bob (Receiver) ===")
-        print("Stored grants:", sum(len(v) for v in artifact_store.values()) or 0)
-        print("Local keypairs:", sum(len(v) for v in key_store.values()) or 0)
+        print("Stored grants:", total_grants)
+        print("Local keypairs:", total_keys)
         print()
         print("1) Request access (sender_id, secret_id)")
         print("2) Request secret & decrypt (sender_id, secret_id)")

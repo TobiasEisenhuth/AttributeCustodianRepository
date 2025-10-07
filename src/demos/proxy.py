@@ -44,6 +44,21 @@ def init_db():
               PRIMARY KEY (sender_id, receiver_id, secret_id)
             );
         """)
+        # inbox tables for routing by ID
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sender_inbox (
+              sender_id  TEXT NOT NULL,
+              msg_blob   BYTEA NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS receiver_inbox (
+              receiver_id TEXT NOT NULL,
+              msg_blob    BYTEA NOT NULL,
+              created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
     print("[Proxy] DB initialized.")
 
 # ---------- Persistence helpers (2 tables; flattened kfrags via MsgPack) ----------
@@ -145,7 +160,37 @@ def list_grants_for_sender(sender_id: str) -> dict:
         "totals": {"secrets": len(by_secret), "grants": total_grants}
     }
 
-# ---------- Network handlers (wire protocol unchanged) ----------
+# ---------- inbox helpers ----------
+
+def enqueue_for_sender(sender_id: str, action: str, payload: dict) -> None:
+    blob = msgpack.packb({"action": action, "payload": payload}, use_bin_type=True)
+    with get_conn() as conn:
+        conn.execute("INSERT INTO sender_inbox (sender_id, msg_blob) VALUES (%s, %s)", (sender_id, blob))
+
+def enqueue_for_receiver(receiver_id: str, action: str, payload: dict) -> None:
+    blob = msgpack.packb({"action": action, "payload": payload}, use_bin_type=True)
+    with get_conn() as conn:
+        conn.execute("INSERT INTO receiver_inbox (receiver_id, msg_blob) VALUES (%s, %s)", (receiver_id, blob))
+
+def pull_sender_inbox(sender_id: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT msg_blob FROM sender_inbox WHERE sender_id=%s ORDER BY created_at ASC",
+            (sender_id,)
+        ).fetchall()
+        conn.execute("DELETE FROM sender_inbox WHERE sender_id=%s", (sender_id,))
+    return [msgpack.unpackb(r[0], raw=False) for r in rows]
+
+def pull_receiver_inbox(receiver_id: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT msg_blob FROM receiver_inbox WHERE receiver_id=%s ORDER BY created_at ASC",
+            (receiver_id,)
+        ).fetchall()
+        conn.execute("DELETE FROM receiver_inbox WHERE receiver_id=%s", (receiver_id,))
+    return [msgpack.unpackb(r[0], raw=False) for r in rows]
+
+# ---------- Network handlers ----------
 
 def handle_client(conn, addr):
     try:
@@ -162,12 +207,20 @@ def handle_client(conn, addr):
             handle_delete_secret(payload)
         elif action == GRANT_ACCESS_PROXY:
             handle_grant_access(payload)
+        elif action == GRANT_ACCESS_RECEIVER:
+            handle_grant_access_receiver(payload)
         elif action == REVOKE_ACCESS:
             handle_revoke_access(payload)
         elif action == REQUEST_SECRET:
             handle_request_secret(payload, conn)
         elif action == LIST_GRANTS:
             handle_list_grants(payload, conn)
+        elif action == REQUEST_ACCESS:
+            handle_request_access(payload, conn)
+        elif action == PULL_INBOX_SENDER:
+            handle_pull_inbox_sender(payload, conn)
+        elif action == PULL_INBOX_RECEIVER:
+            handle_pull_inbox_receiver(payload, conn)
         else:
             print(f"[Proxy] Unknown action: {action}")
     except Exception as e:
@@ -194,6 +247,14 @@ def handle_grant_access(payload):
     # payload["kfrags"] is list[bytes]; keep as-is and flatten for storage
     insert_or_replace_grant(sender_id, receiver_id, secret_id, payload["kfrags"])
     print(f"[Proxy] Stored GRANT_ACCESS: {receiver_id} -> {secret_id} ({sender_id})")
+
+def handle_grant_access_receiver(payload):
+    # Payload from sender to be delivered to receiver's inbox
+    receiver_id = payload.get("receiver_id")
+    if not receiver_id:
+        return
+    enqueue_for_receiver(receiver_id, GRANT_ACCESS_RECEIVER, payload)
+    print(f"[Proxy] Enqueued grant notice for receiver '{receiver_id}'.")
 
 def handle_revoke_access(payload):
     revoke_grant(payload["sender_id"], payload["receiver_id"], payload["secret_id"])
@@ -249,6 +310,34 @@ def handle_list_grants(payload, conn):
         return
     summary = list_grants_for_sender(sender_id)
     send_msg(conn, encode_msg(GRANTS_SUMMARY, summary))
+
+def handle_request_access(payload, conn):
+    # payload includes: sender_id, receiver_id, secret_id, receiver_public_key
+    sender_id = payload.get("sender_id")
+    receiver_id = payload.get("receiver_id")
+    secret_id = payload.get("secret_id")
+    if not sender_id or not receiver_id or not secret_id:
+        send_msg(conn, make_error("Missing sender_id/receiver_id/secret_id"))
+        return
+    enqueue_for_sender(sender_id, REQUEST_ACCESS, payload)
+    send_msg(conn, encode_msg("OK", {}))
+    print(f"[Proxy] Enqueued access request for sender '{sender_id}' (secret '{secret_id}') from receiver '{receiver_id}'.")
+
+def handle_pull_inbox_sender(payload, conn):
+    sender_id = payload.get("sender_id")
+    if not sender_id:
+        send_msg(conn, make_error("sender_id missing"))
+        return
+    msgs = pull_sender_inbox(sender_id)
+    send_msg(conn, encode_msg(INBOX_CONTENTS, {"messages": msgs}))
+
+def handle_pull_inbox_receiver(payload, conn):
+    receiver_id = payload.get("receiver_id")
+    if not receiver_id:
+        send_msg(conn, make_error("receiver_id missing"))
+        return
+    msgs = pull_receiver_inbox(receiver_id)
+    send_msg(conn, encode_msg(INBOX_CONTENTS, {"messages": msgs}))
 
 def run_server():
     init_db()

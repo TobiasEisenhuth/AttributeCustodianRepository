@@ -66,57 +66,36 @@ def load_state_or_init():
     )
     print(f"[Receiver] Loaded store: {total_keys} keypairs, {total_grants} grants.")
 
-# ===== Inbound server (for GRANT_ACCESS_RECEIVER) =====
-def handle_client(conn, addr):
-    try:
-        data = recv_msg(conn)
-        if not data:
-            return
-        msg = decode_msg(data)
-        action = msg["action"]
-        payload = msg["payload"]
-
-        if action == GRANT_ACCESS_RECEIVER:
-            sender_id = payload["sender_id"]
-            secret_id = payload["secret_id"]
-            sender_public_key_bytes = payload["public_key"]
-            verifying_key_bytes     = payload["verifying_key"]
-
-            srow = store.setdefault(sender_id, {}).setdefault(secret_id, {
-                "secret_key": None,
-                "public_key": None,
-                "sender_public_key": None,
-                "verifying_key": None
-            })
-
-            new_sender_pk = PublicKey.from_bytes(sender_public_key_bytes)
-            new_verify_pk = PublicKey.from_bytes(verifying_key_bytes)
-
-            if srow["sender_public_key"] is not None and bytes(srow["sender_public_key"]) != sender_public_key_bytes:
-                print(f"[Receiver] Warning: sender_public_key rotated for ({sender_id}, {secret_id}). Overwriting artifact.")
-            srow["sender_public_key"] = new_sender_pk
-
-            if srow["verifying_key"] is not None and bytes(srow["verifying_key"]) != verifying_key_bytes:
-                print(f"[Receiver] Warning: verifying_key rotated for ({sender_id}, {secret_id}). Overwriting artifact.")
-            srow["verifying_key"] = new_verify_pk
-
-            save_state()  # persist grant update
-            # fire-and-forget: no reply (avoid Broken pipe)
-            print(f"[Receiver] Stored grant for '{secret_id}' from '{sender_id}'.")
-        else:
-            print(f"[Receiver] Unknown inbound action: {action}")
-    finally:
-        conn.close()
-
-def run_server():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
-        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_sock.bind(('0.0.0.0', RECEIVER_PORT))
-        server_sock.listen()
-        print(f"[Receiver] Listening on {RECEIVER_PORT}...")
-        while True:
-            conn, addr = server_sock.accept()
-            threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+# ===== Proxy inbox pull for grants =====
+def pull_my_grants():
+    resp = outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(PULL_INBOX_RECEIVER, {"receiver_id": RECEIVER_ID}), expect_reply=True)
+    msg = decode_msg(resp)
+    if msg["action"] != INBOX_CONTENTS:
+        print(f"[Receiver] Unexpected inbox reply: {msg['action']}")
+        return
+    for m in msg["payload"].get("messages", []):
+        if m.get("action") != GRANT_ACCESS_RECEIVER:
+            continue
+        p = m["payload"]
+        if p.get("receiver_id") != RECEIVER_ID:
+            continue  # not for me
+        sender_id = p["sender_id"]
+        secret_id = p["secret_id"]
+        srow = store.setdefault(sender_id, {}).setdefault(secret_id, {
+            "secret_key": None,
+            "public_key": None,
+            "sender_public_key": None,
+            "verifying_key": None
+        })
+        try:
+            spk = PublicKey.from_bytes(p["public_key"])
+            vpk = PublicKey.from_bytes(p["verifying_key"])
+            srow["sender_public_key"] = spk
+            srow["verifying_key"] = vpk
+            print(f"[Receiver] Pulled grant for '{secret_id}' from '{sender_id}'.")
+        except Exception as e:
+            print(f"[Receiver] Bad grant payload: {e}")
+    save_state()
 
 # ===== Actions =====
 def key_gen(sender_id, secret_id):
@@ -139,14 +118,19 @@ def key_gen(sender_id, secret_id):
 def request_access(sender_id, secret_id):
     public_key = key_gen(sender_id, secret_id)
     payload = {
-        "receiver_id": RECEIVER_ID,
+        "sender_id": sender_id,           # route to the right sender
+        "receiver_id": RECEIVER_ID,       # so grant comes back to me
         "secret_id": secret_id,
         "receiver_public_key": bytes(public_key)
     }
-    outbox.send(SENDER_HOST, SENDER_PORT, encode_msg(REQUEST_ACCESS, payload), expect_reply=False)
-    print(f"[Receiver] Requested access to '{secret_id}' from '{sender_id}'.")
+    # expect simple OK
+    outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(REQUEST_ACCESS, payload), expect_reply=True)
+    print(f"[Receiver] Requested access to '{secret_id}' from '{sender_id}' (via proxy).")
 
 def request_and_decrypt(sender_id, secret_id):
+    # pull any grant notices for me first
+    pull_my_grants()
+
     if sender_id not in store or secret_id not in store[sender_id]:
         print("No keypair for that (sender, secret). Request access first.")
         return
@@ -156,7 +140,7 @@ def request_and_decrypt(sender_id, secret_id):
         print("No keypair for that (sender, secret). Request access first.")
         return
     if srow["sender_public_key"] is None or srow["verifying_key"] is None:
-        print("No grant stored yet from Alice. Wait for grant before requesting secret.")
+        print("No grant stored yet from sender. Wait for grant before requesting secret.")
         return
 
     payload = {
@@ -267,5 +251,5 @@ def menu_loop():
 
 if __name__ == "__main__":
     load_state_or_init()
-    threading.Thread(target=run_server, daemon=True).start()
+
     menu_loop()

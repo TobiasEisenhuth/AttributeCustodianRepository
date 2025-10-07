@@ -14,7 +14,7 @@ MAGIC_ENC = b"ACSE"  # Alice Client Store Encrypted
 
 # State
 key_store: dict = {}                         # secret_id -> keys
-access_requests_q: "queue.Queue[dict]" = queue.Queue()  # FIFO of pending REQUEST_ACCESS
+access_requests_q: "queue.Queue[dict]" = queue.Queue()  # kept for UI parity, but proxy inbox is used
 _SENDER_PASS: str = ""  # set at startup
 
 # ===== Persistence (serialize keys only; signer is reconstructed) =====
@@ -103,7 +103,7 @@ def revoke_access(receiver_id: str, secret_id: str):
     print(f"[Sender] Requested revoke: {receiver_id} -> {secret_id}")
 
 def _grant(receiver_id: str, secret_id: str, recv_pk_b: bytes):
-    # Generate & ship kfrags to proxy; notify receiver
+    # Generate & ship kfrags to proxy; notify receiver through proxy inbox
     kfrags = generate_kfrags(
         delegating_sk=key_store[secret_id]["secret_key"],
         receiving_pk=PublicKey.from_bytes(recv_pk_b),
@@ -111,15 +111,17 @@ def _grant(receiver_id: str, secret_id: str, recv_pk_b: bytes):
         threshold=1,
         shares=1
     )
-    # Notify Bob (fire-and-forget)
+    # Enqueue grant notice FOR receiver via proxy
     ack_payload = {
         "sender_id": SENDER_ID,
+        "receiver_id": receiver_id,  # needed for proxy routing
         "secret_id": secret_id,
         "public_key":    bytes(key_store[secret_id]["public_key"]),
         "verifying_key": bytes(key_store[secret_id]["verifying_key"])
     }
-    outbox.send(RECEIVER_HOST, RECEIVER_PORT, encode_msg(GRANT_ACCESS_RECEIVER, ack_payload), expect_reply=False)
-    # Send to proxy
+    outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(GRANT_ACCESS_RECEIVER, ack_payload), expect_reply=False)
+
+    # Send kfrags to proxy store (so it can reencrypt for that receiver)
     payload_proxy = {
         "sender_id": SENDER_ID,
         "receiver_id": receiver_id,
@@ -161,32 +163,6 @@ def list_grants_remote():
         else:
             print(f"- {sid}/  (no receivers)")
 
-# ===== Server (inbound) =====
-def handle_client(conn, addr):
-    try:
-        data = recv_msg(conn)
-        if not data:
-            return
-        msg = decode_msg(data)
-        if msg["action"] == REQUEST_ACCESS:
-            req = msg["payload"]  # {receiver_id, secret_id, receiver_public_key}
-            access_requests_q.put(req)  # fire-and-forget (no reply)
-            print(f"[Sender] Queued access request from {req['receiver_id']} for '{req['secret_id']}'.")
-        else:
-            print(f"[Sender] Unknown action: {msg['action']}")
-    finally:
-        conn.close()
-
-def run_server():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
-        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_sock.bind(('0.0.0.0', SENDER_PORT))
-        server_sock.listen()
-        print(f"[Sender] Listening on {SENDER_PORT}...")
-        while True:
-            conn, addr = server_sock.accept()
-            threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
-
 # ===== CLI =====
 def clear():
     os.system("cls" if os.name == "nt" else "clear")
@@ -196,11 +172,11 @@ def menu_loop():
         clear()
         print("=== Alice (Sender) ===")
         print("Secrets:", ", ".join(key_store.keys()) or "(none)")
-        print(f"Pending access requests: {access_requests_q.qsize()}")
+        print(f"Pending access requests: {access_requests_q.qsize()} (pull from proxy)")
         print()
         print("1) Add/Update secret")
         print("2) Delete secret")
-        print("3) Process pending access requests (Y/n per request)")
+        print("3) Process pending access requests (from proxy)")
         print("4) Revoke access (receiver_id, secret_id)")
         print("5) List my grants (from Proxy)")
         print("6) Quit")
@@ -233,14 +209,24 @@ def menu_loop():
             input("Unknown choice. Enter to continue...")
 
 def process_requests():
-    # Drain FIFO and ask user to approve/deny
-    drained = []
-    while not access_requests_q.empty():
-        drained.append(access_requests_q.get_nowait())
-    if not drained:
-        print("No pending requests.")
+    # Pull pending REQUEST_ACCESS for my SENDER_ID from proxy inbox
+    resp = outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(PULL_INBOX_SENDER, {"sender_id": SENDER_ID}), expect_reply=True)
+    msg = decode_msg(resp)
+    if msg["action"] == ERROR:
+        print(f"[Sender] Error: {msg['payload']['error']}")
         return
-    for req in drained:
+    if msg["action"] != INBOX_CONTENTS:
+        print(f"[Sender] Unexpected reply: {msg['action']}")
+        return
+
+    messages = msg["payload"].get("messages", [])
+    requests = [m["payload"] for m in messages if m.get("action") == REQUEST_ACCESS and m["payload"].get("sender_id") == SENDER_ID]
+
+    if not requests:
+        print("No pending requests at proxy.")
+        return
+
+    for req in requests:
         rid = req["receiver_id"]
         sid = req["secret_id"]
         yn = input(f"Grant access to receiver '{rid}' for secret '{sid}'? [Y/n]: ").strip().lower()
@@ -252,7 +238,6 @@ def process_requests():
                 print(f"Grant failed for {rid}:{sid} -> {e}")
         else:
             print(f"Denied {rid}:{sid}")
-        access_requests_q.task_done()
 
 if __name__ == "__main__":
     print(f"[Sender] Starting sender '{SENDER_ID}'...")
@@ -262,6 +247,5 @@ if __name__ == "__main__":
     #add_or_update_secret("street", "Dunking Street")
     #add_or_update_secret("number", "42")
 
-    threading.Thread(target=run_server, daemon=True).start()
     # CLI in main thread
     menu_loop()

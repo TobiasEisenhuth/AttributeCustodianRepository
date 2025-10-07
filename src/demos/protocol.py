@@ -36,6 +36,11 @@ REQUEST_SECRET        = "REQUEST_SECRET"
 LIST_GRANTS           = "LIST_GRANTS"
 GRANTS_SUMMARY        = "GRANTS_SUMMARY"
 
+# inbox actions
+PULL_INBOX_SENDER     = "PULL_INBOX_SENDER"       # sender pulls pending requests
+PULL_INBOX_RECEIVER   = "PULL_INBOX_RECEIVER"     # receiver pulls pending grants
+INBOX_CONTENTS        = "INBOX_CONTENTS"
+
 ERROR                 = "ERROR"
 
 # ===== Message codec =====

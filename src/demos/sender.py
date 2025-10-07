@@ -1,20 +1,17 @@
 import os
-import socket
-import threading
-import queue
 from umbral import SecretKey, Signer, encrypt, generate_kfrags
 from umbral.keys import PublicKey
 from protocol import *
 
-SENDER_ID = "alice"
+SENDER_ID: str = ""  # set at startup
 
 # ===== Persistence config (encrypted only) =====
-SENDER_STORE_FILE = os.getenv("SENDER_STORE_FILE", "sender_store.msgpack")
+SENDER_STORE_FILE: str = ""  # set after ID prompt
 MAGIC_ENC = b"ACSE"  # Alice Client Store Encrypted
 
 # State
 key_store: dict = {}                         # secret_id -> keys
-access_requests_q: "queue.Queue[dict]" = queue.Queue()  # kept for UI parity, but proxy inbox is used
+access_requests_q: "queue.Queue[dict]" = queue.Queue()  # retained for UI
 _SENDER_PASS: str = ""  # set at startup
 
 # ===== Persistence (serialize keys only; signer is reconstructed) =====
@@ -46,7 +43,6 @@ def _deserialize_sender_store(obj: dict) -> dict:
     return ks
 
 def save_state():
-    global _SENDER_PASS
     try:
         save_store_encrypted(SENDER_STORE_FILE, _serialize_sender_store(key_store), _SENDER_PASS, MAGIC_ENC)
     except Exception as e:
@@ -54,7 +50,7 @@ def save_state():
 
 def load_state_or_init():
     global key_store, _SENDER_PASS
-    _SENDER_PASS, obj = require_password_and_load(SENDER_STORE_FILE, MAGIC_ENC, role_label="Sender")
+    _SENDER_PASS, obj = require_password_and_load(SENDER_STORE_FILE, MAGIC_ENC, role_label=f"Sender:{SENDER_ID}")
     key_store = _deserialize_sender_store(obj)
     print(f"[Sender] Loaded {len(key_store)} secrets from store.")
 
@@ -88,22 +84,21 @@ def add_or_update_secret(secret_id: str, secret_value: str):
         "sender_verifying_key": bytes(key_store[secret_id]["verifying_key"]),
     }
     outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(ADD_OR_UPDATE_SECRET, payload), expect_reply=False)
-    print(f"[Sender] Secret '{secret_id}' sent to Proxy.")
+    print(f"[Sender {SENDER_ID}] Secret '{secret_id}' sent to Proxy.")
 
 def delete_secret(secret_id: str):
     payload = {"sender_id": SENDER_ID, "secret_id": secret_id}
     outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(DELETE_SECRET, payload), expect_reply=False)
     if key_store.pop(secret_id, None) is not None:
         save_state()
-    print(f"[Sender] Requested delete for '{secret_id}'.")
+    print(f"[Sender {SENDER_ID}] Requested delete for '{secret_id}'.")
 
 def revoke_access(receiver_id: str, secret_id: str):
     payload = {"sender_id": SENDER_ID, "receiver_id": receiver_id, "secret_id": secret_id}
     outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(REVOKE_ACCESS, payload), expect_reply=False)
-    print(f"[Sender] Requested revoke: {receiver_id} -> {secret_id}")
+    print(f"[Sender {SENDER_ID}] Requested revoke: {receiver_id} -> {secret_id}")
 
 def _grant(receiver_id: str, secret_id: str, recv_pk_b: bytes):
-    # Generate & ship kfrags to proxy; notify receiver through proxy inbox
     kfrags = generate_kfrags(
         delegating_sk=key_store[secret_id]["secret_key"],
         receiving_pk=PublicKey.from_bytes(recv_pk_b),
@@ -114,14 +109,14 @@ def _grant(receiver_id: str, secret_id: str, recv_pk_b: bytes):
     # Enqueue grant notice FOR receiver via proxy
     ack_payload = {
         "sender_id": SENDER_ID,
-        "receiver_id": receiver_id,  # needed for proxy routing
+        "receiver_id": receiver_id,
         "secret_id": secret_id,
         "public_key":    bytes(key_store[secret_id]["public_key"]),
         "verifying_key": bytes(key_store[secret_id]["verifying_key"])
     }
     outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(GRANT_ACCESS_RECEIVER, ack_payload), expect_reply=False)
 
-    # Send kfrags to proxy store (so it can reencrypt for that receiver)
+    # Send kfrags to proxy store
     payload_proxy = {
         "sender_id": SENDER_ID,
         "receiver_id": receiver_id,
@@ -129,7 +124,7 @@ def _grant(receiver_id: str, secret_id: str, recv_pk_b: bytes):
         "kfrags": [bytes(k) for k in kfrags]
     }
     outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(GRANT_ACCESS_PROXY, payload_proxy), expect_reply=False)
-    print(f"[Sender] Granted '{secret_id}' to '{receiver_id}' via Proxy.")
+    print(f"[Sender {SENDER_ID}] Granted '{secret_id}' to '{receiver_id}' via Proxy.")
 
 # ===== NEW: list grants from proxy =====
 def list_grants_remote():
@@ -145,11 +140,10 @@ def list_grants_remote():
     if msg["action"] != GRANTS_SUMMARY:
         print(f"[Sender] Unexpected reply: {msg['action']}")
         return
-    summary = msg["payload"]  # {"by_secret": {sid: [rid,...]}, "totals": {...}}
+    summary = msg["payload"]
     by_secret = summary.get("by_secret", {})
     totals = summary.get("totals", {})
-    # Pretty print tree
-    print("=== Grants (as stored on Proxy) ===")
+    print(f"=== Grants on Proxy for sender '{SENDER_ID}' ===")
     print(f"Secrets: {totals.get('secrets', 0)} | Grants: {totals.get('grants', 0)}")
     if not by_secret:
         print("(no secrets at proxy)")
@@ -170,9 +164,9 @@ def clear():
 def menu_loop():
     while True:
         clear()
-        print("=== Alice (Sender) ===")
+        print(f"=== Sender: {SENDER_ID} ===")
         print("Secrets:", ", ".join(key_store.keys()) or "(none)")
-        print(f"Pending access requests: {access_requests_q.qsize()} (pull from proxy)")
+        print("(Pulling requests happens via proxy inbox)")
         print()
         print("1) Add/Update secret")
         print("2) Delete secret")
@@ -240,12 +234,15 @@ def process_requests():
             print(f"Denied {rid}:{sid}")
 
 if __name__ == "__main__":
-    print(f"[Sender] Starting sender '{SENDER_ID}'...")
+    # ---- ID prompt & per-profile store selection ----
+    while True:
+        SENDER_ID = input("Enter Sender ID (profile name): ").strip()
+        if SENDER_ID:
+            break
+        print("Sender ID cannot be empty.")
+    SENDER_STORE_FILE = os.getenv("SENDER_STORE_FILE") or f"sender_store_{SENDER_ID}.msgpack"
+
+    print(f"[Sender {SENDER_ID}] Using store file: {SENDER_STORE_FILE}")
     load_state_or_init()
-
-    # (optional) preload
-    #add_or_update_secret("street", "Dunking Street")
-    #add_or_update_secret("number", "42")
-
-    # CLI in main thread
+    # no inbound TCP server; all via proxy
     menu_loop()

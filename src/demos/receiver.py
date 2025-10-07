@@ -1,14 +1,12 @@
 import os
-import socket
-import threading
 from umbral import SecretKey, pre, decrypt_reencrypted, CapsuleFrag
 from umbral.keys import PublicKey
 from protocol import *
 
-RECEIVER_ID = "bob"
+RECEIVER_ID: str = ""  # set at startup
 
 # ===== Persistence config (encrypted only) =====
-RECEIVER_STORE_FILE = os.getenv("RECEIVER_STORE_FILE", "receiver_store.msgpack")
+RECEIVER_STORE_FILE: str = ""  # set after ID prompt
 MAGIC_ENC = b"ACRE"  # Alice Client Receiver Encrypted
 
 store = {}  # sender_id -> secret_id -> {secret_key, public_key, sender_public_key, verifying_key}
@@ -50,11 +48,11 @@ def save_state():
     try:
         save_store_encrypted(RECEIVER_STORE_FILE, _serialize_receiver_store(store), _RECEIVER_PASS, MAGIC_ENC)
     except Exception as e:
-        print(f("[Receiver] Warning: failed to save store: {e}"))
+        print(f"[Receiver] Warning: failed to save store: {e}")
 
 def load_state_or_init():
     global store, _RECEIVER_PASS
-    _RECEIVER_PASS, obj = require_password_and_load(RECEIVER_STORE_FILE, MAGIC_ENC, role_label="Receiver")
+    _RECEIVER_PASS, obj = require_password_and_load(RECEIVER_STORE_FILE, MAGIC_ENC, role_label=f"Receiver:{RECEIVER_ID}")
     store = _deserialize_receiver_store(obj)
     total_grants = sum(
         1 for m in store.values() for rec in m.values()
@@ -64,7 +62,7 @@ def load_state_or_init():
         1 for m in store.values() for rec in m.values()
         if rec.get("public_key")
     )
-    print(f"[Receiver] Loaded store: {total_keys} keypairs, {total_grants} grants.")
+    print(f"[Receiver {RECEIVER_ID}] Loaded store: {total_keys} keypairs, {total_grants} grants.")
 
 # ===== Proxy inbox pull for grants =====
 def pull_my_grants():
@@ -92,7 +90,7 @@ def pull_my_grants():
             vpk = PublicKey.from_bytes(p["verifying_key"])
             srow["sender_public_key"] = spk
             srow["verifying_key"] = vpk
-            print(f"[Receiver] Pulled grant for '{secret_id}' from '{sender_id}'.")
+            print(f"[Receiver {RECEIVER_ID}] Pulled grant for '{secret_id}' from '{sender_id}'.")
         except Exception as e:
             print(f"[Receiver] Bad grant payload: {e}")
     save_state()
@@ -112,20 +110,20 @@ def key_gen(sender_id, secret_id):
     public_key = secret_key.public_key()
     srow["secret_key"] = secret_key
     srow["public_key"] = public_key
-    save_state()  # persist key creation
+    save_state()
     return public_key
 
 def request_access(sender_id, secret_id):
     public_key = key_gen(sender_id, secret_id)
     payload = {
-        "sender_id": sender_id,           # route to the right sender
-        "receiver_id": RECEIVER_ID,       # so grant comes back to me
+        "sender_id": sender_id,         # route to the right sender
+        "receiver_id": RECEIVER_ID,     # grant comes back to me
         "secret_id": secret_id,
         "receiver_public_key": bytes(public_key)
     }
     # expect simple OK
     outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(REQUEST_ACCESS, payload), expect_reply=True)
-    print(f"[Receiver] Requested access to '{secret_id}' from '{sender_id}' (via proxy).")
+    print(f"[Receiver {RECEIVER_ID}] Requested access to '{secret_id}' from '{sender_id}' (via proxy).")
 
 def request_and_decrypt(sender_id, secret_id):
     # pull any grant notices for me first
@@ -177,7 +175,7 @@ def request_and_decrypt(sender_id, secret_id):
         cfrags,
         ciphertext
     )
-    print(f"[Receiver] Decrypted '{secret_id}' from '{sender_id}': {plaintext.decode()}")
+    print(f"[Receiver {RECEIVER_ID}] Decrypted '{secret_id}' from '{sender_id}': {plaintext.decode()}")
 
 # ===== CLI =====
 def clear():
@@ -218,7 +216,7 @@ def menu_loop():
             1 for m in store.values() for rec in m.values()
             if rec.get("public_key") is not None
         )
-        print("=== Bob (Receiver) ===")
+        print(f"=== Receiver: {RECEIVER_ID} ===")
         print("Stored grants:", total_grants)
         print("Local keypairs:", total_keys)
         print()
@@ -250,6 +248,15 @@ def menu_loop():
             input("Unknown choice. Enter to continue...")
 
 if __name__ == "__main__":
-    load_state_or_init()
+    # ---- ID prompt & per-profile store selection ----
+    while True:
+        RECEIVER_ID = input("Enter Receiver ID (profile name): ").strip()
+        if RECEIVER_ID:
+            break
+        print("Receiver ID cannot be empty.")
+    RECEIVER_STORE_FILE = os.getenv("RECEIVER_STORE_FILE") or f"receiver_store_{RECEIVER_ID}.msgpack"
 
+    print(f"[Receiver {RECEIVER_ID}] Using store file: {RECEIVER_STORE_FILE}")
+    load_state_or_init()
+    # no inbound TCP server; all via proxy
     menu_loop()

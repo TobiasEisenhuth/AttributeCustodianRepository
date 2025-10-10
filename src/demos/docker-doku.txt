@@ -1,0 +1,64 @@
+#How to run (with a Postgres container)
+#Create a network so containers can talk by name:
+
+docker network create crs-net
+
+(Example) Run Postgres (adjust to your setup; you control this):
+
+docker run -d --name pg \
+  --network crs-net \
+  -e POSTGRES_PASSWORD=mysecret \
+  -e POSTGRES_DB=postgres \
+  postgres:16
+
+#build
+docker build -t crs-proxy:latest .
+
+#add postgres-instance to crs-net
+docker network connect crs-net postgres-instance
+
+# first time only (creates + starts)
+docker run -d \
+  --name crs-proxy \
+  --network crs-net \
+  -e PGHOST=postgres-instance \
+  -e PGPORT=5432 \
+  -e PGUSER=postgres \
+  -e PGDATABASE=postgres \
+  -p 6000:6000 \
+  crs-proxy:latest 'YOUR_DB_PASSWORD'
+
+# start and remove container after use
+docker run --rm \
+  --name crs-proxy \
+  --network crs-net \
+  -e PGHOST=postgres-instance \
+  -e PGPORT=5432 \
+  -e PGUSER=postgres \
+  -e PGDATABASE=postgres \
+  -p 6000:6000 \
+  crs-proxy:latest 'YOUR_DB_PASSWORD'
+
+# and/or to forward stdout
+docker run -it \
+  --name crs-proxy \
+  --network crs-net \
+  -e PGHOST=postgres-instance \
+  -e PGPORT=5432 \
+  -e PGUSER=postgres \
+  -e PGDATABASE=postgres \
+  -p 6000:6000 \
+  crs-proxy:latest 'YOUR_DB_PASSWORD'
+
+# and/or catch "ctrl + c" for gracefull shutdown
+docker run -it \
+  --init \
+  --name crs-proxy \
+  --network crs-net \
+  -e PGHOST=postgres-instance \
+  -e PGPORT=5432 \
+  -e PGUSER=postgres \
+  -e PGDATABASE=postgres \
+  -p 6000:6000 \
+  crs-proxy:latest 'YOUR_DB_PASSWORD'
+

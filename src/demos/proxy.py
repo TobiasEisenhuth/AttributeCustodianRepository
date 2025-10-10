@@ -1,5 +1,6 @@
 # proxy.py
 import os
+import sys
 import socket
 import threading
 import msgpack
@@ -7,6 +8,9 @@ import psycopg
 from umbral import Capsule, KeyFrag, reencrypt
 from umbral.keys import PublicKey
 from protocol import *
+import signal
+
+STOP_EVENT = threading.Event()
 
 PROXY_ID = "ursula"
 
@@ -14,8 +18,12 @@ PROXY_ID = "ursula"
 DB_HOST = os.getenv("PGHOST", "localhost")
 DB_PORT = int(os.getenv("PGPORT", "5432"))
 DB_USER = os.getenv("PGUSER", "postgres")
-DB_PASS = os.getenv("PGPASSWORD", "abc123")
 DB_NAME = os.getenv("PGDATABASE", "postgres")
+
+# Require password ONLY via CLI: python proxy.py <PGPASSWORD>
+if len(sys.argv) < 2 or not sys.argv[1]:
+    raise SystemExit("[Proxy] FATAL: DB password must be provided as the first CLI argument (no env fallback).")
+DB_PASS = sys.argv[1]
 
 DSN = f"host={DB_HOST} port={DB_PORT} dbname={DB_NAME} user={DB_USER} password={DB_PASS}"
 
@@ -345,10 +353,23 @@ def run_server():
         server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_sock.bind(('0.0.0.0', PROXY_PORT))
         server_sock.listen()
+        server_sock.settimeout(1.0)  # so we can check STOP_EVENT periodically
         print(f"[Proxy] Listening on {PROXY_HOST}:{PROXY_PORT}...")
-        while True:
-            conn, addr = server_sock.accept()
-            threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+        try:
+            while not STOP_EVENT.is_set():
+                try:
+                    conn, addr = server_sock.accept()
+                except socket.timeout:
+                    continue  # loop again, checking STOP_EVENT
+                threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
+        finally:
+            print("[Proxy] Server socket closed. Waiting for in-flight requests to finish...")
 
 if __name__ == "__main__":
+    def _handle_signal(signum, frame):
+        print(f"[Proxy] Received signal {signum}, shutting down...")
+        STOP_EVENT.set()
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)  # allows Ctrl-C locally
     run_server()

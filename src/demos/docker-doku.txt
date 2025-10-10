@@ -62,3 +62,16 @@ docker run -it \
   -p 6000:6000 \
   crs-proxy:latest 'YOUR_DB_PASSWORD'
 
+# gracefull shutdown & forward stdout but not persistent
+docker run -it \
+  --rm \
+  --init \
+  --name crs-proxy \
+  --network crs-net \
+  -e PGHOST=postgres-instance \
+  -e PGPORT=5432 \
+  -e PGUSER=postgres \
+  -e PGDATABASE=postgres \
+  -p 6000:6000 \
+  crs-proxy:latest 'abc123'
+

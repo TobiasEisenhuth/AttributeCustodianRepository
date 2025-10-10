@@ -2,6 +2,7 @@ import os
 from umbral import SecretKey, pre, decrypt_reencrypted, CapsuleFrag
 from umbral.keys import PublicKey
 from protocol import *
+from typing import Dict
 
 RECEIVER_ID: str = ""  # set at startup
 
@@ -9,7 +10,7 @@ RECEIVER_ID: str = ""  # set at startup
 RECEIVER_STORE_FILE: str = ""  # set after ID prompt
 MAGIC_ENC = b"ACRE"  # Alice Client Receiver Encrypted
 
-store = {}  # sender_id -> secret_id -> {secret_key, public_key, sender_public_key, verifying_key}
+store: Dict[str, Dict[str, dict]] = {}
 _RECEIVER_PASS: str = ""  # set at startup
 
 # ===== Util =====
@@ -66,10 +67,9 @@ def load_state_or_init():
 
 # ===== Proxy inbox pull for grants =====
 def pull_my_grants():
-    resp = outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(PULL_INBOX_RECEIVER, {"receiver_id": RECEIVER_ID}), expect_reply=True)
-    msg = decode_msg(resp)
-    if msg["action"] != INBOX_CONTENTS:
-        print(f"[Receiver] Unexpected inbox reply: {msg['action']}")
+    msg = api_post("/pull_inbox/receiver", {"receiver_id": RECEIVER_ID})
+    if msg.get("action") != INBOX_CONTENTS:
+        print(f"[Receiver] Unexpected inbox reply: {msg.get('action')}")
         return
     for m in msg["payload"].get("messages", []):
         if m.get("action") != GRANT_ACCESS_RECEIVER:
@@ -86,8 +86,8 @@ def pull_my_grants():
             "verifying_key": None
         })
         try:
-            spk = PublicKey.from_bytes(p["public_key"])
-            vpk = PublicKey.from_bytes(p["verifying_key"])
+            spk = PublicKey.from_bytes(b64d(p["public_key_b64"]))
+            vpk = PublicKey.from_bytes(b64d(p["verifying_key_b64"]))
             srow["sender_public_key"] = spk
             srow["verifying_key"] = vpk
             print(f"[Receiver {RECEIVER_ID}] Pulled grant for '{secret_id}' from '{sender_id}'.")
@@ -116,13 +116,12 @@ def key_gen(sender_id, secret_id):
 def request_access(sender_id, secret_id):
     public_key = key_gen(sender_id, secret_id)
     payload = {
-        "sender_id": sender_id,         # route to the right sender
-        "receiver_id": RECEIVER_ID,     # grant comes back to me
+        "sender_id": sender_id,
+        "receiver_id": RECEIVER_ID,
         "secret_id": secret_id,
-        "receiver_public_key": bytes(public_key)
+        "receiver_public_key_b64": b64e(bytes(public_key))
     }
-    # expect simple OK
-    outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(REQUEST_ACCESS, payload), expect_reply=True)
+    api_post("/request_access", payload)
     print(f"[Receiver {RECEIVER_ID}] Requested access to '{secret_id}' from '{sender_id}' (via proxy).")
 
 def request_and_decrypt(sender_id, secret_id):
@@ -145,18 +144,17 @@ def request_and_decrypt(sender_id, secret_id):
         "receiver_id": RECEIVER_ID,
         "sender_id": sender_id,
         "secret_id": secret_id,
-        "receiver_public_key": bytes(srow["public_key"])
+        "receiver_public_key_b64": b64e(bytes(srow["public_key"]))
     }
-    resp = outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(REQUEST_SECRET, payload), expect_reply=True)
+    data = api_post("/request_secret", payload)
 
-    data = decode_msg(resp)
     if data["action"] == ERROR:
         print(f"[Receiver] Error: {data['payload']['error']}")
         return
 
-    capsule = pre.Capsule.from_bytes(data["payload"]["capsule"])
-    ciphertext = data["payload"]["ciphertext"]
-    suspicious_cfrags = [CapsuleFrag.from_bytes(b) for b in data["payload"]["cfrags"]]
+    capsule = pre.Capsule.from_bytes(b64d(data["payload"]["capsule_b64"]))
+    ciphertext = b64d(data["payload"]["ciphertext_b64"])
+    suspicious_cfrags = [CapsuleFrag.from_bytes(b64d(b)) for b in data["payload"]["cfrags_b64"]]
 
     cfrags = [
         cfrag.verify(
@@ -258,5 +256,4 @@ if __name__ == "__main__":
 
     print(f"[Receiver {RECEIVER_ID}] Using store file: {RECEIVER_STORE_FILE}")
     load_state_or_init()
-    # no inbound TCP server; all via proxy
     menu_loop()

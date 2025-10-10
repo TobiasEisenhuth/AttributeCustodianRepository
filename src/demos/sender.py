@@ -1,7 +1,9 @@
 import os
+import queue
 from umbral import SecretKey, Signer, encrypt, generate_kfrags
 from umbral.keys import PublicKey
 from protocol import *
+from typing import Dict
 
 SENDER_ID: str = ""  # set at startup
 
@@ -10,7 +12,7 @@ SENDER_STORE_FILE: str = ""  # set after ID prompt
 MAGIC_ENC = b"ACSE"  # Alice Client Store Encrypted
 
 # State
-key_store: dict = {}                         # secret_id -> keys
+key_store: Dict[str, dict] = {}                         # secret_id -> keys
 access_requests_q: "queue.Queue[dict]" = queue.Queue()  # retained for UI
 _SENDER_PASS: str = ""  # set at startup
 
@@ -52,7 +54,7 @@ def load_state_or_init():
     global key_store, _SENDER_PASS
     _SENDER_PASS, obj = require_password_and_load(SENDER_STORE_FILE, MAGIC_ENC, role_label=f"Sender:{SENDER_ID}")
     key_store = _deserialize_sender_store(obj)
-    print(f"[Sender] Loaded {len(key_store)} secrets from store.")
+    print(f"[Sender {SENDER_ID}] Loaded {len(key_store)} secrets from store.")
 
 # ===== Crypto key mgmt =====
 def key_gen(secret_id: str):
@@ -75,30 +77,31 @@ def key_gen(secret_id: str):
 def add_or_update_secret(secret_id: str, secret_value: str):
     public_key = key_gen(secret_id)
     capsule, ciphertext = encrypt(public_key, secret_value.encode("utf-8"))
-    payload = {
+    body = {
         "sender_id": SENDER_ID,
         "secret_id": secret_id,
-        "capsule": bytes(capsule),
-        "ciphertext": ciphertext,
-        "sender_public_key":    bytes(key_store[secret_id]["public_key"]),
-        "sender_verifying_key": bytes(key_store[secret_id]["verifying_key"]),
+        "capsule_b64": b64e(bytes(capsule)),
+        "ciphertext_b64": b64e(ciphertext),
+        "sender_public_key_b64":    b64e(bytes(key_store[secret_id]["public_key"])),
+        "sender_verifying_key_b64": b64e(bytes(key_store[secret_id]["verifying_key"])),
     }
-    outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(ADD_OR_UPDATE_SECRET, payload), expect_reply=False)
+    api_post("/add_or_update_secret", body)
     print(f"[Sender {SENDER_ID}] Secret '{secret_id}' sent to Proxy.")
 
 def delete_secret(secret_id: str):
-    payload = {"sender_id": SENDER_ID, "secret_id": secret_id}
-    outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(DELETE_SECRET, payload), expect_reply=False)
+    body = {"sender_id": SENDER_ID, "secret_id": secret_id}
+    api_post("/delete_secret", body)
     if key_store.pop(secret_id, None) is not None:
         save_state()
     print(f"[Sender {SENDER_ID}] Requested delete for '{secret_id}'.")
 
 def revoke_access(receiver_id: str, secret_id: str):
-    payload = {"sender_id": SENDER_ID, "receiver_id": receiver_id, "secret_id": secret_id}
-    outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(REVOKE_ACCESS, payload), expect_reply=False)
+    body = {"sender_id": SENDER_ID, "receiver_id": receiver_id, "secret_id": secret_id}
+    api_post("/revoke_access", body)
     print(f"[Sender {SENDER_ID}] Requested revoke: {receiver_id} -> {secret_id}")
 
-def _grant(receiver_id: str, secret_id: str, recv_pk_b: bytes):
+def _grant(receiver_id: str, secret_id: str, recv_pk_b64: str):
+    recv_pk_b = b64d(recv_pk_b64)
     kfrags = generate_kfrags(
         delegating_sk=key_store[secret_id]["secret_key"],
         receiving_pk=PublicKey.from_bytes(recv_pk_b),
@@ -106,39 +109,34 @@ def _grant(receiver_id: str, secret_id: str, recv_pk_b: bytes):
         threshold=1,
         shares=1
     )
-    # Enqueue grant notice FOR receiver via proxy
+    # Enqueue grant notice FOR receiver via proxy (JSON-safe fields)
     ack_payload = {
         "sender_id": SENDER_ID,
         "receiver_id": receiver_id,
         "secret_id": secret_id,
-        "public_key":    bytes(key_store[secret_id]["public_key"]),
-        "verifying_key": bytes(key_store[secret_id]["verifying_key"])
+        "public_key_b64":    b64e(bytes(key_store[secret_id]["public_key"])),
+        "verifying_key_b64": b64e(bytes(key_store[secret_id]["verifying_key"]))
     }
-    outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(GRANT_ACCESS_RECEIVER, ack_payload), expect_reply=False)
+    api_post("/grant_access_receiver", ack_payload)
 
     # Send kfrags to proxy store
-    payload_proxy = {
+    body = {
         "sender_id": SENDER_ID,
         "receiver_id": receiver_id,
         "secret_id": secret_id,
-        "kfrags": [bytes(k) for k in kfrags]
+        "kfrags_b64": [b64e(bytes(k)) for k in kfrags]
     }
-    outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(GRANT_ACCESS_PROXY, payload_proxy), expect_reply=False)
+    api_post("/grant_access_proxy", body)
     print(f"[Sender {SENDER_ID}] Granted '{secret_id}' to '{receiver_id}' via Proxy.")
 
 # ===== NEW: list grants from proxy =====
 def list_grants_remote():
-    req = encode_msg(LIST_GRANTS, {"sender_id": SENDER_ID})
-    resp_bytes = outbox.send(PROXY_HOST, PROXY_PORT, req, expect_reply=True)
-    if not resp_bytes:
-        print("[Sender] Error: no response from proxy.")
-        return
-    msg = decode_msg(resp_bytes)
-    if msg["action"] == ERROR:
+    msg = api_post("/list_grants", {"sender_id": SENDER_ID})
+    if msg.get("action") == "ERROR":
         print(f"[Sender] Error: {msg['payload']['error']}")
         return
-    if msg["action"] != GRANTS_SUMMARY:
-        print(f"[Sender] Unexpected reply: {msg['action']}")
+    if msg.get("action") != GRANTS_SUMMARY:
+        print(f"[Sender] Unexpected reply: {msg.get('action')}")
         return
     summary = msg["payload"]
     by_secret = summary.get("by_secret", {})
@@ -166,7 +164,7 @@ def menu_loop():
         clear()
         print(f"=== Sender: {SENDER_ID} ===")
         print("Secrets:", ", ".join(key_store.keys()) or "(none)")
-        print("(Pulling requests happens via proxy inbox)")
+        print("(Pending requests come from proxy inbox)")
         print()
         print("1) Add/Update secret")
         print("2) Delete secret")
@@ -203,18 +201,17 @@ def menu_loop():
             input("Unknown choice. Enter to continue...")
 
 def process_requests():
-    # Pull pending REQUEST_ACCESS for my SENDER_ID from proxy inbox
-    resp = outbox.send(PROXY_HOST, PROXY_PORT, encode_msg(PULL_INBOX_SENDER, {"sender_id": SENDER_ID}), expect_reply=True)
-    msg = decode_msg(resp)
-    if msg["action"] == ERROR:
+    msg = api_post("/pull_inbox/sender", {"sender_id": SENDER_ID})
+    if msg.get("action") == "ERROR":
         print(f"[Sender] Error: {msg['payload']['error']}")
         return
-    if msg["action"] != INBOX_CONTENTS:
-        print(f"[Sender] Unexpected reply: {msg['action']}")
+    if msg.get("action") != INBOX_CONTENTS:
+        print(f"[Sender] Unexpected reply: {msg.get('action')}")
         return
 
     messages = msg["payload"].get("messages", [])
-    requests = [m["payload"] for m in messages if m.get("action") == REQUEST_ACCESS and m["payload"].get("sender_id") == SENDER_ID]
+    requests = [m["payload"] for m in messages
+                if m.get("action") == REQUEST_ACCESS and m["payload"].get("sender_id") == SENDER_ID]
 
     if not requests:
         print("No pending requests at proxy.")
@@ -227,7 +224,7 @@ def process_requests():
         if yn in ("", "y", "yes"):
             try:
                 _ = key_gen(sid)  # ensure keys exist
-                _grant(rid, sid, req["receiver_public_key"])
+                _grant(rid, sid, req["receiver_public_key_b64"])
             except Exception as e:
                 print(f"Grant failed for {rid}:{sid} -> {e}")
         else:
@@ -244,5 +241,4 @@ if __name__ == "__main__":
 
     print(f"[Sender {SENDER_ID}] Using store file: {SENDER_STORE_FILE}")
     load_state_or_init()
-    # no inbound TCP server; all via proxy
     menu_loop()

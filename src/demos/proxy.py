@@ -1,16 +1,23 @@
 # proxy.py
 import os
 import sys
-import socket
-import threading
 import msgpack
 import psycopg
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from umbral import Capsule, KeyFrag, reencrypt
 from umbral.keys import PublicKey
-from protocol import *
-import signal
+from typing import List, Dict, Any
+import uvicorn
+from protocol import (
+    b64d, b64e,
+    ADD_OR_UPDATE_SECRET, DELETE_SECRET, GRANT_ACCESS_PROXY, GRANT_ACCESS_RECEIVER,
+    REVOKE_ACCESS, REQUEST_SECRET, LIST_GRANTS, GRANTS_SUMMARY, REQUEST_ACCESS,
+    PULL_INBOX_SENDER, PULL_INBOX_RECEIVER, INBOX_CONTENTS,
+)
 
-STOP_EVENT = threading.Event()
+PROXY_HOST = os.getenv("PROXY_HOST", "0.0.0.0")
+PROXY_PORT = int(os.getenv("PROXY_PORT", "6000"))
 
 PROXY_ID = "ursula"
 
@@ -69,9 +76,8 @@ def init_db():
         """)
     print("[Proxy] DB initialized.")
 
-# ---------- Persistence helpers (2 tables; flattened kfrags via MsgPack) ----------
-
-def upsert_secret(payload: dict) -> None:
+# ---------- Persistence helpers ----------
+def upsert_secret(payload: Dict[str, Any]) -> None:
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO secrets (
@@ -131,7 +137,7 @@ def load_secret(sender_id: str, secret_id: str):
         "sender_verifying_key": PublicKey.from_bytes(svk_b),
     }
 
-def load_grant_kfrags(sender_id: str, receiver_id: str, secret_id: str) -> list[KeyFrag]:
+def load_grant_kfrags(sender_id: str, receiver_id: str, secret_id: str) -> List[KeyFrag]:
     with get_conn() as conn:
         row = conn.execute("""
             SELECT kfrags_blob
@@ -146,7 +152,7 @@ def load_grant_kfrags(sender_id: str, receiver_id: str, secret_id: str) -> list[
 
 def list_grants_for_sender(sender_id: str) -> dict:
     """Return {by_secret: {secret_id: [receiver_id, ...]}, totals:{...}}"""
-    by_secret: dict[str, list[str]] = {}
+    by_secret: Dict[str, List[str]] = {}
     total_grants = 0
     with get_conn() as conn:
         # gather all secrets for sender (even without grants)
@@ -198,178 +204,151 @@ def pull_receiver_inbox(receiver_id: str) -> list[dict]:
         conn.execute("DELETE FROM receiver_inbox WHERE receiver_id=%s", (receiver_id,))
     return [msgpack.unpackb(r[0], raw=False) for r in rows]
 
-# ---------- Network handlers ----------
+# ---------- FastAPI app ----------
+app = FastAPI(title="CRS Proxy API")
 
-def handle_client(conn, addr):
+def _ok(payload: dict = None) -> JSONResponse:
+    return JSONResponse(payload or {"ok": True})
+
+@app.on_event("startup")
+def _startup():
+    init_db()
+
+@app.post("/api/add_or_update_secret")
+def api_add_or_update_secret(body: dict):
     try:
-        data = recv_msg(conn)
-        if not data:
-            return
-        msg = decode_msg(data)
-        action = msg["action"]
-        payload = msg["payload"]
-
-        if action == ADD_OR_UPDATE_SECRET:
-            handle_secret(payload)
-        elif action == DELETE_SECRET:
-            handle_delete_secret(payload)
-        elif action == GRANT_ACCESS_PROXY:
-            handle_grant_access(payload)
-        elif action == GRANT_ACCESS_RECEIVER:
-            handle_grant_access_receiver(payload)
-        elif action == REVOKE_ACCESS:
-            handle_revoke_access(payload)
-        elif action == REQUEST_SECRET:
-            handle_request_secret(payload, conn)
-        elif action == LIST_GRANTS:
-            handle_list_grants(payload, conn)
-        elif action == REQUEST_ACCESS:
-            handle_request_access(payload, conn)
-        elif action == PULL_INBOX_SENDER:
-            handle_pull_inbox_sender(payload, conn)
-        elif action == PULL_INBOX_RECEIVER:
-            handle_pull_inbox_receiver(payload, conn)
-        else:
-            print(f"[Proxy] Unknown action: {action}")
+        payload = {
+            "sender_id": body["sender_id"],
+            "secret_id": body["secret_id"],
+            "capsule": b64d(body["capsule_b64"]),
+            "ciphertext": b64d(body["ciphertext_b64"]),
+            "sender_public_key": b64d(body["sender_public_key_b64"]),
+            "sender_verifying_key": b64d(body["sender_verifying_key_b64"]),
+        }
+        upsert_secret(payload)
+        return _ok()
     except Exception as e:
-        try:
-            send_msg(conn, make_error(f"Proxy error: {e}"))
-        except Exception:
-            pass
-        print(f"[Proxy] Error: {e}")
-    finally:
-        conn.close()
+        raise HTTPException(status_code=400, detail=str(e))
 
-def handle_secret(payload):
-    upsert_secret(payload)
-    print(f"[Proxy] Stored secret '{payload['secret_id']}' from '{payload['sender_id']}'.")
-
-def handle_delete_secret(payload):
-    delete_secret(payload["sender_id"], payload["secret_id"])
-    print(f"[Proxy] Deleted secret '{payload['secret_id']}' from '{payload['sender_id']}'.")
-
-def handle_grant_access(payload):
-    sender_id   = payload["sender_id"]
-    receiver_id = payload["receiver_id"]
-    secret_id   = payload["secret_id"]
-    # payload["kfrags"] is list[bytes]; keep as-is and flatten for storage
-    insert_or_replace_grant(sender_id, receiver_id, secret_id, payload["kfrags"])
-    print(f"[Proxy] Stored GRANT_ACCESS: {receiver_id} -> {secret_id} ({sender_id})")
-
-def handle_grant_access_receiver(payload):
-    # Payload from sender to be delivered to receiver's inbox
-    receiver_id = payload.get("receiver_id")
-    if not receiver_id:
-        return
-    enqueue_for_receiver(receiver_id, GRANT_ACCESS_RECEIVER, payload)
-    print(f"[Proxy] Enqueued grant notice for receiver '{receiver_id}'.")
-
-def handle_revoke_access(payload):
-    revoke_grant(payload["sender_id"], payload["receiver_id"], payload["secret_id"])
-    print(f"[Proxy] Revoked access: {payload['receiver_id']} -> {payload['secret_id']} ({payload['sender_id']})")
-
-def handle_request_secret(payload, conn):
-    receiver_id = payload["receiver_id"]
-    sender_id   = payload["sender_id"]
-    secret_id   = payload["secret_id"]
-    receiver_public_key_bytes = payload["receiver_public_key"]
-
-    secret = load_secret(sender_id, secret_id)
-    if not secret:
-        send_msg(conn, make_error(f"Unknown secret '{secret_id}'"))
-        return
-
-    kfrags = load_grant_kfrags(sender_id, receiver_id, secret_id)
-    if not kfrags:
-        send_msg(conn, make_error(f"No grant for {receiver_id} -> {secret_id}"))
-        return
-
-    capsule       = secret["capsule"]
-    ciphertext    = secret["ciphertext"]
-    delegating_pk = secret["sender_public_key"]
-    verifying_pk  = secret["sender_verifying_key"]
-    receiving_pk  = PublicKey.from_bytes(receiver_public_key_bytes)
-
+@app.post("/api/delete_secret")
+def api_delete_secret(body: dict):
     try:
+        delete_secret(body["sender_id"], body["secret_id"])
+        return _ok()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/grant_access_proxy")
+def api_grant_access_proxy(body: dict):
+    try:
+        sender_id   = body["sender_id"]
+        receiver_id = body["receiver_id"]
+        secret_id   = body["secret_id"]
+        kfrags      = [b64d(b) for b in body["kfrags_b64"]]
+        insert_or_replace_grant(sender_id, receiver_id, secret_id, kfrags)
+        return _ok()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/grant_access_receiver")
+def api_grant_access_receiver(body: dict):
+    try:
+        # passthrough to receiver inbox; body must be JSON-serializable and use *_b64 for bytes
+        receiver_id = body["receiver_id"]
+        enqueue_for_receiver(receiver_id, GRANT_ACCESS_RECEIVER, body)
+        return _ok()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/revoke_access")
+def api_revoke_access(body: dict):
+    try:
+        revoke_grant(body["sender_id"], body["receiver_id"], body["secret_id"])
+        return _ok()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/request_secret")
+def api_request_secret(body: dict):
+    try:
+        receiver_id = body["receiver_id"]
+        sender_id   = body["sender_id"]
+        secret_id   = body["secret_id"]
+        receiving_pk  = PublicKey.from_bytes(b64d(body["receiver_public_key_b64"]))
+
+        secret = load_secret(sender_id, secret_id)
+        if not secret:
+            return {"action": "ERROR", "payload": {"error": f"Unknown secret '{secret_id}'"}}
+
+        kfrags = load_grant_kfrags(sender_id, receiver_id, secret_id)
+        if not kfrags:
+            return {"action": "ERROR", "payload": {"error": f"No grant for {receiver_id} -> {secret_id}"}}
+
+        capsule       = secret["capsule"]
+        ciphertext    = secret["ciphertext"]
+        delegating_pk = secret["sender_public_key"]
+        verifying_pk  = secret["sender_verifying_key"]
+
         verified_kfrags = [
             kf.verify(delegating_pk=delegating_pk,
                       receiving_pk=receiving_pk,
                       verifying_pk=verifying_pk)
             for kf in kfrags
         ]
+        cfrags = [reencrypt(capsule=capsule, kfrag=vkf) for vkf in verified_kfrags]
+
+        return {
+            "action": "RESPONSE_SECRET",
+            "payload": {
+                "capsule_b64": b64e(bytes(capsule)),
+                "ciphertext_b64": b64e(ciphertext),
+                "cfrags_b64": [b64e(bytes(c)) for c in cfrags]
+            }
+        }
     except Exception as e:
-        send_msg(conn, make_error(f"Failed to verify the kfrag signature: {e}"))
-        return
+        return {"action": "ERROR", "payload": {"error": f"Proxy error: {e}"}}
 
-    cfrags = [ reencrypt(capsule=capsule, kfrag=vkf) for vkf in verified_kfrags ]
+@app.post("/api/list_grants")
+def api_list_grants(body: dict):
+    try:
+        sender_id = body["sender_id"]
+        summary = list_grants_for_sender(sender_id)
+        return {"action": GRANTS_SUMMARY, "payload": summary}
+    except Exception as e:
+        return {"action": "ERROR", "payload": {"error": str(e)}}
 
-    response = {
-        "capsule": bytes(capsule),
-        "ciphertext": ciphertext,
-        "cfrags": [bytes(c) for c in cfrags]
-    }
-    send_msg(conn, encode_msg(RESPONSE_SECRET, response))
-    print(f"[Proxy] Served secret '{secret_id}' for '{receiver_id}' from '{sender_id}'.")
+@app.post("/api/request_access")
+def api_request_access(body: dict):
+    try:
+        sender_id   = body["sender_id"]
+        receiver_id = body["receiver_id"]
+        secret_id   = body["secret_id"]
+        # body already has receiver_public_key_b64
+        if not sender_id or not receiver_id or not secret_id:
+            raise ValueError("Missing sender_id/receiver_id/secret_id")
+        enqueue_for_sender(sender_id, REQUEST_ACCESS, body)
+        return _ok()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-def handle_list_grants(payload, conn):
-    sender_id = payload.get("sender_id")
-    if not sender_id:
-        send_msg(conn, make_error("sender_id missing"))
-        return
-    summary = list_grants_for_sender(sender_id)
-    send_msg(conn, encode_msg(GRANTS_SUMMARY, summary))
+@app.post("/api/pull_inbox/sender")
+def api_pull_inbox_sender(body: dict):
+    try:
+        sender_id = body["sender_id"]
+        msgs = pull_sender_inbox(sender_id)
+        return {"action": INBOX_CONTENTS, "payload": {"messages": msgs}}
+    except Exception as e:
+        return {"action": "ERROR", "payload": {"error": str(e)}}
 
-def handle_request_access(payload, conn):
-    # payload includes: sender_id, receiver_id, secret_id, receiver_public_key
-    sender_id = payload.get("sender_id")
-    receiver_id = payload.get("receiver_id")
-    secret_id = payload.get("secret_id")
-    if not sender_id or not receiver_id or not secret_id:
-        send_msg(conn, make_error("Missing sender_id/receiver_id/secret_id"))
-        return
-    enqueue_for_sender(sender_id, REQUEST_ACCESS, payload)
-    send_msg(conn, encode_msg("OK", {}))
-    print(f"[Proxy] Enqueued access request for sender '{sender_id}' (secret '{secret_id}') from receiver '{receiver_id}'.")
-
-def handle_pull_inbox_sender(payload, conn):
-    sender_id = payload.get("sender_id")
-    if not sender_id:
-        send_msg(conn, make_error("sender_id missing"))
-        return
-    msgs = pull_sender_inbox(sender_id)
-    send_msg(conn, encode_msg(INBOX_CONTENTS, {"messages": msgs}))
-
-def handle_pull_inbox_receiver(payload, conn):
-    receiver_id = payload.get("receiver_id")
-    if not receiver_id:
-        send_msg(conn, make_error("receiver_id missing"))
-        return
-    msgs = pull_receiver_inbox(receiver_id)
-    send_msg(conn, encode_msg(INBOX_CONTENTS, {"messages": msgs}))
-
-def run_server():
-    init_db()
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
-        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server_sock.bind(('0.0.0.0', PROXY_PORT))
-        server_sock.listen()
-        server_sock.settimeout(1.0)  # so we can check STOP_EVENT periodically
-        print(f"[Proxy] Listening on {PROXY_HOST}:{PROXY_PORT}...")
-        try:
-            while not STOP_EVENT.is_set():
-                try:
-                    conn, addr = server_sock.accept()
-                except socket.timeout:
-                    continue  # loop again, checking STOP_EVENT
-                threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
-        finally:
-            print("[Proxy] Server socket closed. Waiting for in-flight requests to finish...")
+@app.post("/api/pull_inbox/receiver")
+def api_pull_inbox_receiver(body: dict):
+    try:
+        receiver_id = body["receiver_id"]
+        msgs = pull_receiver_inbox(receiver_id)
+        return {"action": INBOX_CONTENTS, "payload": {"messages": msgs}}
+    except Exception as e:
+        return {"action": "ERROR", "payload": {"error": str(e)}}
 
 if __name__ == "__main__":
-    def _handle_signal(signum, frame):
-        print(f"[Proxy] Received signal {signum}, shutting down...")
-        STOP_EVENT.set()
-
-    signal.signal(signal.SIGTERM, _handle_signal)
-    signal.signal(signal.SIGINT, _handle_signal)  # allows Ctrl-C locally
-    run_server()
+    init_db()
+    uvicorn.run("proxy:app", host=PROXY_HOST, port=PROXY_PORT, reload=False)

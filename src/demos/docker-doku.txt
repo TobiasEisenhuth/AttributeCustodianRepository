@@ -14,6 +14,9 @@ docker run -d --name pg \
 #build
 docker build -t crs-proxy:latest .
 
+#forced build from zero
+docker build --no-cache -t crs-proxy:latest .
+
 #add postgres-instance to crs-net
 docker network connect crs-net postgres-instance
 
@@ -72,6 +75,6 @@ docker run -it \
   -e PGPORT=5432 \
   -e PGUSER=postgres \
   -e PGDATABASE=postgres \
-  -p 6000:6000 \
+  -p 8000:8000 \
   crs-proxy:latest 'abc123'
 

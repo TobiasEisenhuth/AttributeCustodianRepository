@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CRS Sender (Web)</title>
+  <link rel="icon" href="/app/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/app/style.css" />
+  <meta name="color-scheme" content="light dark" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">🛡️</span>
+      <h1>CRS Sender (Web)</h1>
+    </div>
+    <nav class="site-nav">
+      <button data-view="add" class="nav-btn">Add/Update</button>
+      <button data-view="delete" class="nav-btn">Delete</button>
+      <button data-view="requests" class="nav-btn">Requests</button>
+      <button data-view="revoke" class="nav-btn">Revoke</button>
+      <button data-view="grants" class="nav-btn">Grants</button>
+      <button data-view="store" class="nav-btn">Store</button>
+    </nav>
+  </header>
+
+  <section class="bar">
+    <label class="inline">
+      Default Sender ID
+      <input id="senderIdDefault" type="text" placeholder="alice"/>
+    </label>
+    <span>Server: <span id="healthBadge" class="badge">checking…</span></span>
+    <span>Store: <span id="storeBadge" class="badge">no store</span></span>
+  </section>
+
+  <main id="app">
+    <section id="status" aria-live="polite"></section>
+
+    <section id="view-add" class="view">
+      <h2>Add / Update Secret</h2>
+      <form id="form-add">
+        <label>Sender ID <input type="text" name="senderId" required /></label>
+        <label>Secret ID <input type="text" name="secretId" required /></label>
+        <label>Secret Value <input type="text" name="secretValue" required /></label>
+        <div class="actions">
+          <button type="submit">Send to Proxy</button>
+          <button id="btn-list-secrets" type="button">List (proxy)</button>
+        </div>
+      </form>
+      <pre id="add-output" class="codeblock"></pre>
+    </section>
+
+    <section id="view-delete" class="view hidden">
+      <h2>Delete Secret</h2>
+      <form id="form-delete">
+        <label>Sender ID <input type="text" name="senderId" required /></label>
+        <label>Secret ID <input type="text" name="secretId" required /></label>
+        <div class="actions"><button type="submit" class="danger">Delete</button></div>
+      </form>
+      <pre id="delete-output" class="codeblock"></pre>
+    </section>
+
+    <section id="view-requests" class="view hidden">
+      <h2>Pending Access Requests</h2>
+      <form id="form-requests">
+        <label>Sender ID <input type="text" name="senderId" required /></label>
+        <div class="actions"><button type="submit">Fetch &amp; Process</button></div>
+      </form>
+      <div id="requests-list" class="list"></div>
+    </section>
+
+    <section id="view-revoke" class="view hidden">
+      <h2>Revoke Access</h2>
+      <form id="form-revoke">
+        <label>Sender ID <input type="text" name="senderId" required /></label>
+        <label>Receiver ID <input type="text" name="receiverId" required /></label>
+        <label>Secret ID <input type="text" name="secretId" required /></label>
+        <div class="actions"><button type="submit" class="danger">Revoke</button></div>
+      </form>
+      <pre id="revoke-output" class="codeblock"></pre>
+    </section>
+
+    <section id="view-grants" class="view hidden">
+      <h2>Grants Summary</h2>
+      <form id="form-grants">
+        <label>Sender ID <input type="text" name="senderId" required /></label>
+        <div class="actions"><button type="submit">Load</button></div>
+      </form>
+      <pre id="grants-output" class="codeblock"></pre>
+    </section>
+
+    <section id="view-store" class="view hidden">
+      <h2>Encrypted Store</h2>
+      <div class="grid2">
+        <div class="card">
+          <h3>Open via File Picker (auto-save)</h3>
+          <label>Password <input id="storePassFS" type="password" placeholder="••••••"/></label>
+          <div class="actions">
+            <button id="btnOpenFS">Open Store File…</button>
+            <button id="btnResaveFS">Save Now</button>
+            <button id="btnCloseFS">Close</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Import / Export (manual)</h3>
+          <label>Password <input id="storePassIn" type="password" placeholder="••••••"/></label>
+          <label>Import file <input id="storeFileIn" type="file" /></label>
+          <div class="actions">
+            <button id="btnImport">Import</button>
+            <button id="btnExport">Export</button>
+          </div>
+        </div>
+      </div>
+      <pre id="store-output" class="codeblock"></pre>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>App: <code>/app</code> • API: <code>/api</code></p>
+  </footer>
+
+  <script type="module" src="/app/sender.js?v=0"></script>
+</body>
+</html>

@@ -1,7 +1,6 @@
 import os
 import queue
-from umbral import SecretKey, Signer, encrypt, generate_kfrags
-from umbral.keys import PublicKey
+from umbral_pre import SecretKey, PublicKey, Signer, encrypt, generate_kfrags
 from protocol import *
 from typing import Dict
 
@@ -21,20 +20,20 @@ def _serialize_sender_store(ks: dict) -> dict:
     out = {}
     for sid, rec in ks.items():
         out[sid] = {
-            "secret_key": rec["secret_key"].to_secret_bytes(),
-            "public_key": bytes(rec["public_key"]),
-            "signing_key": rec["signing_key"].to_secret_bytes(),
-            "verifying_key": bytes(rec["verifying_key"]),
+            "secret_key": rec["secret_key"].to_be_bytes(),
+            "public_key": rec["public_key"].to_compressed_bytes(),
+            "signing_key": rec["signing_key"].to_be_bytes(),
+            "verifying_key": rec["verifying_key"].to_compressed_bytes(),
         }
     return out
 
 def _deserialize_sender_store(obj: dict) -> dict:
     ks = {}
     for sid, rec in (obj or {}).items():
-        sk  = SecretKey.from_bytes(rec["secret_key"])
-        pk  = PublicKey.from_bytes(rec["public_key"])
-        ssk = SecretKey.from_bytes(rec["signing_key"])
-        vpk = PublicKey.from_bytes(rec["verifying_key"])
+        sk  = SecretKey.from_be_bytes(rec["secret_key"])
+        pk  = PublicKey.from_compressed_bytes(rec["public_key"])
+        ssk = SecretKey.from_be_bytes(rec["signing_key"])
+        vpk = PublicKey.from_compressed_bytes(rec["verifying_key"])
         ks[sid] = {
             "secret_key":    sk,
             "public_key":    pk,
@@ -82,8 +81,8 @@ def add_or_update_secret(secret_id: str, secret_value: str):
         "secret_id": secret_id,
         "capsule_b64": b64e(bytes(capsule)),
         "ciphertext_b64": b64e(ciphertext),
-        "sender_public_key_b64":    b64e(bytes(key_store[secret_id]["public_key"])),
-        "sender_verifying_key_b64": b64e(bytes(key_store[secret_id]["verifying_key"])),
+        "sender_public_key_b64":    b64e((key_store[secret_id]["public_key"]).to_compressed_bytes()),
+        "sender_verifying_key_b64": b64e((key_store[secret_id]["verifying_key"]).to_compressed_bytes()),
     }
     api_post("/add_or_update_secret", body)
     print(f"[Sender {SENDER_ID}] Secret '{secret_id}' sent to Proxy.")
@@ -104,22 +103,24 @@ def _grant(receiver_id: str, secret_id: str, recv_pk_b64: str):
     recv_pk_b = b64d(recv_pk_b64)
     kfrags = generate_kfrags(
         delegating_sk=key_store[secret_id]["secret_key"],
-        receiving_pk=PublicKey.from_bytes(recv_pk_b),
+        receiving_pk=PublicKey.from_compressed_bytes(recv_pk_b),
         signer=key_store[secret_id]["signer"],
         threshold=1,
-        shares=1
+        shares=1,
+        sign_delegating_key=True,
+        sign_receiving_key=True,
     )
-    # Enqueue grant notice FOR receiver via proxy (JSON-safe fields)
+    #Enqueue grant notice FOR receiver via proxy (JSON-safe fields)
     ack_payload = {
         "sender_id": SENDER_ID,
         "receiver_id": receiver_id,
         "secret_id": secret_id,
-        "public_key_b64":    b64e(bytes(key_store[secret_id]["public_key"])),
-        "verifying_key_b64": b64e(bytes(key_store[secret_id]["verifying_key"]))
+        "public_key_b64":    b64e((key_store[secret_id]["public_key"]).to_compressed_bytes()),
+        "verifying_key_b64": b64e((key_store[secret_id]["verifying_key"]).to_compressed_bytes())
     }
     api_post("/grant_access_receiver", ack_payload)
 
-    # Send kfrags to proxy store
+    #Send kfrags to proxy store
     body = {
         "sender_id": SENDER_ID,
         "receiver_id": receiver_id,

@@ -1,25 +1,26 @@
 # proxy.py
+import mimetypes
+mimetypes.add_type('application/wasm', '.wasm')  # ensure correct MIME for .wasm
+
 import os
 import sys
 import msgpack
 import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from umbral import Capsule, KeyFrag, reencrypt
-from umbral.keys import PublicKey
+from fastapi.staticfiles import StaticFiles
+from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
 from typing import List, Dict, Any
 import uvicorn
 from protocol import (
     b64d, b64e,
     ADD_OR_UPDATE_SECRET, DELETE_SECRET, GRANT_ACCESS_PROXY, GRANT_ACCESS_RECEIVER,
     REVOKE_ACCESS, REQUEST_SECRET, LIST_GRANTS, GRANTS_SUMMARY, REQUEST_ACCESS,
-    PULL_INBOX_SENDER, PULL_INBOX_RECEIVER, INBOX_CONTENTS,
+    PULL_INBOX_SENDER, PULL_INBOX_RECEIVER, INBOX_CONTENTS, RESPONSE_SECRET
 )
 
 PROXY_HOST = os.getenv("PROXY_HOST", "0.0.0.0")
-PROXY_PORT = int(os.getenv("PROXY_PORT", "6000"))
-
-PROXY_ID = "ursula"
+PROXY_PORT = int(os.getenv("PROXY_PORT", "8000"))
 
 # ---- DB config (env-overridable) ----
 DB_HOST = os.getenv("PGHOST", "localhost")
@@ -92,19 +93,18 @@ def upsert_secret(payload: Dict[str, Any]) -> None:
         """, (
             payload["sender_id"],
             payload["secret_id"],
-            payload["capsule"],                 # bytes
-            payload["ciphertext"],              # bytes
-            payload["sender_public_key"],       # bytes
-            payload["sender_verifying_key"],    # bytes
+            payload["capsule"],
+            payload["ciphertext"],
+            payload["sender_public_key"],
+            payload["sender_verifying_key"],
         ))
 
 def delete_secret(sender_id: str, secret_id: str) -> None:
     with get_conn() as conn:
-        # delete secret and any grants for that secret (no FK; explicit cleanup)
         conn.execute("DELETE FROM secrets WHERE sender_id=%s AND secret_id=%s", (sender_id, secret_id))
         conn.execute("DELETE FROM grants  WHERE sender_id=%s AND secret_id=%s", (sender_id, secret_id))
 
-def insert_or_replace_grant(sender_id: str, receiver_id: str, secret_id: str, kfrags_bytes_list: list[bytes]) -> None:
+def insert_or_replace_grant(sender_id: str, receiver_id: str, secret_id: str, kfrags_bytes_list: List[bytes]) -> None:
     blob = msgpack.packb(kfrags_bytes_list, use_bin_type=True)
     with get_conn() as conn:
         conn.execute("""
@@ -116,9 +116,8 @@ def insert_or_replace_grant(sender_id: str, receiver_id: str, secret_id: str, kf
 
 def revoke_grant(sender_id: str, receiver_id: str, secret_id: str) -> None:
     with get_conn() as conn:
-        conn.execute("""
-            DELETE FROM grants WHERE sender_id=%s AND receiver_id=%s AND secret_id=%s
-        """, (sender_id, receiver_id, secret_id))
+        conn.execute("DELETE FROM grants WHERE sender_id=%s AND receiver_id=%s AND secret_id=%s",
+                     (sender_id, receiver_id, secret_id))
 
 def load_secret(sender_id: str, secret_id: str):
     with get_conn() as conn:
@@ -133,8 +132,8 @@ def load_secret(sender_id: str, secret_id: str):
     return {
         "capsule": Capsule.from_bytes(capsule_b),
         "ciphertext": ciphertext_b,
-        "sender_public_key": PublicKey.from_bytes(spk_b),
-        "sender_verifying_key": PublicKey.from_bytes(svk_b),
+        "sender_public_key": PublicKey.from_compressed_bytes(spk_b),
+        "sender_verifying_key": PublicKey.from_compressed_bytes(svk_b),
     }
 
 def load_grant_kfrags(sender_id: str, receiver_id: str, secret_id: str) -> List[KeyFrag]:
@@ -151,17 +150,14 @@ def load_grant_kfrags(sender_id: str, receiver_id: str, secret_id: str) -> List[
     return [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
 
 def list_grants_for_sender(sender_id: str) -> dict:
-    """Return {by_secret: {secret_id: [receiver_id, ...]}, totals:{...}}"""
     by_secret: Dict[str, List[str]] = {}
     total_grants = 0
     with get_conn() as conn:
-        # gather all secrets for sender (even without grants)
         secrets = [r[0] for r in conn.execute(
             "SELECT secret_id FROM secrets WHERE sender_id=%s", (sender_id,)
         ).fetchall()]
         for sec in secrets:
             by_secret.setdefault(sec, [])
-        # gather all grants
         rows = conn.execute(
             "SELECT secret_id, receiver_id FROM grants WHERE sender_id=%s ORDER BY secret_id, receiver_id",
             (sender_id,)
@@ -169,13 +165,9 @@ def list_grants_for_sender(sender_id: str) -> dict:
     for sec_id, recv_id in rows:
         by_secret.setdefault(sec_id, []).append(recv_id)
         total_grants += 1
-    return {
-        "by_secret": by_secret,
-        "totals": {"secrets": len(by_secret), "grants": total_grants}
-    }
+    return {"by_secret": by_secret, "totals": {"secrets": len(by_secret), "grants": total_grants}}
 
 # ---------- inbox helpers ----------
-
 def enqueue_for_sender(sender_id: str, action: str, payload: dict) -> None:
     blob = msgpack.packb({"action": action, "payload": payload}, use_bin_type=True)
     with get_conn() as conn:
@@ -186,7 +178,7 @@ def enqueue_for_receiver(receiver_id: str, action: str, payload: dict) -> None:
     with get_conn() as conn:
         conn.execute("INSERT INTO receiver_inbox (receiver_id, msg_blob) VALUES (%s, %s)", (receiver_id, blob))
 
-def pull_sender_inbox(sender_id: str) -> list[dict]:
+def pull_sender_inbox(sender_id: str) -> List[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT msg_blob FROM sender_inbox WHERE sender_id=%s ORDER BY created_at ASC",
@@ -195,7 +187,7 @@ def pull_sender_inbox(sender_id: str) -> list[dict]:
         conn.execute("DELETE FROM sender_inbox WHERE sender_id=%s", (sender_id,))
     return [msgpack.unpackb(r[0], raw=False) for r in rows]
 
-def pull_receiver_inbox(receiver_id: str) -> list[dict]:
+def pull_receiver_inbox(receiver_id: str) -> List[dict]:
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT msg_blob FROM receiver_inbox WHERE receiver_id=%s ORDER BY created_at ASC",
@@ -207,7 +199,15 @@ def pull_receiver_inbox(receiver_id: str) -> list[dict]:
 # ---------- FastAPI app ----------
 app = FastAPI(title="CRS Proxy API")
 
-def _ok(payload: dict = None) -> JSONResponse:
+@app.get("/health")
+def health():
+    return {"ok": True}
+
+# Serve the browser app at /app
+web_dir = os.path.join(os.path.dirname(__file__), "web")
+app.mount("/app", StaticFiles(directory=web_dir, html=True), name="app")
+
+def _ok(payload: dict | None = None) -> JSONResponse:
     return JSONResponse(payload or {"ok": True})
 
 @app.on_event("startup")
@@ -253,7 +253,6 @@ def api_grant_access_proxy(body: dict):
 @app.post("/api/grant_access_receiver")
 def api_grant_access_receiver(body: dict):
     try:
-        # passthrough to receiver inbox; body must be JSON-serializable and use *_b64 for bytes
         receiver_id = body["receiver_id"]
         enqueue_for_receiver(receiver_id, GRANT_ACCESS_RECEIVER, body)
         return _ok()
@@ -274,7 +273,7 @@ def api_request_secret(body: dict):
         receiver_id = body["receiver_id"]
         sender_id   = body["sender_id"]
         secret_id   = body["secret_id"]
-        receiving_pk  = PublicKey.from_bytes(b64d(body["receiver_public_key_b64"]))
+        receiving_pk  = PublicKey.from_compressed_bytes(b64d(body["receiver_public_key_b64"]))
 
         secret = load_secret(sender_id, secret_id)
         if not secret:
@@ -290,15 +289,17 @@ def api_request_secret(body: dict):
         verifying_pk  = secret["sender_verifying_key"]
 
         verified_kfrags = [
-            kf.verify(delegating_pk=delegating_pk,
-                      receiving_pk=receiving_pk,
-                      verifying_pk=verifying_pk)
+            kf.verify(
+                delegating_pk=delegating_pk,
+                receiving_pk=receiving_pk,
+                verifying_pk=verifying_pk
+            )
             for kf in kfrags
         ]
         cfrags = [reencrypt(capsule=capsule, kfrag=vkf) for vkf in verified_kfrags]
 
         return {
-            "action": "RESPONSE_SECRET",
+            "action": RESPONSE_SECRET,
             "payload": {
                 "capsule_b64": b64e(bytes(capsule)),
                 "ciphertext_b64": b64e(ciphertext),
@@ -323,7 +324,6 @@ def api_request_access(body: dict):
         sender_id   = body["sender_id"]
         receiver_id = body["receiver_id"]
         secret_id   = body["secret_id"]
-        # body already has receiver_public_key_b64
         if not sender_id or not receiver_id or not secret_id:
             raise ValueError("Missing sender_id/receiver_id/secret_id")
         enqueue_for_sender(sender_id, REQUEST_ACCESS, body)

@@ -1,6 +1,5 @@
 import os
-from umbral import SecretKey, pre, decrypt_reencrypted, CapsuleFrag
-from umbral.keys import PublicKey
+from umbral_pre import SecretKey, PublicKey, Capsule, CapsuleFrag, decrypt_reencrypted
 from protocol import *
 from typing import Dict
 
@@ -25,10 +24,10 @@ def _serialize_receiver_store(st: dict) -> dict:
         out[sid] = {}
         for sec_id, rec in m.items():
             out[sid][sec_id] = {
-                "secret_key":        (rec["secret_key"].to_secret_bytes() if rec.get("secret_key") else None),
-                "public_key":        (bytes(rec["public_key"]) if rec.get("public_key") else None),
-                "sender_public_key": (bytes(rec["sender_public_key"]) if rec.get("sender_public_key") else None),
-                "verifying_key":     (bytes(rec["verifying_key"]) if rec.get("verifying_key") else None),
+                "secret_key":        (rec["secret_key"].to_be_bytes() if rec.get("secret_key") else None),
+                "public_key":        (rec["public_key"].to_compressed_bytes() if rec.get("public_key") else None),
+                "sender_public_key": (rec["sender_public_key"].to_compressed_bytes() if rec.get("sender_public_key") else None),
+                "verifying_key":     (rec["verifying_key"].to_compressed_bytes() if rec.get("verifying_key") else None),
             }
     return out
 
@@ -38,10 +37,10 @@ def _deserialize_receiver_store(obj: dict) -> dict:
         st[sid] = {}
         for sec_id, rec in (m or {}).items():
             st[sid][sec_id] = {
-                "secret_key":        (SecretKey.from_bytes(rec["secret_key"]) if rec.get("secret_key") else None),
-                "public_key":        (PublicKey.from_bytes(rec["public_key"]) if rec.get("public_key") else None),
-                "sender_public_key": (PublicKey.from_bytes(rec["sender_public_key"]) if rec.get("sender_public_key") else None),
-                "verifying_key":     (PublicKey.from_bytes(rec["verifying_key"]) if rec.get("verifying_key") else None),
+                "secret_key":        (SecretKey.from_be_bytes(rec["secret_key"]) if rec.get("secret_key") else None),
+                "public_key":        (PublicKey.from_compressed_bytes(rec["public_key"]) if rec.get("public_key") else None),
+                "sender_public_key": (PublicKey.from_compressed_bytes(rec["sender_public_key"]) if rec.get("sender_public_key") else None),
+                "verifying_key":     (PublicKey.from_compressed_bytes(rec["verifying_key"]) if rec.get("verifying_key") else None),
             }
     return st
 
@@ -86,8 +85,8 @@ def pull_my_grants():
             "verifying_key": None
         })
         try:
-            spk = PublicKey.from_bytes(b64d(p["public_key_b64"]))
-            vpk = PublicKey.from_bytes(b64d(p["verifying_key_b64"]))
+            spk = PublicKey.from_compressed_bytes(b64d(p["public_key_b64"]))
+            vpk = PublicKey.from_compressed_bytes(b64d(p["verifying_key_b64"]))
             srow["sender_public_key"] = spk
             srow["verifying_key"] = vpk
             print(f"[Receiver {RECEIVER_ID}] Pulled grant for '{secret_id}' from '{sender_id}'.")
@@ -119,7 +118,7 @@ def request_access(sender_id, secret_id):
         "sender_id": sender_id,
         "receiver_id": RECEIVER_ID,
         "secret_id": secret_id,
-        "receiver_public_key_b64": b64e(bytes(public_key))
+        "receiver_public_key_b64": b64e(public_key.to_compressed_bytes())
     }
     api_post("/request_access", payload)
     print(f"[Receiver {RECEIVER_ID}] Requested access to '{secret_id}' from '{sender_id}' (via proxy).")
@@ -144,7 +143,7 @@ def request_and_decrypt(sender_id, secret_id):
         "receiver_id": RECEIVER_ID,
         "sender_id": sender_id,
         "secret_id": secret_id,
-        "receiver_public_key_b64": b64e(bytes(srow["public_key"]))
+        "receiver_public_key_b64": b64e(srow["public_key"].to_compressed_bytes())
     }
     data = api_post("/request_secret", payload)
 
@@ -152,7 +151,7 @@ def request_and_decrypt(sender_id, secret_id):
         print(f"[Receiver] Error: {data['payload']['error']}")
         return
 
-    capsule = pre.Capsule.from_bytes(b64d(data["payload"]["capsule_b64"]))
+    capsule = Capsule.from_bytes(b64d(data["payload"]["capsule_b64"]))
     ciphertext = b64d(data["payload"]["ciphertext_b64"])
     suspicious_cfrags = [CapsuleFrag.from_bytes(b64d(b)) for b in data["payload"]["cfrags_b64"]]
 
@@ -173,7 +172,7 @@ def request_and_decrypt(sender_id, secret_id):
         cfrags,
         ciphertext
     )
-    print(f"[Receiver {RECEIVER_ID}] Decrypted '{secret_id}' from '{sender_id}': {plaintext.decode()}")
+    print(f"[Receiver {RECEIVER_ID}] Decrypted '{secret_id}' from '{sender_id}': {plaintext}")
 
 # ===== CLI =====
 def clear():
@@ -186,8 +185,8 @@ def list_grants():
             if rec.get("sender_public_key") is None or rec.get("verifying_key") is None:
                 continue
             any_grant = True
-            spk = fp(bytes(rec["sender_public_key"]))
-            vpk = fp(bytes(rec["verifying_key"]))
+            spk = fp(rec["sender_public_key"].to_compressed_bytes())
+            vpk = fp(rec["verifying_key"].to_compressed_bytes())
             print(f"- sender={s_id} secret={sec_id} sender_pk={spk} verifying_pk={vpk}")
     if not any_grant:
         print("(no grants)")
@@ -199,7 +198,7 @@ def list_keys():
             if rec.get("public_key") is None:
                 continue
             any_key = True
-            print(f"- sender={s_id} secret={sec_id} recv_pk={fp(bytes(rec['public_key']))}")
+            print(f"- sender={s_id} secret={sec_id} recv_pk={fp(rec['public_key'].to_compressed_bytes())}")
     if not any_key:
         print("(no local keys)")
 

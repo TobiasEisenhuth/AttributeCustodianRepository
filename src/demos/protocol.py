@@ -7,14 +7,6 @@ import base64
 import requests
 from typing import Optional
 
-# ===== Ports / Hosts =====
-SENDER_HOST = "localhost"
-SENDER_PORT = 5000
-PROXY_HOST = "localhost"
-PROXY_PORT = 6000
-RECEIVER_HOST = "localhost"
-RECEIVER_PORT = 7000
-
 # ===== Actions =====
 # Alice
 ADD_OR_UPDATE_SECRET  = "ADD_OR_UPDATE_SECRET"
@@ -41,11 +33,15 @@ INBOX_CONTENTS        = "INBOX_CONTENTS"
 
 ERROR                 = "ERROR"
 
-# ===== Wire helpers (HTTP) =====
-BASE_URL = f"http://{PROXY_HOST}:{PROXY_PORT}/api"
+# ===== HTTP client base =====
+# One knob for everyone (receiver.py, CLI tools, etc.)
+PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "http://localhost:8000")
+API_BASE = PROXY_BASE_URL.rstrip("/")
 
 def api_post(path: str, payload: dict, timeout: Optional[float] = 15.0) -> dict:
-    url = f"{BASE_URL}{path}"
+    if not path.startswith("/"):
+        path = "/" + path
+    url = API_BASE + (path if path.startswith("/api/") else "/api" + path)
     r = requests.post(url, json=payload, timeout=timeout)
     r.raise_for_status()
     return r.json()

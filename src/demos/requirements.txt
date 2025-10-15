@@ -5,3 +5,5 @@ msgpack==1.1.1
 psycopg==3.2.10
 umbral-pre==0.11.0
 cryptography==3.4.8
+argon2-cffi==25.1.0
+argon2-cffi-bindings==25.1.0

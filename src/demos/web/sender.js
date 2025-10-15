@@ -214,8 +214,6 @@
   }
 
   // ======= Key mgmt (IMPORTANT: matches your wasm API!)
-  //   SecretKey:   toBEBytes() <-> fromBEBytes(u8)
-  //   PublicKey:   toCompressedBytes() <-> fromCompressedBytes(u8)
   function skToBytes(sk) { return sk.toBEBytes(); }
   function pkToBytes(pk) { return pk.toCompressedBytes(); }
 
@@ -255,7 +253,7 @@
 
     try {
       const { publicKey, verifyingKey } = ensureKeys(secretId);
-      const [capsule, ciphertext] = encrypt(publicKey, te.encode(secretValue));
+      const [capsule, ciphertext] = encrypt(publicKey, new TextEncoder().encode(secretValue));
 
       await apiPost("/add_or_update_secret", {
         sender_id: senderId,
@@ -330,9 +328,9 @@
 
             const kfrags = generateKFrags(
               secretKey, recvPk, signer,
-              1, 1,  // threshold, shares
-              true,  // sign delegating key
-              true   // sign receiving key
+              1, 1,
+              true,
+              true
             );
 
             await apiPost("/grant_access_receiver", {

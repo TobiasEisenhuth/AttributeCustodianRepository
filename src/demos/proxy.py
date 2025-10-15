@@ -4,14 +4,23 @@ mimetypes.add_type('application/wasm', '.wasm')  # ensure correct MIME for .wasm
 
 import os
 import sys
+import re
+import secrets
+from datetime import datetime, timedelta, timezone
+from typing import List, Dict, Any, Optional
+
 import msgpack
 import psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
-from typing import List, Dict, Any
-import uvicorn
+
+# Password hashing (Argon2id)
+from argon2 import PasswordHasher
+from argon2.low_level import Type as Argon2Type
+from argon2.exceptions import VerifyMismatchError, InvalidHash
+
 from protocol import (
     b64d, b64e,
     ADD_OR_UPDATE_SECRET, DELETE_SECRET, GRANT_ACCESS_PROXY, GRANT_ACCESS_RECEIVER,
@@ -38,8 +47,11 @@ DSN = f"host={DB_HOST} port={DB_PORT} dbname={DB_NAME} user={DB_USER} password={
 def get_conn():
     return psycopg.connect(DSN)
 
+# =================== DB INIT ===================
+
 def init_db():
     with get_conn() as conn:
+        # Existing CRS tables
         conn.execute("""
             CREATE TABLE IF NOT EXISTS secrets (
               sender_id TEXT NOT NULL,
@@ -60,7 +72,7 @@ def init_db():
               PRIMARY KEY (sender_id, receiver_id, secret_id)
             );
         """)
-        # inbox tables for routing by ID
+        # inbox tables
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sender_inbox (
               sender_id  TEXT NOT NULL,
@@ -75,9 +87,31 @@ def init_db():
               created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
         """)
+
+        # New: Users / Sessions
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+              id TEXT PRIMARY KEY,
+              email TEXT UNIQUE NOT NULL,
+              display_name TEXT,
+              password_hash TEXT NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+              token TEXT PRIMARY KEY,
+              user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+              expires_at TIMESTAMPTZ NOT NULL,
+              user_agent TEXT,
+              ip TEXT
+            );
+        """)
     print("[Proxy] DB initialized.")
 
-# ---------- Persistence helpers ----------
+# =================== CRS HELPERS (existing) ===================
+
 def upsert_secret(payload: Dict[str, Any]) -> None:
     with get_conn() as conn:
         conn.execute("""
@@ -196,7 +230,124 @@ def pull_receiver_inbox(receiver_id: str) -> List[dict]:
         conn.execute("DELETE FROM receiver_inbox WHERE receiver_id=%s", (receiver_id,))
     return [msgpack.unpackb(r[0], raw=False) for r in rows]
 
-# ---------- FastAPI app ----------
+# =================== AUTH (email + password) ===================
+
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60*5)))
+
+# Argon2id parameters (balanced & modern)
+ph = PasswordHasher(
+    time_cost=3,
+    memory_cost=64 * 1024,  # 64 MiB
+    parallelism=2,
+    hash_len=32,
+    salt_len=16,
+    type=Argon2Type.ID,
+)
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+def cookie_name_and_secure(req: Request) -> tuple[str, bool]:
+    # Use __Host- cookie on HTTPS (not on localhost HTTP)
+    is_https = (req.url.scheme == "https")
+    host = (req.url.hostname or "").lower()
+    dev_http_local = (req.url.scheme == "http" and host in ("localhost", "127.0.0.1"))
+    if is_https and not dev_http_local:
+        return "__Host-session", True
+    return "session", False
+
+def set_session_cookie(resp: Response, req: Request, token: str) -> None:
+    name, secure = cookie_name_and_secure(req)
+    resp.set_cookie(
+        key=name,
+        value=token,
+        httponly=True,
+        samesite="strict",
+        secure=secure,
+        path="/",
+    )
+
+def clear_session_cookie(resp: Response, req: Request) -> None:
+    name, _ = cookie_name_and_secure(req)
+    resp.delete_cookie(name, path="/")
+
+def validate_email(email: str) -> str:
+    e = (email or "").strip().lower()
+    if not EMAIL_RE.match(e):
+        raise HTTPException(status_code=400, detail="Invalid email address")
+    return e
+
+def validate_password(pw: str) -> str:
+    if not pw or len(pw) < 10:
+        raise HTTPException(status_code=400, detail="Password too short (min 10 characters)")
+    return pw
+
+def create_user(email: str, display_name: Optional[str], password: str) -> str:
+    email = validate_email(email)
+    validate_password(password)
+    pw_hash = ph.hash(password)
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM users WHERE email=%s", (email,)).fetchone()
+        if row:
+            raise HTTPException(status_code=409, detail="Email already registered")
+        user_id = secrets.token_hex(16)
+        conn.execute("""
+            INSERT INTO users (id, email, display_name, password_hash)
+            VALUES (%s, %s, %s, %s)
+        """, (user_id, email, display_name or email, pw_hash))
+        return user_id
+
+def get_user_by_email(email: str) -> Optional[dict]:
+    email = validate_email(email)
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, email, display_name, password_hash FROM users WHERE email=%s",
+            (email,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"id": row[0], "email": row[1], "display_name": row[2], "password_hash": row[3]}
+
+def create_session(user_id: str, req: Request) -> str:
+    token = secrets.token_urlsafe(32)
+    expires_at = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
+    ua = req.headers.get("user-agent", "")
+    ip = (req.client.host if req.client else "") or ""
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO sessions (token, user_id, expires_at, user_agent, ip)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (token, user_id, expires_at, ua, ip))
+    return token
+
+def get_session(req: Request) -> Optional[dict]:
+    cookies = req.cookies or {}
+    token = cookies.get("__Host-session") or cookies.get("session")
+    if not token:
+        return None
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT s.user_id, u.email, u.display_name, s.expires_at
+            FROM sessions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.token=%s AND s.expires_at > NOW()
+        """, (token,)).fetchone()
+    if not row:
+        return None
+    return {"user_id": row[0], "email": row[1], "display_name": row[2], "expires_at": row[3]}
+
+def delete_session(req: Request) -> None:
+    cookies = req.cookies or {}
+    token = cookies.get("__Host-session") or cookies.get("session")
+    if not token:
+        return
+    with get_conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE token=%s", (token,))
+
+# =================== FastAPI app ===================
+
 app = FastAPI(title="CRS Proxy API")
 
 @app.get("/health")
@@ -213,6 +364,8 @@ def _ok(payload: dict | None = None) -> JSONResponse:
 @app.on_event("startup")
 def _startup():
     init_db()
+
+# -------------- Existing CRS API (unchanged) --------------
 
 @app.post("/api/add_or_update_secret")
 def api_add_or_update_secret(body: dict):
@@ -349,6 +502,89 @@ def api_pull_inbox_receiver(body: dict):
     except Exception as e:
         return {"action": "ERROR", "payload": {"error": str(e)}}
 
+# -------------- NEW: Email+Password Auth API --------------
+
+@app.get("/auth/session")
+def auth_session(req: Request):
+    sess = get_session(req)
+    if not sess:
+        raise HTTPException(status_code=401, detail="No active session")
+    return {
+        "user": {
+            "id": sess["user_id"],
+            "email": sess["email"],
+            "display_name": sess["display_name"],
+        },
+        "expires_at": sess["expires_at"].isoformat(),
+    }
+
+@app.post("/auth/logout")
+def auth_logout(req: Request):
+    delete_session(req)
+    resp = _ok({"ok": True})
+    clear_session_cookie(resp, req)
+    return resp
+
+@app.post("/auth/register")
+def auth_register(req: Request, body: dict):
+    """
+    Body: { "email": "alice@example.com", "password": "strong password", "display_name": "Alice" }
+    """
+    email = validate_email(body.get("email", ""))
+    password = validate_password(body.get("password", ""))
+    display_name = (body.get("display_name") or email)
+    user_id = create_user(email, display_name, password)
+    token = create_session(user_id, req)
+    resp = _ok({"ok": True})
+    set_session_cookie(resp, req, token)
+    return resp
+
+@app.post("/auth/login")
+def auth_login(req: Request, body: dict):
+    """
+    Body: { "email": "alice@example.com", "password": "..." }
+    """
+    email = validate_email(body.get("email", ""))
+    password = body.get("password", "") or ""
+    user = get_user_by_email(email)
+    # Reduce user-enumeration signal: verify a dummy hash if user missing
+    dummy_hash = ph.hash("x"*12)
+    stored_hash = (user or {}).get("password_hash") or dummy_hash
+    try:
+        ok = ph.verify(stored_hash, password)
+    except (VerifyMismatchError, InvalidHash):
+        ok = False
+
+    if not (user and ok):
+        import time as _t; _t.sleep(0.25)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    try:
+        if ph.check_needs_rehash(stored_hash):
+            new_hash = ph.hash(password)
+            with get_conn() as conn:
+                conn.execute("UPDATE users SET password_hash=%s WHERE id=%s", (new_hash, user["id"]))
+    except Exception:
+        pass
+
+    token = create_session(user["id"], req)
+    resp = _ok({"ok": True})
+    set_session_cookie(resp, req, token)
+    return resp
+
+# -------------- NEW: Restricted example field --------------
+
+@app.get("/api/restricted_field")
+def api_restricted_field(req: Request):
+    sess = get_session(req)
+    if not sess:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    # Example private data
+    return {"field": f"Hello {sess['display_name']} — this is your restricted field."}
+
+# -------------------------------------------------------------
+
 if __name__ == "__main__":
     init_db()
+    import uvicorn
     uvicorn.run("proxy:app", host=PROXY_HOST, port=PROXY_PORT, reload=False)

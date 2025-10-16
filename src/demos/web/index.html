@@ -14,10 +14,6 @@
       <span class="logo" aria-hidden="true">🛡️</span>
       <h1>CRS — Welcome</h1>
     </div>
-    <nav class="site-nav">
-      <a class="nav-btn" href="/app/dashboard.html">Dashboard</a>
-      <a class="nav-btn" href="/app/sender.html">Sender Tools</a>
-    </nav>
   </header>
 
   <section class="bar">
@@ -35,32 +31,20 @@
         <label>Password <input id="login-pass" type="password" required placeholder="min 10 characters" /></label>
         <div class="actions">
           <button type="submit">Login</button>
+          <button id="btn-register" type="button">Register…</button>
         </div>
       </form>
-    </section>
-
-    <section class="view">
-      <h2>Register</h2>
-      <form id="form-register" class="card">
-        <label>Email <input id="reg-email" type="email" required placeholder="you@example.com" /></label>
-        <label>Display name <input id="reg-name" type="text" placeholder="Your name (optional)" /></label>
-        <label>Password <input id="reg-pass" type="password" required placeholder="min 10 characters" /></label>
-        <div class="actions">
-          <button type="submit">Create account</button>
-        </div>
-      </form>
-      <p class="muted">Passwords are hashed with Argon2id. Session uses HttpOnly cookie (SameSite=Strict).</p>
+      <p class="muted">Sessions last 5 minutes by default. Cookies are HttpOnly, SameSite=Strict.</p>
     </section>
   </main>
 
   <footer class="site-footer">
-    <p>Pages: <a href="/app/dashboard.html">Dashboard</a> • <a href="/app/sender.html">Sender Tools</a></p>
+    <p>Only this page is available until you log in or use the register button.</p>
   </footer>
 
   <script type="module" src="/app/auth.js"></script>
   <script type="module">
-    import { session, login, register } from '/app/auth.js';
-
+    import { session, login, allowRegister } from '/app/auth.js';
     const $ = (s)=>document.querySelector(s);
     const statusEl = $("#status");
     const sessionBadge = $("#sessionBadge");
@@ -70,48 +54,40 @@
       statusEl.innerHTML = `<div class="toast ${kind}">${msg}</div>`;
       setTimeout(()=>{ statusEl.innerHTML=""; }, 3200);
     }
-
-    // Health badge
+    // Health
     (async () => {
       try { const r=await fetch("/health"); const j=await r.json();
         healthBadge.textContent = j.ok ? "healthy" : "unhealthy";
         healthBadge.className = "badge " + (j.ok ? "ok":"bad");
       } catch { healthBadge.textContent="unreachable"; healthBadge.className="badge bad"; }
     })();
-
     // Session badge
     (async () => {
-      const u = await session();
+      const u = await session().catch(()=>null);
       if (u) { sessionBadge.textContent = u.email; sessionBadge.className="badge ok"; }
       else { sessionBadge.textContent = "guest"; sessionBadge.className="badge"; }
     })();
 
-    // Login
+    // Login -> go to load file step
     $("#form-login")?.addEventListener("submit", async (e)=>{
       e.preventDefault();
       const email = $("#login-email").value.trim().toLowerCase();
       const pass  = $("#login-pass").value;
-      if (!email || !pass) return toast("Enter email and password","error");
       try {
         await login(email, pass);
-        window.location.href = "/app/dashboard.html";
+        window.location.href = "/app/load.html";
       } catch (err) {
         toast(err.message || String(err), "error");
       }
     });
 
-    // Register
-    $("#form-register")?.addEventListener("submit", async (e)=>{
-      e.preventDefault();
-      const email = $("#reg-email").value.trim().toLowerCase();
-      const name  = $("#reg-name").value.trim() || email;
-      const pass  = $("#reg-pass").value;
-      if (!email || !pass) return toast("Enter email and password","error");
+    // Register flow gate
+    $("#btn-register")?.addEventListener("click", async ()=>{
       try {
-        await register(email, pass, name);
-        window.location.href = "/app/dashboard.html";
-      } catch (err) {
-        toast(err.message || String(err), "error");
+        await allowRegister();
+        window.location.href = "/app/register.html";
+      } catch (e) {
+        toast("Could not open registration: " + (e.message||e), "error");
       }
     });
   </script>

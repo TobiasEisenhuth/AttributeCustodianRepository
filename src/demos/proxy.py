@@ -9,10 +9,12 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
+import anyio
 import msgpack
 import psycopg
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from starlette.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
 
@@ -88,16 +90,23 @@ def init_db():
             );
         """)
 
-        # New: Users / Sessions
+        # New: Users / Sessions (+ store password)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
               id TEXT PRIMARY KEY,
               email TEXT UNIQUE NOT NULL,
               display_name TEXT,
               password_hash TEXT NOT NULL,
+              store_password TEXT,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
         """)
+        # In case the table already existed without store_password:
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS store_password TEXT;")
+        except Exception:
+            pass
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
               token TEXT PRIMARY KEY,
@@ -232,7 +241,7 @@ def pull_receiver_inbox(receiver_id: str) -> List[dict]:
 
 # =================== AUTH (email + password) ===================
 
-SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60*5)))
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60*5)))  # default 5 minutes
 
 # Argon2id parameters (balanced & modern)
 ph = PasswordHasher(
@@ -258,6 +267,12 @@ def cookie_name_and_secure(req: Request) -> tuple[str, bool]:
         return "__Host-session", True
     return "session", False
 
+def secure_flag(req: Request) -> bool:
+    is_https = (req.url.scheme == "https")
+    host = (req.url.hostname or "").lower()
+    dev_http_local = (req.url.scheme == "http" and host in ("localhost", "127.0.0.1"))
+    return (is_https and not dev_http_local)
+
 def set_session_cookie(resp: Response, req: Request, token: str) -> None:
     name, secure = cookie_name_and_secure(req)
     resp.set_cookie(
@@ -267,11 +282,44 @@ def set_session_cookie(resp: Response, req: Request, token: str) -> None:
         samesite="strict",
         secure=secure,
         path="/",
+        max_age=SESSION_TTL_SECONDS,
     )
 
 def clear_session_cookie(resp: Response, req: Request) -> None:
     name, _ = cookie_name_and_secure(req)
     resp.delete_cookie(name, path="/")
+
+# Flow cookies (UI gating)
+REG_COOKIE = "reg_ok"         # allows /app/register.html for a short time after pressing the button
+STAGE_COOKIE = "flow_stage"   # set to "store_ok" after successful local unlock
+
+def set_reg_cookie(resp: Response, req: Request) -> None:
+    resp.set_cookie(
+        key=REG_COOKIE,
+        value="1",
+        httponly=False,
+        samesite="lax",
+        secure=secure_flag(req),
+        path="/app/register.html",
+        max_age=120,  # 2 minutes window to open register page
+    )
+
+def clear_reg_cookie(resp: Response) -> None:
+    resp.delete_cookie(REG_COOKIE, path="/app/register.html")
+
+def set_stage_cookie(resp: Response, req: Request, value: str) -> None:
+    resp.set_cookie(
+        key=STAGE_COOKIE,
+        value=value,
+        httponly=True,
+        samesite="strict",
+        secure=secure_flag(req),
+        path="/",
+        max_age=SESSION_TTL_SECONDS,
+    )
+
+def clear_stage_cookie(resp: Response) -> None:
+    resp.delete_cookie(STAGE_COOKIE, path="/")
 
 def validate_email(email: str) -> str:
     e = (email or "").strip().lower()
@@ -288,27 +336,28 @@ def create_user(email: str, display_name: Optional[str], password: str) -> str:
     email = validate_email(email)
     validate_password(password)
     pw_hash = ph.hash(password)
+    store_pw = secrets.token_urlsafe(16)  # random per-user store password returned to client after login
     with get_conn() as conn:
         row = conn.execute("SELECT id FROM users WHERE email=%s", (email,)).fetchone()
         if row:
             raise HTTPException(status_code=409, detail="Email already registered")
         user_id = secrets.token_hex(16)
         conn.execute("""
-            INSERT INTO users (id, email, display_name, password_hash)
-            VALUES (%s, %s, %s, %s)
-        """, (user_id, email, display_name or email, pw_hash))
+            INSERT INTO users (id, email, display_name, password_hash, store_password)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (user_id, email, display_name or email, pw_hash, store_pw))
         return user_id
 
 def get_user_by_email(email: str) -> Optional[dict]:
     email = validate_email(email)
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email, display_name, password_hash FROM users WHERE email=%s",
+            "SELECT id, email, display_name, password_hash, store_password FROM users WHERE email=%s",
             (email,),
         ).fetchone()
     if not row:
         return None
-    return {"id": row[0], "email": row[1], "display_name": row[2], "password_hash": row[3]}
+    return {"id": row[0], "email": row[1], "display_name": row[2], "password_hash": row[3], "store_password": row[4]}
 
 def create_session(user_id: str, req: Request) -> str:
     token = secrets.token_urlsafe(32)
@@ -346,6 +395,17 @@ def delete_session(req: Request) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM sessions WHERE token=%s", (token,))
 
+def get_store_password_for_user(user_id: str) -> str:
+    with get_conn() as conn:
+        row = conn.execute("SELECT store_password FROM users WHERE id=%s", (user_id,)).fetchone()
+    if not row or not row[0]:
+        # If missing (older rows), mint one now
+        pw = secrets.token_urlsafe(16)
+        with get_conn() as conn:
+            conn.execute("UPDATE users SET store_password=%s WHERE id=%s", (pw, user_id))
+        return pw
+    return row[0]
+
 # =================== FastAPI app ===================
 
 app = FastAPI(title="CRS Proxy API")
@@ -364,6 +424,59 @@ def _ok(payload: dict | None = None) -> JSONResponse:
 @app.on_event("startup")
 def _startup():
     init_db()
+
+# --------- Require login for Web Client (/app/*) only + flow gating ----------
+
+# Anonymous users may load only these (landing + base assets)
+ALLOW_ANON_PATHS = {
+    "/app/",
+    "/app/index.html",
+    "/app/style.css",
+    "/app/auth.js",
+    "/app/favicon.ico",
+}
+# APIs, auth endpoints, and health are never gated here.
+ALLOW_PREFIXES = ("/auth", "/api", "/health")
+
+@app.middleware("http")
+async def webclient_requires_login(request: Request, call_next):
+    path = request.url.path
+
+    # Never gate these prefixes (API/auth/health remain unaffected)
+    if path.startswith(ALLOW_PREFIXES):
+        return await call_next(request)
+
+    # Gate only the Web Client static site
+    if path.startswith("/app"):
+        # Registration page only allowed if short-lived reg cookie is set
+        if path == "/app/register.html":
+            reg_cookie = request.cookies.get(REG_COOKIE)
+            if not reg_cookie:
+                return RedirectResponse("/app/index.html", status_code=303)
+            # allow to proceed
+
+        # Load page requires active session
+        if path == "/app/load.html":
+            sess = await anyio.to_thread.run_sync(get_session, request)
+            if not sess:
+                return RedirectResponse("/app/index.html", status_code=303)
+
+        # Dashboard requires session + stage "store_ok"
+        if path == "/app/dashboard.html":
+            sess = await anyio.to_thread.run_sync(get_session, request)
+            if not sess:
+                return RedirectResponse("/app/index.html", status_code=303)
+            stage = request.cookies.get(STAGE_COOKIE)
+            if stage != "store_ok":
+                return RedirectResponse("/app/load.html", status_code=303)
+
+        # For any other /app path (like sender.html, umbral wasm, etc.):
+        if request.method in ("GET", "HEAD"):
+            sess = await anyio.to_thread.run_sync(get_session, request)
+            if not sess and path not in ALLOW_ANON_PATHS and path != "/app/register.html":
+                return RedirectResponse("/app/index.html", status_code=303)
+
+    return await call_next(request)
 
 # -------------- Existing CRS API (unchanged) --------------
 
@@ -502,7 +615,11 @@ def api_pull_inbox_receiver(body: dict):
     except Exception as e:
         return {"action": "ERROR", "payload": {"error": str(e)}}
 
-# -------------- NEW: Email+Password Auth API --------------
+# -------------- NEW: Auth & flow endpoints --------------
+
+@app.get("/")
+def root():
+    return RedirectResponse("/app/", status_code=307)
 
 @app.get("/auth/session")
 def auth_session(req: Request):
@@ -523,6 +640,8 @@ def auth_logout(req: Request):
     delete_session(req)
     resp = _ok({"ok": True})
     clear_session_cookie(resp, req)
+    clear_reg_cookie(resp)
+    clear_stage_cookie(resp)
     return resp
 
 @app.post("/auth/register")
@@ -537,6 +656,8 @@ def auth_register(req: Request, body: dict):
     token = create_session(user_id, req)
     resp = _ok({"ok": True})
     set_session_cookie(resp, req, token)
+    # clear reg cookie once used
+    clear_reg_cookie(resp)
     return resp
 
 @app.post("/auth/login")
@@ -560,7 +681,7 @@ def auth_login(req: Request, body: dict):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     try:
-        if ph.check_needs_rehash(stored_hash):
+        if user and ph.check_needs_rehash(stored_hash):
             new_hash = ph.hash(password)
             with get_conn() as conn:
                 conn.execute("UPDATE users SET password_hash=%s WHERE id=%s", (new_hash, user["id"]))
@@ -571,6 +692,35 @@ def auth_login(req: Request, body: dict):
     resp = _ok({"ok": True})
     set_session_cookie(resp, req, token)
     return resp
+
+@app.post("/auth/allow_register")
+def allow_register(req: Request):
+    """Set short-lived cookie to allow /app/register.html."""
+    resp = _ok({"ok": True})
+    set_reg_cookie(resp, req)
+    return resp
+
+@app.post("/auth/stage")
+def set_stage(req: Request, body: dict):
+    """Set flow stage cookie after successful local unlock. Body: {"stage":"store_ok"}"""
+    sess = get_session(req)
+    if not sess:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    stage = (body or {}).get("stage")
+    if stage not in ("store_ok",):
+        raise HTTPException(status_code=400, detail="Unknown stage")
+    resp = _ok({"ok": True, "stage": stage})
+    set_stage_cookie(resp, req, stage)
+    return resp
+
+@app.get("/api/store_password")
+def api_store_password(req: Request):
+    """Return the per-user store password to unlock local file (only when logged in)."""
+    sess = get_session(req)
+    if not sess:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    pw = get_store_password_for_user(sess["user_id"])
+    return {"password": pw}
 
 # -------------- NEW: Restricted example field --------------
 

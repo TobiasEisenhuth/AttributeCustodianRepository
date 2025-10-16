@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Unlock Store • CRS</title>
+  <link rel="icon" href="/app/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/app/style.css" />
+  <meta name="color-scheme" content="light dark" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">📂</span>
+      <h1>CRS — Load Encrypted Store</h1>
+    </div>
+  </header>
+
+  <section class="bar">
+    <span>User: <span id="sessionBadge" class="badge">checking…</span></span>
+  </section>
+
+  <main id="app">
+    <section id="status" aria-live="polite"></section>
+
+    <div class="card">
+      <p>Select your encrypted store file, then click <em>Load & Continue</em>. We’ll fetch your per-user store password from the server (session required) and unlock locally in your browser.</p>
+      <label>Store file <input id="fileIn" type="file" /></label>
+      <div class="actions">
+        <button id="btn-load">Load & Continue</button>
+        <button id="btn-return" class="danger">Return to Login</button>
+      </div>
+      <pre id="out" class="codeblock"></pre>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <p>After a successful unlock you’ll be forwarded to the Dashboard.</p>
+  </footer>
+
+  <script type="module" src="/app/auth.js"></script>
+  <script type="module" src="/app/load.js"></script>
+</body>
+</html>

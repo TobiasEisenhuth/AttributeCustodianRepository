@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Register • CRS</title>
+  <link rel="icon" href="/app/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/app/style.css" />
+  <meta name="color-scheme" content="light dark" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">📝</span>
+      <h1>CRS — Register</h1>
+    </div>
+  </header>
+
+  <section class="bar">
+    <span>Server: <span id="healthBadge" class="badge">checking…</span></span>
+  </section>
+
+  <main id="app">
+    <section id="status" aria-live="polite"></section>
+
+    <form id="form-register" class="card">
+      <label>Email <input id="reg-email" type="email" required placeholder="you@example.com" /></label>
+      <label>Display name <input id="reg-name" type="text" placeholder="Your name (optional)" /></label>
+      <label>Password <input id="reg-pass" type="password" required placeholder="min 10 characters" /></label>
+      <label>Repeat password <input id="reg-pass2" type="password" required placeholder="repeat password" /></label>
+      <div class="actions">
+        <button type="submit">Create & Continue</button>
+        <button id="btn-cancel" type="button" class="danger">Return to Welcome</button>
+      </div>
+    </form>
+  </main>
+
+  <footer class="site-footer">
+    <p>This page is only reachable after pressing “Register…” on the Welcome page.</p>
+  </footer>
+
+  <script type="module" src="/app/auth.js"></script>
+  <script type="module">
+    import { register } from '/app/auth.js';
+    const $ = (s)=>document.querySelector(s);
+    const statusEl = $("#status");
+    const healthBadge = $("#healthBadge");
+    function toast(msg, kind="info") {
+      statusEl.innerHTML = `<div class="toast ${kind}">${msg}</div>`;
+      setTimeout(()=>{ statusEl.innerHTML=""; }, 3200);
+    }
+    (async () => {
+      try { const r=await fetch("/health"); const j=await r.json();
+        healthBadge.textContent = j.ok ? "healthy" : "unhealthy";
+        healthBadge.className = "badge " + (j.ok ? "ok":"bad");
+      } catch { healthBadge.textContent="unreachable"; healthBadge.className="badge bad"; }
+    })();
+
+    $("#form-register")?.addEventListener("submit", async (e)=>{
+      e.preventDefault();
+      const email = $("#reg-email").value.trim().toLowerCase();
+      const name  = $("#reg-name").value.trim() || email;
+      const p1    = $("#reg-pass").value;
+      const p2    = $("#reg-pass2").value;
+      if (p1 !== p2) { toast("Passwords do not match","error"); return; }
+      try {
+        await register(email, p1, name);
+        window.location.href = "/app/load.html";
+      } catch (err) { toast(err.message||String(err),"error"); }
+    });
+
+    $("#btn-cancel")?.addEventListener("click", ()=>{
+      window.location.href = "/app/index.html";
+    });
+  </script>
+</body>
+</html>

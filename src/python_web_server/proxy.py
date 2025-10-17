@@ -403,8 +403,22 @@ app = FastAPI(title="CRS Proxy API")
 def health():
     return {"ok": True}
 
-# Serve the browser app at /app
-web_dir = os.path.join(os.path.dirname(__file__), "web")
+# Serve the browser app at /app (support both old 'web' and new 'web_client')
+_base_dir = os.path.dirname(__file__)
+_candidates = [
+    os.path.join(_base_dir, "web_client"),            # container: /app/web_client
+    os.path.join(_base_dir, "web"),                   # container (legacy): /app/web
+    os.path.join(_base_dir, "..", "web_client"),     # local dev: src/python_server -> ../web_client
+    os.path.join(_base_dir, "..", "web"),            # local dev (legacy)
+]
+for _p in _candidates:
+    if os.path.isdir(_p):
+        web_dir = os.path.abspath(_p)
+        break
+else:
+    # default to new name under current dir; FastAPI will error on startup if missing
+    web_dir = os.path.abspath(os.path.join(_base_dir, "web_client"))
+
 app.mount("/app", StaticFiles(directory=web_dir, html=True), name="app")
 
 def _ok(payload: dict | None = None) -> JSONResponse:

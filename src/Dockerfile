@@ -6,12 +6,12 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY src/python_web_server/requirements.txt ./requirements.txt
+COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY src/python_web_server/protocol.py /app/protocol.py
-COPY src/python_web_server/proxy.py    /app/proxy.py
-COPY src/web_client /app/web_client
+COPY python_web_server/protocol.py /app/protocol.py
+COPY python_web_server/proxy.py    /app/proxy.py
+COPY web_client /app/web_client
 
 EXPOSE 8000
 

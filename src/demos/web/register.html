@@ -16,10 +16,6 @@
     </div>
   </header>
 
-  <section class="bar">
-    <span>Server: <span id="healthBadge" class="badge">checking…</span></span>
-  </section>
-
   <main id="app">
     <section id="status" aria-live="polite"></section>
 
@@ -35,26 +31,15 @@
     </form>
   </main>
 
-  <footer class="site-footer">
-    <p>This page is only reachable after pressing “Register…” on the Welcome page.</p>
-  </footer>
-
   <script type="module" src="/app/auth.js"></script>
   <script type="module">
     import { register } from '/app/auth.js';
     const $ = (s)=>document.querySelector(s);
     const statusEl = $("#status");
-    const healthBadge = $("#healthBadge");
     function toast(msg, kind="info") {
       statusEl.innerHTML = `<div class="toast ${kind}">${msg}</div>`;
       setTimeout(()=>{ statusEl.innerHTML=""; }, 3200);
     }
-    (async () => {
-      try { const r=await fetch("/health"); const j=await r.json();
-        healthBadge.textContent = j.ok ? "healthy" : "unhealthy";
-        healthBadge.className = "badge " + (j.ok ? "ok":"bad");
-      } catch { healthBadge.textContent="unreachable"; healthBadge.className="badge bad"; }
-    })();
 
     $("#form-register")?.addEventListener("submit", async (e)=>{
       e.preventDefault();
@@ -65,7 +50,9 @@
       if (p1 !== p2) { toast("Passwords do not match","error"); return; }
       try {
         await register(email, p1, name);
-        window.location.href = "/app/load.html";
+        sessionStorage.removeItem("crs_store_plain");
+        sessionStorage.removeItem("crs_store_password");
+        window.location.href = "/app/store.html";
       } catch (err) { toast(err.message||String(err),"error"); }
     });
 

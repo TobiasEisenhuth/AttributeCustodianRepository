@@ -34,7 +34,6 @@
           <button id="btn-register" type="button">Register…</button>
         </div>
       </form>
-      <p class="muted">Sessions last 5 minutes by default. Cookies are HttpOnly, SameSite=Strict.</p>
     </section>
   </main>
 
@@ -54,34 +53,32 @@
       statusEl.innerHTML = `<div class="toast ${kind}">${msg}</div>`;
       setTimeout(()=>{ statusEl.innerHTML=""; }, 3200);
     }
-    // Health
     (async () => {
       try { const r=await fetch("/health"); const j=await r.json();
         healthBadge.textContent = j.ok ? "healthy" : "unhealthy";
         healthBadge.className = "badge " + (j.ok ? "ok":"bad");
       } catch { healthBadge.textContent="unreachable"; healthBadge.className="badge bad"; }
     })();
-    // Session badge
     (async () => {
       const u = await session().catch(()=>null);
       if (u) { sessionBadge.textContent = u.email; sessionBadge.className="badge ok"; }
       else { sessionBadge.textContent = "guest"; sessionBadge.className="badge"; }
     })();
 
-    // Login -> go to load file step
     $("#form-login")?.addEventListener("submit", async (e)=>{
       e.preventDefault();
       const email = $("#login-email").value.trim().toLowerCase();
       const pass  = $("#login-pass").value;
       try {
         await login(email, pass);
-        window.location.href = "/app/load.html";
+        sessionStorage.removeItem("crs_store_plain");
+        sessionStorage.removeItem("crs_store_password");
+        window.location.href = "/app/store.html";
       } catch (err) {
         toast(err.message || String(err), "error");
       }
     });
 
-    // Register flow gate
     $("#btn-register")?.addEventListener("click", async ()=>{
       try {
         await allowRegister();

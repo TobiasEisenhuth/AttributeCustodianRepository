@@ -90,23 +90,16 @@ def init_db():
             );
         """)
 
-        # New: Users / Sessions (+ store password)
+        # Users / Sessions
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
               id TEXT PRIMARY KEY,
               email TEXT UNIQUE NOT NULL,
               display_name TEXT,
               password_hash TEXT NOT NULL,
-              store_password TEXT,
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
         """)
-        # In case the table already existed without store_password:
-        try:
-            conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS store_password TEXT;")
-        except Exception:
-            pass
-
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
               token TEXT PRIMARY KEY,
@@ -115,6 +108,14 @@ def init_db():
               expires_at TIMESTAMPTZ NOT NULL,
               user_agent TEXT,
               ip TEXT
+            );
+        """)
+        # New: encrypted per-user store
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_stores (
+              user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+              blob BYTEA NOT NULL,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
         """)
     print("[Proxy] DB initialized.")
@@ -291,7 +292,7 @@ def clear_session_cookie(resp: Response, req: Request) -> None:
 
 # Flow cookies (UI gating)
 REG_COOKIE = "reg_ok"         # allows /app/register.html for a short time after pressing the button
-STAGE_COOKIE = "flow_stage"   # set to "store_ok" after successful local unlock
+STAGE_COOKIE = "flow_stage"   # set to "store_ok" after successful decrypt/create
 
 def set_reg_cookie(resp: Response, req: Request) -> None:
     resp.set_cookie(
@@ -301,7 +302,7 @@ def set_reg_cookie(resp: Response, req: Request) -> None:
         samesite="lax",
         secure=secure_flag(req),
         path="/app/register.html",
-        max_age=120,  # 2 minutes window to open register page
+        max_age=120,  # 2 minutes
     )
 
 def clear_reg_cookie(resp: Response) -> None:
@@ -336,28 +337,27 @@ def create_user(email: str, display_name: Optional[str], password: str) -> str:
     email = validate_email(email)
     validate_password(password)
     pw_hash = ph.hash(password)
-    store_pw = secrets.token_urlsafe(16)  # random per-user store password returned to client after login
     with get_conn() as conn:
         row = conn.execute("SELECT id FROM users WHERE email=%s", (email,)).fetchone()
         if row:
             raise HTTPException(status_code=409, detail="Email already registered")
         user_id = secrets.token_hex(16)
         conn.execute("""
-            INSERT INTO users (id, email, display_name, password_hash, store_password)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (user_id, email, display_name or email, pw_hash, store_pw))
+            INSERT INTO users (id, email, display_name, password_hash)
+            VALUES (%s, %s, %s, %s)
+        """, (user_id, email, display_name or email, pw_hash))
         return user_id
 
 def get_user_by_email(email: str) -> Optional[dict]:
     email = validate_email(email)
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email, display_name, password_hash, store_password FROM users WHERE email=%s",
+            "SELECT id, email, display_name, password_hash FROM users WHERE email=%s",
             (email,),
         ).fetchone()
     if not row:
         return None
-    return {"id": row[0], "email": row[1], "display_name": row[2], "password_hash": row[3], "store_password": row[4]}
+    return {"id": row[0], "email": row[1], "display_name": row[2], "password_hash": row[3]}
 
 def create_session(user_id: str, req: Request) -> str:
     token = secrets.token_urlsafe(32)
@@ -395,17 +395,6 @@ def delete_session(req: Request) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM sessions WHERE token=%s", (token,))
 
-def get_store_password_for_user(user_id: str) -> str:
-    with get_conn() as conn:
-        row = conn.execute("SELECT store_password FROM users WHERE id=%s", (user_id,)).fetchone()
-    if not row or not row[0]:
-        # If missing (older rows), mint one now
-        pw = secrets.token_urlsafe(16)
-        with get_conn() as conn:
-            conn.execute("UPDATE users SET store_password=%s WHERE id=%s", (pw, user_id))
-        return pw
-    return row[0]
-
 # =================== FastAPI app ===================
 
 app = FastAPI(title="CRS Proxy API")
@@ -427,7 +416,6 @@ def _startup():
 
 # --------- Require login for Web Client (/app/*) only + flow gating ----------
 
-# Anonymous users may load only these (landing + base assets)
 ALLOW_ANON_PATHS = {
     "/app/",
     "/app/index.html",
@@ -435,42 +423,35 @@ ALLOW_ANON_PATHS = {
     "/app/auth.js",
     "/app/favicon.ico",
 }
-# APIs, auth endpoints, and health are never gated here.
 ALLOW_PREFIXES = ("/auth", "/api", "/health")
 
 @app.middleware("http")
 async def webclient_requires_login(request: Request, call_next):
     path = request.url.path
 
-    # Never gate these prefixes (API/auth/health remain unaffected)
     if path.startswith(ALLOW_PREFIXES):
         return await call_next(request)
 
-    # Gate only the Web Client static site
     if path.startswith("/app"):
-        # Registration page only allowed if short-lived reg cookie is set
+        # gate register page with short-lived cookie
         if path == "/app/register.html":
-            reg_cookie = request.cookies.get(REG_COOKIE)
-            if not reg_cookie:
+            if not request.cookies.get("reg_ok"):
                 return RedirectResponse("/app/index.html", status_code=303)
-            # allow to proceed
 
-        # Load page requires active session
-        if path == "/app/load.html":
+        # store page requires session
+        if path == "/app/store.html":
             sess = await anyio.to_thread.run_sync(get_session, request)
             if not sess:
                 return RedirectResponse("/app/index.html", status_code=303)
 
-        # Dashboard requires session + stage "store_ok"
+        # dashboard requires session + stage
         if path == "/app/dashboard.html":
             sess = await anyio.to_thread.run_sync(get_session, request)
             if not sess:
                 return RedirectResponse("/app/index.html", status_code=303)
-            stage = request.cookies.get(STAGE_COOKIE)
-            if stage != "store_ok":
-                return RedirectResponse("/app/load.html", status_code=303)
+            if request.cookies.get("flow_stage") != "store_ok":
+                return RedirectResponse("/app/store.html", status_code=303)
 
-        # For any other /app path (like sender.html, umbral wasm, etc.):
         if request.method in ("GET", "HEAD"):
             sess = await anyio.to_thread.run_sync(get_session, request)
             if not sess and path not in ALLOW_ANON_PATHS and path != "/app/register.html":
@@ -646,9 +627,6 @@ def auth_logout(req: Request):
 
 @app.post("/auth/register")
 def auth_register(req: Request, body: dict):
-    """
-    Body: { "email": "alice@example.com", "password": "strong password", "display_name": "Alice" }
-    """
     email = validate_email(body.get("email", ""))
     password = validate_password(body.get("password", ""))
     display_name = (body.get("display_name") or email)
@@ -656,19 +634,14 @@ def auth_register(req: Request, body: dict):
     token = create_session(user_id, req)
     resp = _ok({"ok": True})
     set_session_cookie(resp, req, token)
-    # clear reg cookie once used
     clear_reg_cookie(resp)
     return resp
 
 @app.post("/auth/login")
 def auth_login(req: Request, body: dict):
-    """
-    Body: { "email": "alice@example.com", "password": "..." }
-    """
     email = validate_email(body.get("email", ""))
     password = body.get("password", "") or ""
     user = get_user_by_email(email)
-    # Reduce user-enumeration signal: verify a dummy hash if user missing
     dummy_hash = ph.hash("x"*12)
     stored_hash = (user or {}).get("password_hash") or dummy_hash
     try:
@@ -695,14 +668,12 @@ def auth_login(req: Request, body: dict):
 
 @app.post("/auth/allow_register")
 def allow_register(req: Request):
-    """Set short-lived cookie to allow /app/register.html."""
     resp = _ok({"ok": True})
     set_reg_cookie(resp, req)
     return resp
 
 @app.post("/auth/stage")
 def set_stage(req: Request, body: dict):
-    """Set flow stage cookie after successful local unlock. Body: {"stage":"store_ok"}"""
     sess = get_session(req)
     if not sess:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -713,23 +684,46 @@ def set_stage(req: Request, body: dict):
     set_stage_cookie(resp, req, stage)
     return resp
 
-@app.get("/api/store_password")
-def api_store_password(req: Request):
-    """Return the per-user store password to unlock local file (only when logged in)."""
+# -------------- NEW: Encrypted per-user store API --------------
+
+@app.get("/api/user_store")
+def api_user_store_get(req: Request):
+    """Return encrypted store blob if present; never returns plaintext."""
     sess = get_session(req)
     if not sess:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    pw = get_store_password_for_user(sess["user_id"])
-    return {"password": pw}
+    with get_conn() as conn:
+        row = conn.execute("SELECT blob, updated_at FROM user_stores WHERE user_id=%s", (sess["user_id"],)).fetchone()
+    if not row:
+        return {"exists": False}
+    blob, updated_at = row
+    return {"exists": True, "blob_b64": b64e(blob), "updated_at": updated_at.isoformat()}
 
-# -------------- NEW: Restricted example field --------------
+@app.post("/api/user_store")
+def api_user_store_put(req: Request, body: dict):
+    """Replace encrypted store blob with client-provided ciphertext."""
+    sess = get_session(req)
+    if not sess:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    blob_b64 = (body or {}).get("blob_b64") or ""
+    if not blob_b64:
+        raise HTTPException(status_code=400, detail="Missing blob_b64")
+    blob = b64d(blob_b64)
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO user_stores (user_id, blob, updated_at)
+            VALUES (%s, %s, NOW())
+            ON CONFLICT (user_id) DO UPDATE SET blob=EXCLUDED.blob, updated_at=NOW()
+        """, (sess["user_id"], blob))
+    return _ok({"ok": True})
+
+# -------------- Example restricted field --------------
 
 @app.get("/api/restricted_field")
 def api_restricted_field(req: Request):
     sess = get_session(req)
     if not sess:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    # Example private data
     return {"field": f"Hello {sess['display_name']} — this is your restricted field."}
 
 # -------------------------------------------------------------

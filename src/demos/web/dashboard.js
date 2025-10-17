@@ -35,5 +35,7 @@ $("#btn-fetch")?.addEventListener("click", async ()=>{
 
 $("#btn-logout")?.addEventListener("click", async ()=>{
   try { await logout(); } catch {}
+  sessionStorage.removeItem("crs_store_plain");
+  sessionStorage.removeItem("crs_store_password");
   window.location.href = "/app/index.html";
 });

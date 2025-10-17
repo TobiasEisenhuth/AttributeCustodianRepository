@@ -1,19 +1,16 @@
 // CRS Sender Web — using self-hosted Umbral WASM (API per your umbral_pre_wasm.js)
 
 (() => {
-  // Firefox < 128 polyfill for FinalizationRegistry-related symbols occasionally referenced
   try {
     if (typeof Symbol.dispose === "undefined") Object.defineProperty(Symbol, "dispose", { value: Symbol("Symbol.dispose") });
     if (typeof Symbol.asyncDispose === "undefined") Object.defineProperty(Symbol, "asyncDispose", { value: Symbol("Symbol.asyncDispose") });
-  } catch { /* ignore */ }
+  } catch {}
 })();
 
 (async () => {
-  // ===== Load self-hosted WASM pack exactly like your working smoke test
   const Umbral = await import("/app/umbral/umbral_pre_wasm.js");
   await Umbral.default(new URL("/app/umbral/umbral_pre_wasm_bg.wasm", window.location.href));
 
-  // Shorthands (from your wasm exports)
   const {
     SecretKey, PublicKey, Signer,
     Capsule, CapsuleFrag,
@@ -61,37 +58,22 @@
     healthBadge.className = "badge " + (j.ok ? "ok":"bad");
   } catch { healthBadge.textContent="unreachable"; healthBadge.className="badge bad"; }
 
-  // ======= API =======
-  async function apiPost(path, payload){
-    const url = path.startsWith("/api") ? path : "/api"+path;
-    const r = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload) });
-    if(!r.ok) throw new Error(`${r.status} ${r.statusText} — ${await r.text()}`);
-    return r.json();
-  }
-
   // ======= utils =======
   const te = new TextEncoder(); const td = new TextDecoder();
   const b64e = (u8) => btoa(String.fromCharCode(...u8));
   const b64d = (s)  => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 
-  const prefs = {
-    get senderId(){ return localStorage.getItem("senderIdDefault") || ""; },
-    set senderId(v){ localStorage.setItem("senderIdDefault", v||""); },
-  };
-  senderIdDefault.value = prefs.senderId;
-  senderIdDefault.addEventListener("input", () => prefs.senderId = senderIdDefault.value.trim());
+  // msgpack + scrypt for (de)serializing and encrypting
+  const { encode: msgpackEncode, decode: msgpackDecode } = await import("https://esm.sh/@msgpack/msgpack@3.0.0");
+  const { scrypt } = await import("https://esm.sh/scrypt-js@3.0.1");
 
-  // ======= Encrypted store (same format as Python: magic "ACSE", ver=1, scrypt + AES-GCM) =======
+  // ======= Encrypted container format (ACSE)
   const MAGIC = new Uint8Array([0x41,0x43,0x53,0x45]); // "ACSE"
   const VER = 1;
 
-  // scrypt-js via CDN
-  const { scrypt } = await import("https://esm.sh/scrypt-js@3.0.1");
-  const { encode: msgpackEncode, decode: msgpackDecode } = await import("https://esm.sh/@msgpack/msgpack@3.0.0");
-
   async function scryptKey(pass, salt) {
     const pw = new TextEncoder().encode(pass);
-    const dk = await scrypt(pw, salt, 1<<14, 8, 1, 32); // n=2**14, r=8, p=1, dk=32
+    const dk = await scrypt(pw, salt, 1<<14, 8, 1, 32);
     return new Uint8Array(dk);
   }
   async function aesGcmEncrypt(keyBytes, nonce, plaintext) {
@@ -99,121 +81,149 @@
     const ct  = await crypto.subtle.encrypt({ name:"AES-GCM", iv: nonce }, key, plaintext);
     return new Uint8Array(ct);
   }
-  async function aesGcmDecrypt(keyBytes, nonce, ciphertext) {
-    const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
-    const pt  = await crypto.subtle.decrypt({ name:"AES-GCM", iv: nonce }, key, ciphertext);
-    return new Uint8Array(pt);
-  }
 
-  let senderStore = {};  // secret_id -> { secret_key, public_key, signing_key, verifying_key } (all Uint8Array)
-  let storePassword = "";
-  let storeHandle = null;
-  let storeFilename = "";
+  // ======= Store (in-memory) =======
+  let senderStore = {};  // secret_id -> { secret_key, public_key, signing_key, verifying_key } (Uint8Array)
+  let storePassword = ""; // held only in sessionStorage
+
+  // Read from sessionStorage if present (set on /app/store.html)
+  (function loadSessionStore(){
+    const plain_b64 = sessionStorage.getItem("crs_store_plain");
+    const pw = sessionStorage.getItem("crs_store_password") || "";
+    if (plain_b64) {
+      try {
+        const bytes = b64d(plain_b64);
+        const obj = msgpackDecode(bytes);
+        const toU8 = (v)=> (v instanceof Uint8Array)? v : new Uint8Array(v);
+        const st = {};
+        for (const [sid, rec] of Object.entries(obj||{})) {
+          st[sid] = {
+            secret_key:    toU8(rec.secret_key),
+            public_key:    toU8(rec.public_key),
+            signing_key:   toU8(rec.signing_key),
+            verifying_key: toU8(rec.verifying_key),
+          };
+        }
+        senderStore = st;
+        storePassword = pw;
+      } catch(e) {
+        console.warn("Failed to load session store:", e);
+      }
+    }
+  })();
 
   function setStoreBadge() {
-    if (storeHandle) { storeBadge.textContent = `opened: ${storeFilename||"store.msgpack"}`; storeBadge.className="badge ok"; }
-    else if (Object.keys(senderStore).length>0) { storeBadge.textContent = "loaded (memory only)"; storeBadge.className="badge ok"; }
+    if (Object.keys(senderStore).length>0) { storeBadge.textContent = "loaded (session)"; storeBadge.className="badge ok"; }
     else { storeBadge.textContent = "no store"; storeBadge.className="badge"; }
   }
   setStoreBadge();
 
-  function serializeStoreForDisk() {
+  // ---- Serialize plaintext & keep in sessionStorage
+  function serializeStorePlain() {
     const obj = {};
     for (const [sid, rec] of Object.entries(senderStore)) {
       obj[sid] = {
-        secret_key:    rec.secret_key,     // SecretKey.toBEBytes()
-        public_key:    rec.public_key,     // PublicKey.toCompressedBytes()
-        signing_key:   rec.signing_key,    // SecretKey.toBEBytes()
-        verifying_key: rec.verifying_key,  // PublicKey.toCompressedBytes()
+        secret_key:    rec.secret_key,
+        public_key:    rec.public_key,
+        signing_key:   rec.signing_key,
+        verifying_key: rec.verifying_key,
       };
     }
     return msgpackEncode(obj);
   }
-  async function exportStoreBytes(password) {
-    if (!password) throw new Error("Password required");
-    const salt  = crypto.getRandomValues(new Uint8Array(16));
-    const key   = await scryptKey(password, salt);
-    const nonce = crypto.getRandomValues(new Uint8Array(12));
-    const payload = serializeStoreForDisk();
-    const ct = await aesGcmEncrypt(key, nonce, payload);
-    const out = new Uint8Array(4+1+16+12+ct.length);
-    out.set(MAGIC, 0); out[4]=VER; out.set(salt,5); out.set(nonce,21); out.set(ct,33);
-    return out;
-  }
-  async function importStoreBytes(fileBytes, password) {
-    if (fileBytes.length < (4+1+16+12+1)) throw new Error("Store too short");
-    if (fileBytes[0]!==0x41||fileBytes[1]!==0x43||fileBytes[2]!==0x53||fileBytes[3]!==0x45) throw new Error("Wrong magic (ACSE)");
-    if (fileBytes[4]!==VER) throw new Error("Wrong version (expected 1)");
-    const salt  = fileBytes.slice(5,21);
-    const nonce = fileBytes.slice(21,33);
-    const ct    = fileBytes.slice(33);
-    const key   = await scryptKey(password, salt);
-    let pt;
-    try { pt = await aesGcmDecrypt(key, nonce, ct); }
-    catch { throw new Error("Decryption failed (bad password or corrupted file)"); }
-    const obj = msgpackDecode(pt);
-    const toU8 = (v)=> (v instanceof Uint8Array)? v : new Uint8Array(v);
-    const st = {};
-    for (const [sid, rec] of Object.entries(obj||{})) {
-      st[sid] = {
-        secret_key:    toU8(rec.secret_key),
-        public_key:    toU8(rec.public_key),
-        signing_key:   toU8(rec.signing_key),
-        verifying_key: toU8(rec.verifying_key),
-      };
-    }
-    senderStore = st;
-  }
-
-  async function saveStoreIfPossible() {
-    if (!storePassword) return;
+  function refreshSessionPlain() {
     try {
-      const bytes = await exportStoreBytes(storePassword);
-      if (storeHandle?.createWritable) {
-        const w = await storeHandle.createWritable();
-        await w.write(bytes); await w.close();
-        toast("Store saved","ok");
-      }
-    } catch (e) { console.warn("Auto-save failed:", e); }
+      const pt = serializeStorePlain();
+      sessionStorage.setItem("crs_store_plain", b64e(new Uint8Array(pt)));
+    } catch(e) { console.warn("Failed to refresh session plain:", e); }
   }
 
-  async function openStoreViaFS() {
-    if (!window.showOpenFilePicker) throw new Error("File System Access API not supported in this browser");
-    const pass = passFS.value; if (!pass) throw new Error("Enter password first");
-    const [handle] = await window.showOpenFilePicker({
-      types: [{ description:"CRS Sender Store", accept: { "application/octet-stream":[".msgpack",".bin",".store"]}}],
-      excludeAcceptAllOption:false, multiple:false
-    });
-    const file = await handle.getFile();
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    await importStoreBytes(bytes, pass);
-    storePassword = pass; storeHandle = handle; storeFilename = file.name||"store.msgpack";
-    setStoreBadge();
-    storeOut.textContent = `Opened '${storeFilename}', loaded ${Object.keys(senderStore).length} secret(s).`;
-    toast("Store loaded","ok");
+  // ---- Encrypt and upload to server as the canonical persisted copy
+  async function persistStoreToServer() {
+    try {
+      if (!storePassword) return; // cannot encrypt
+      const pt = serializeStorePlain();
+      const salt  = crypto.getRandomValues(new Uint8Array(16));
+      const nonce = crypto.getRandomValues(new Uint8Array(12));
+      const key   = await scryptKey(storePassword, salt);
+      const ct    = await aesGcmEncrypt(key, nonce, pt);
+      const out   = new Uint8Array(4+1+16+12+ct.length);
+      out.set(MAGIC,0); out[4]=VER; out.set(salt,5); out.set(nonce,21); out.set(ct,33);
+      const r = await fetch("/api/user_store", {
+        method:"POST", headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ blob_b64: b64e(out) })
+      });
+      if (!r.ok) throw new Error(await r.text());
+      // keep session copy fresh
+      refreshSessionPlain();
+      toast("Store synced","ok");
+    } catch (e) {
+      console.warn("Persist failed:", e);
+      toast("Auto-sync failed: " + (e.message||String(e)), "error");
+    }
   }
-  async function resaveFS(){ if(!storeHandle) return toast("No opened store file","info"); if(!storePassword) return toast("No password set","error"); await saveStoreIfPossible(); }
-  function closeFS(){ storeHandle=null; storeFilename=""; setStoreBadge(); toast("Closed store file","ok"); }
 
+  // ======= Legacy FS / import-export UI kept (optional) =======
+  const btnOpenFS  = $("#btnOpenFS"); const btnResaveFS=$("#btnResaveFS"); const btnCloseFS=$("#btnCloseFS"); const passFS=$("#storePassFS");
+  const btnImport  = $("#btnImport");  const btnExport  = $("#btnExport"); const passIn=$("#storePassIn"); const fileIn=$("#storeFileIn");
+  async function openStoreViaFS(){ toast("FS store disabled in server-sync mode","info"); }
+  async function resaveFS(){ toast("FS store disabled in server-sync mode","info"); }
+  function closeFS(){ toast("FS store closed","info"); }
   async function importFallback(){
     const pass = passIn.value; const file = fileIn.files?.[0];
-    if(!pass || !file) throw new Error("Choose file and enter password");
+    if(!pass || !file) { toast("Choose file and enter password","error"); return; }
     const bytes = new Uint8Array(await file.arrayBuffer());
-    await importStoreBytes(bytes, pass);
-    storePassword = pass; setStoreBadge();
-    storeOut.textContent = `Imported ${Object.keys(senderStore).length} secret(s) from '${file.name}'.`;
-    toast("Store imported","ok");
+    // Reuse the 'load' routine from /app/store.html: accept ACSE format
+    try{
+      if (bytes[0]!==0x41||bytes[1]!==0x43||bytes[2]!==0x53||bytes[3]!==0x45) throw new Error("Not ACSE");
+      if (bytes[4]!==VER) throw new Error("Bad version");
+      const salt  = bytes.slice(5,21);
+      const nonce = bytes.slice(21,33);
+      const ct    = bytes.slice(33);
+      const key   = await scryptKey(pass, salt);
+      const pt    = await crypto.subtle.importKey("raw", await (async()=>key)(), "AES-GCM", false, ["decrypt"])
+        .then(()=>crypto.subtle.decrypt({name:"AES-GCM", iv:nonce}, await crypto.subtle.importKey("raw", key, "AES-GCM", false, ["decrypt"]), ct))
+        .then(buf=>new Uint8Array(buf));
+      // load pt into memory
+      const obj = msgpackDecode(pt);
+      const toU8 = (v)=> (v instanceof Uint8Array)? v : new Uint8Array(v);
+      const st = {};
+      for (const [sid, rec] of Object.entries(obj||{})) {
+        st[sid] = {
+          secret_key:    toU8(rec.secret_key),
+          public_key:    toU8(rec.public_key),
+          signing_key:   toU8(rec.signing_key),
+          verifying_key: toU8(rec.verifying_key),
+        };
+      }
+      senderStore = st; storePassword = pass;
+      refreshSessionPlain();
+      await persistStoreToServer();
+      setStoreBadge();
+      storeOut.textContent = `Imported ${Object.keys(senderStore).length} secret(s) from file and synced to server.`;
+      toast("Imported & synced","ok");
+    }catch(e){
+      toast("Import failed: "+(e.message||String(e)),"error");
+      storeOut.textContent="Error: "+(e.message||String(e));
+    }
   }
   async function exportFallback(){
-    if(!storePassword) throw new Error("Enter export password (use the same one)");
-    const bytes = await exportStoreBytes(storePassword);
+    const pt = serializeStorePlain();
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([bytes],{type:"application/octet-stream"}));
-    a.download = `sender_store_${senderIdDefault.value||"web"}.msgpack`; a.click();
-    toast("Store exported (download)","ok");
+    a.href = URL.createObjectURL(new Blob([pt],{type:"application/octet-stream"}));
+    a.download = `sender_store_plain.msgpack`; a.click();
+    toast("Plain store downloaded (for backup)","ok");
   }
 
-  // ======= Key mgmt (IMPORTANT: matches your wasm API!)
+  // ======= prefs =======
+  const prefs = {
+    get senderId(){ return localStorage.getItem("senderIdDefault") || ""; },
+    set senderId(v){ localStorage.setItem("senderIdDefault", v||""); },
+  };
+  senderIdDefault.value = prefs.senderId;
+  senderIdDefault.addEventListener("input", () => prefs.senderId = senderIdDefault.value.trim());
+
+  // ======= Key mgmt
   function skToBytes(sk) { return sk.toBEBytes(); }
   function pkToBytes(pk) { return pk.toCompressedBytes(); }
 
@@ -238,10 +248,18 @@
     return { secretKey, publicKey, signingKey, verifyingKey };
   }
 
-  // ======= Wire forms =======
+  // ======= API helper for CRS endpoints
+  async function apiPost(path, payload){
+    const url = path.startsWith("/api") ? path : "/api"+path;
+    const r = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload) });
+    if(!r.ok) throw new Error(`${r.status} ${r.statusText} — ${await r.text()}`);
+    return r.json();
+  }
+
   function applyDefaultSender(form){ const i=form?.querySelector('input[name="senderId"]'); if(i && !i.value && prefs.senderId) i.value=prefs.senderId; }
   applyDefaultSender(formAdd); applyDefaultSender(formDelete); applyDefaultSender(formReq); applyDefaultSender(formRevoke); applyDefaultSender(formGrants);
 
+  // ======= Wire actions (persist to server after each change)
   formAdd.addEventListener("submit", async (e)=>{
     e.preventDefault(); addOut.textContent="";
     const fd = new FormData(formAdd);
@@ -253,7 +271,7 @@
 
     try {
       const { publicKey, verifyingKey } = ensureKeys(secretId);
-      const [capsule, ciphertext] = encrypt(publicKey, new TextEncoder().encode(secretValue));
+      const [capsule, ciphertext] = encrypt(publicKey, te.encode(secretValue));
 
       await apiPost("/add_or_update_secret", {
         sender_id: senderId,
@@ -264,9 +282,11 @@
         sender_verifying_key_b64: b64e(pkToBytes(verifyingKey)),
       });
 
-      await saveStoreIfPossible();
+      refreshSessionPlain();
+      await persistStoreToServer();
       toast(`Upserted '${secretId}' for '${senderId}'`,"ok");
       addOut.textContent = `OK: upserted ${secretId}`;
+      setStoreBadge();
     } catch (err) {
       toast("Add/Update failed: "+err.message,"error");
       addOut.textContent="Error: "+err.message;
@@ -290,9 +310,11 @@
     try{
       await apiPost("/delete_secret",{ sender_id: senderId, secret_id: secretId });
       delete senderStore[secretId];
-      await saveStoreIfPossible();
+      refreshSessionPlain();
+      await persistStoreToServer();
       toast(`Deleted '${secretId}' for '${senderId}'`,"ok");
       delOut.textContent=`OK: deleted ${secretId}`;
+      setStoreBadge();
     }catch(err){ toast("Delete failed: "+err.message,"error"); delOut.textContent="Error: "+err.message; }
   });
 
@@ -348,7 +370,8 @@
               kfrags_b64: kfrags.map(k => b64e(k.toBytes())),
             });
 
-            await saveStoreIfPossible();
+            refreshSessionPlain();
+            await persistStoreToServer();
             toast(`Granted ${r.receiver_id} -> ${r.secret_id}`,"ok");
             card.remove();
           }catch(err){ toast("Grant failed: "+err.message,"error"); }
@@ -370,7 +393,8 @@
     prefs.senderId = senderId;
     try{
       await apiPost("/revoke_access",{ sender_id: senderId, receiver_id: receiverId, secret_id: secretId });
-      await saveStoreIfPossible();
+      refreshSessionPlain();
+      await persistStoreToServer();
       toast(`Revoked ${receiverId} -> ${secretId}`,"ok");
       revokeOut.textContent=`OK: revoked ${receiverId} -> ${secretId}`;
     }catch(err){ toast("Revoke failed: "+err.message,"error"); revokeOut.textContent="Error: "+err.message; }
@@ -388,7 +412,7 @@
     }catch(err){ toast("Load summary failed: "+err.message,"error"); grantsOut.textContent="Error: "+err.message; }
   });
 
-  // Store UI
+  // Store UI (kept, optional)
   $("#btnOpenFS")?.addEventListener("click", async (e)=>{ e.preventDefault(); try{ await openStoreViaFS(); } catch(err){ toast(err.message,"error"); }});
   $("#btnResaveFS")?.addEventListener("click", async (e)=>{ e.preventDefault(); try{ await resaveFS(); } catch(err){ toast(err.message,"error"); }});
   $("#btnCloseFS")?.addEventListener("click", (e)=>{ e.preventDefault(); closeFS(); });

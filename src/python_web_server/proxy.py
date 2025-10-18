@@ -99,23 +99,23 @@ def init_db():
         # grants
         conn.execute("""
             CREATE TABLE IF NOT EXISTS grants (
-              sender_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              receiver_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              delegator_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              delegatee_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
               secret_id TEXT NOT NULL,
-              kfrags_blob BYTEA NOT NULL,
-              PRIMARY KEY (sender_id, receiver_id, secret_id)
+              kfrags_b BYTEA NOT NULL,
+              PRIMARY KEY (delegator_id, delegatee_id, secret_id)
             );
         """)
         # secret_id mapping
         conn.execute("""
             CREATE TABLE IF NOT EXISTS secret_id_mapping (
-              sender_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              receiver_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              sender_secret_id TEXT NOT NULL,
-              receiver_secret_id TEXT NOT NULL,
-              PRIMARY KEY (sender_id, receiver_id, sender_secret_id),
-              UNIQUE (sender_id, receiver_id, receiver_secret_id),
-              CONSTRAINT not_selfmap CHECK (sender_id <> receiver_id)
+              user_A_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              user_B_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              user_A_secret_id TEXT NOT NULL,
+              user_B_secret_id TEXT NOT NULL,
+              PRIMARY KEY (user_A_id, user_B_id, user_A_secret_id),
+              UNIQUE (user_A_id, user_B_id, user_B_secret_id),
+              CONSTRAINT not_selfmap CHECK (user_A_id <> user_B_id)
             );
         """)
         # inbox
@@ -133,16 +133,16 @@ def upsert_secret(payload: Dict[str, Any]) -> None:
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO ciphers (
-              sender_id, secret_id, capsule, ciphertext, sender_public_key, sender_verifying_key
+              user_id, secret_id, capsule, ciphertext, sender_public_key, sender_verifying_key
             )
             VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (sender_id, secret_id) DO UPDATE SET
+            ON CONFLICT (user_id, secret_id) DO UPDATE SET
               capsule = EXCLUDED.capsule,
               ciphertext = EXCLUDED.ciphertext,
               sender_public_key = EXCLUDED.sender_public_key,
               sender_verifying_key = EXCLUDED.sender_verifying_key
         """, (
-            payload["sender_id"],
+            payload["user_id"],
             payload["secret_id"],
             payload["capsule"],
             payload["ciphertext"],
@@ -150,33 +150,33 @@ def upsert_secret(payload: Dict[str, Any]) -> None:
             payload["sender_verifying_key"],
         ))
 
-def delete_secret(sender_id: str, secret_id: str) -> None:
+def erase_cipher(user_id: str, secret_id: str) -> None:
     with get_conn() as conn:
-        conn.execute("DELETE FROM secrets WHERE sender_id=%s AND secret_id=%s", (sender_id, secret_id))
-        conn.execute("DELETE FROM grants  WHERE sender_id=%s AND secret_id=%s", (sender_id, secret_id))
+        conn.execute("DELETE FROM ciphers WHERE user_id=%s AND secret_id=%s", (user_id, secret_id))
+        conn.execute("DELETE FROM grants  WHERE user_id=%s AND secret_id=%s", (user_id, secret_id))
 
-def insert_or_replace_grant(sender_id: str, receiver_id: str, secret_id: str, kfrags_bytes_list: List[bytes]) -> None:
-    blob = msgpack.packb(kfrags_bytes_list, use_bin_type=True)
+def upsert_grant(delegator_id: str, delegatee_id: str, secret_id: str, kfrags_bytes_list: List[bytes]) -> None:
+    kfrags = msgpack.packb(kfrags_bytes_list, use_bin_type=True)
     with get_conn() as conn:
         conn.execute("""
-            INSERT INTO grants (sender_id, receiver_id, secret_id, kfrags_blob)
+            INSERT INTO grants (delegator_id, delegatee_id, secret_id, kfrags)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT (sender_id, receiver_id, secret_id) DO UPDATE SET
-              kfrags_blob = EXCLUDED.kfrags_blob
-        """, (sender_id, receiver_id, secret_id, blob))
+            ON CONFLICT (delegator_id, delegatee_id, secret_id) DO UPDATE SET
+              kfrags = EXCLUDED.kfrags
+        """, (delegator_id, delegatee_id, secret_id, kfrags))
 
-def revoke_grant(sender_id: str, receiver_id: str, secret_id: str) -> None:
+def revoke_grant(delegator_id: str, delegatee_id: str, secret_id: str) -> None:
     with get_conn() as conn:
-        conn.execute("DELETE FROM grants WHERE sender_id=%s AND receiver_id=%s AND secret_id=%s",
-                     (sender_id, receiver_id, secret_id))
+        conn.execute("DELETE FROM grants WHERE delegator_id=%s AND delegatee_id=%s AND secret_id=%s",
+                     (delegator_id, delegatee_id, secret_id))
 
-def load_secret(sender_id: str, secret_id: str):
+def load_cipher(user_id: str, secret_id: str):
     with get_conn() as conn:
         row = conn.execute("""
             SELECT capsule, ciphertext, sender_public_key, sender_verifying_key
-            FROM secrets
-            WHERE sender_id=%s AND secret_id=%s
-        """, (sender_id, secret_id)).fetchone()
+            FROM ciphers
+            WHERE user_id=%s AND secret_id=%s
+        """, (user_id, secret_id)).fetchone()
     if not row:
         return None
     capsule_b, ciphertext_b, spk_b, svk_b = row
@@ -187,13 +187,13 @@ def load_secret(sender_id: str, secret_id: str):
         "sender_verifying_key": PublicKey.from_compressed_bytes(svk_b),
     }
 
-def load_grant_kfrags(sender_id: str, receiver_id: str, secret_id: str) -> List[KeyFrag]:
+def fetch_grant_kfrags(delegator_id: str, delegatee_id: str, secret_id: str) -> List[KeyFrag]:
     with get_conn() as conn:
         row = conn.execute("""
-            SELECT kfrags_blob
+            SELECT kfrags_b
             FROM grants
-            WHERE sender_id=%s AND receiver_id=%s AND secret_id=%s
-        """, (sender_id, receiver_id, secret_id)).fetchone()
+            WHERE delegator_id=%s AND delegatee_id=%s AND secret_id=%s
+        """, (delegator_id, delegatee_id, secret_id)).fetchone()
     if not row:
         return []
     (blob,) = row
@@ -486,11 +486,12 @@ async def webclient_requires_login(request: Request, call_next):
 
     return await call_next(request)
 
-# -------------- Existing CRS API (unchanged) --------------
+# -------------- CRS API --------------
 
 @app.post("/api/add_or_update_secret")
 def api_add_or_update_secret(body: dict):
     try:
+        # TODO change sender_id with session token
         payload = {
             "sender_id": body["sender_id"],
             "secret_id": body["secret_id"],
@@ -504,10 +505,10 @@ def api_add_or_update_secret(body: dict):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.post("/api/delete_secret")
+@app.post("/api/erase_secret")
 def api_delete_secret(body: dict):
     try:
-        delete_secret(body["sender_id"], body["secret_id"])
+        erase_cipher(body["sender_id"], body["secret_id"])
         return _ok()
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -519,7 +520,7 @@ def api_grant_access_proxy(body: dict):
         receiver_id = body["receiver_id"]
         secret_id   = body["secret_id"]
         kfrags      = [b64d(b) for b in body["kfrags_b64"]]
-        insert_or_replace_grant(sender_id, receiver_id, secret_id, kfrags)
+        upsert_grant(sender_id, receiver_id, secret_id, kfrags)
         return _ok()
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -549,11 +550,11 @@ def api_request_secret(body: dict):
         secret_id   = body["secret_id"]
         receiving_pk  = PublicKey.from_compressed_bytes(b64d(body["receiver_public_key_b64"]))
 
-        secret = load_secret(sender_id, secret_id)
+        secret = load_cipher(sender_id, secret_id)
         if not secret:
             return {"action": "ERROR", "payload": {"error": f"Unknown secret '{secret_id}'"}}
 
-        kfrags = load_grant_kfrags(sender_id, receiver_id, secret_id)
+        kfrags = fetch_grant_kfrags(sender_id, receiver_id, secret_id)
         if not kfrags:
             return {"action": "ERROR", "payload": {"error": f"No grant for {receiver_id} -> {secret_id}"}}
 

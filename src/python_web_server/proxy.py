@@ -1,24 +1,33 @@
-# proxy.py
-import mimetypes
-mimetypes.add_type('application/wasm', '.wasm')  # ensure correct MIME for .wasm
-
-import os
-import sys
-import re
-import secrets
-from datetime import datetime, timedelta, timezone
+# utils
 from typing import List, Dict, Any, Optional
 
-import anyio
-import msgpack
+# pre proxy core
+from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
 import psycopg
+import msgpack
+import secrets
+
+# system utils
+import os
+import sys
+
+# utils
+import re
+from datetime import datetime, timedelta, timezone
+
+# web utils
+import anyio
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from starlette.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
+from starlette.responses import RedirectResponse
+from contextlib import asynccontextmanager
 
-# Password hashing (Argon2id)
+# web assambly mimetypes (for wasm umbral bindings)
+import mimetypes;
+mimetypes.add_type('application/wasm', '.wasm')
+
+# password hashing (Argon2id)
 from argon2 import PasswordHasher
 from argon2.low_level import Type as Argon2Type
 from argon2.exceptions import VerifyMismatchError, InvalidHash
@@ -33,7 +42,6 @@ from protocol import (
 PROXY_HOST = os.getenv("PROXY_HOST", "0.0.0.0")
 PROXY_PORT = int(os.getenv("PROXY_PORT", "8000"))
 
-# ---- DB config (env-overridable) ----
 DB_HOST = os.getenv("PGHOST", "localhost")
 DB_PORT = int(os.getenv("PGPORT", "5432"))
 DB_USER = os.getenv("PGUSER", "postgres")
@@ -53,79 +61,78 @@ def get_conn():
 
 def init_db():
     with get_conn() as conn:
-        # Existing CRS tables
+        # users
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS secrets (
-              sender_id TEXT NOT NULL,
+            CREATE TABLE IF NOT EXISTS users (
+              user_id TEXT PRIMARY KEY,
+              email TEXT UNIQUE NOT NULL,
+              password_hash TEXT NOT NULL
+            );
+        """)
+        # session
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+              user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              token TEXT PRIMARY KEY,
+              expires_at TIMESTAMPTZ NOT NULL
+            );
+        """)
+        # encrypted user blob
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_blob_store (
+              user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              blob BYTEA NOT NULL
+            );
+        """)
+        # ciphers
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ciphers (
+              user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
               secret_id TEXT NOT NULL,
               capsule BYTEA NOT NULL,
               ciphertext BYTEA NOT NULL,
               sender_public_key BYTEA NOT NULL,
               sender_verifying_key BYTEA NOT NULL,
-              PRIMARY KEY (sender_id, secret_id)
+              PRIMARY KEY (user_id, secret_id)
             );
         """)
+        # grants
         conn.execute("""
             CREATE TABLE IF NOT EXISTS grants (
-              sender_id TEXT NOT NULL,
-              receiver_id TEXT NOT NULL,
+              sender_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              receiver_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
               secret_id TEXT NOT NULL,
               kfrags_blob BYTEA NOT NULL,
               PRIMARY KEY (sender_id, receiver_id, secret_id)
             );
         """)
-        # inbox tables
+        # secret_id mapping
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS sender_inbox (
-              sender_id  TEXT NOT NULL,
-              msg_blob   BYTEA NOT NULL,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            CREATE TABLE IF NOT EXISTS secret_id_mapping (
+              sender_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              receiver_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              sender_secret_id TEXT NOT NULL,
+              receiver_secret_id TEXT NOT NULL,
+              PRIMARY KEY (sender_id, receiver_id, sender_secret_id),
+              UNIQUE (sender_id, receiver_id, receiver_secret_id),
+              CONSTRAINT not_selfmap CHECK (sender_id <> receiver_id)
             );
         """)
+        # inbox
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS receiver_inbox (
-              receiver_id TEXT NOT NULL,
-              msg_blob    BYTEA NOT NULL,
-              created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-        """)
-
-        # Users / Sessions
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-              id TEXT PRIMARY KEY,
-              email TEXT UNIQUE NOT NULL,
-              display_name TEXT,
-              password_hash TEXT NOT NULL,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sessions (
-              token TEXT PRIMARY KEY,
-              user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              expires_at TIMESTAMPTZ NOT NULL,
-              user_agent TEXT,
-              ip TEXT
-            );
-        """)
-        # New: encrypted per-user store
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_stores (
-              user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-              blob BYTEA NOT NULL,
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            CREATE TABLE IF NOT EXISTS inbox (
+              user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+              msg BYTEA NOT NULL
             );
         """)
     print("[Proxy] DB initialized.")
 
-# =================== CRS HELPERS (existing) ===================
+# =================== CRS DB HELPERS ===================
 
 def upsert_secret(payload: Dict[str, Any]) -> None:
     with get_conn() as conn:
         conn.execute("""
-            INSERT INTO secrets (
+            INSERT INTO ciphers (
               sender_id, secret_id, capsule, ciphertext, sender_public_key, sender_verifying_key
             )
             VALUES (%s, %s, %s, %s, %s, %s)
@@ -397,7 +404,13 @@ def delete_session(req: Request) -> None:
 
 # =================== FastAPI app ===================
 
-app = FastAPI(title="CRS Proxy API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await anyio.to_thread.run_sync(init_db)
+    yield
+
+app = FastAPI(title="CRS Proxy API", lifespan=lifespan)
 
 @app.get("/health")
 def health():
@@ -424,10 +437,6 @@ app.mount("/app", StaticFiles(directory=web_dir, html=True), name="app")
 def _ok(payload: dict | None = None) -> JSONResponse:
     return JSONResponse(payload or {"ok": True})
 
-@app.on_event("startup")
-def _startup():
-    init_db()
-
 # --------- Require login for Web Client (/app/*) only + flow gating ----------
 
 ALLOW_ANON_PATHS = {
@@ -449,8 +458,12 @@ async def webclient_requires_login(request: Request, call_next):
     if path.startswith("/app"):
         # gate register page with short-lived cookie
         if path == "/app/register.html":
-            if not request.cookies.get("reg_ok"):
-                return RedirectResponse("/app/index.html", status_code=303)
+            # If already logged in, send folks to the next step in the flow.
+            sess = await anyio.to_thread.run_sync(get_session, request)
+            if sess:
+                if request.cookies.get("flow_stage") == "store_ok":
+                    return RedirectResponse("/app/dashboard.html", status_code=303)
+                return RedirectResponse("/app/store.html", status_code=303)
 
         # store page requires session
         if path == "/app/store.html":

@@ -57,7 +57,7 @@ DSN = f"host={DB_HOST} port={DB_PORT} dbname={DB_NAME} user={DB_USER} password={
 def get_conn():
     return psycopg.connect(DSN)
 
-# =================== DB INIT ===================
+# =================== DB INIT & Tables ===================
 
 def init_db():
     with get_conn() as conn:
@@ -96,26 +96,20 @@ def init_db():
               PRIMARY KEY (user_id, secret_id)
             );
         """)
-        # grants
+        # grants 
+        # TODO merge grants and secret_id_mappping
         conn.execute("""
             CREATE TABLE IF NOT EXISTS grants (
               delegator_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
               delegatee_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              secret_id TEXT NOT NULL,
+              delegator_secret_id TEXT NOT NULL,
+              delegatee_secret_id TEXT NOT NULL,
               kfrags_b BYTEA NOT NULL,
-              PRIMARY KEY (delegator_id, delegatee_id, secret_id)
-            );
-        """)
-        # secret_id mapping
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS secret_id_mapping (
-              user_A_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              user_B_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              user_A_secret_id TEXT NOT NULL,
-              user_B_secret_id TEXT NOT NULL,
-              PRIMARY KEY (user_A_id, user_B_id, user_A_secret_id),
-              UNIQUE (user_A_id, user_B_id, user_B_secret_id),
-              CONSTRAINT not_selfmap CHECK (user_A_id <> user_B_id)
+              PRIMARY KEY (delegator_id, delegatee_id, delegator_secret_id),
+              UNIQUE (delegator_id, delegatee_id, delegatee_secret_id),
+              CONSTRAINT not_selfmap CHECK (delegator_id <> delegatee_id),
+              FOREIGN KEY (delegator_id, delegator_secret_id) REFERENCES ciphers(user_id, secret_id) ON DELETE CASCADE,
+              CREATE INDEX ON grants (delegatee_id, delegatee_secret_id);
             );
         """)
         # inbox
@@ -199,24 +193,24 @@ def fetch_grant_kfrags(delegator_id: str, delegatee_id: str, secret_id: str) -> 
     (blob,) = row
     kfrag_bytes_list = msgpack.unpackb(blob, raw=False)
     return [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
-
-def list_grants_for_sender(sender_id: str) -> dict:
+#^
+def query_grants_for(user_id: str) -> dict:
     by_secret: Dict[str, List[str]] = {}
     total_grants = 0
     with get_conn() as conn:
-        secrets = [r[0] for r in conn.execute(
-            "SELECT secret_id FROM secrets WHERE sender_id=%s", (sender_id,)
+        all_users_secret_id = [r[0] for r in conn.execute(
+            "SELECT secret_id FROM ciphers WHERE user_id=%s", (user_id,)
         ).fetchall()]
-        for sec in secrets:
-            by_secret.setdefault(sec, [])
+        for secret_id in all_users_secret_id:
+            by_secret.setdefault(secret_id, [])
         rows = conn.execute(
-            "SELECT secret_id, receiver_id FROM grants WHERE sender_id=%s ORDER BY secret_id, receiver_id",
-            (sender_id,)
+            "SELECT delegator_id, delegatee_id FROM grants WHERE user_id=%s ORDER BY delegator_id, delegatee_id",
+            (user_id,)
         ).fetchall()
-    for sec_id, recv_id in rows:
-        by_secret.setdefault(sec_id, []).append(recv_id)
+    for secret_id, delegatee_id in rows:
+        by_secret.setdefault(secret_id, []).append(delegatee_id)
         total_grants += 1
-    return {"by_secret": by_secret, "totals": {"secrets": len(by_secret), "grants": total_grants}}
+    return {"by_secret": by_secret, "totals": {"ciphers": len(by_secret), "grants": total_grants}}
 
 # ---------- inbox helpers ----------
 def enqueue_for_sender(sender_id: str, action: str, payload: dict) -> None:
@@ -268,17 +262,17 @@ def now_utc() -> datetime:
 
 def cookie_name_and_secure(req: Request) -> tuple[str, bool]:
     # Use __Host- cookie on HTTPS (not on localhost HTTP)
-    is_https = (req.url.scheme == "https")
+    is_https = ("https" == req.url.scheme)
     host = (req.url.hostname or "").lower()
-    dev_http_local = (req.url.scheme == "http" and host in ("localhost", "127.0.0.1"))
+    dev_http_local = ("http" == req.url.scheme and host in ("localhost", "127.0.0.1"))
     if is_https and not dev_http_local:
         return "__Host-session", True
     return "session", False
 
 def secure_flag(req: Request) -> bool:
-    is_https = (req.url.scheme == "https")
+    is_https = ("http" == req.url.scheme)
     host = (req.url.hostname or "").lower()
-    dev_http_local = (req.url.scheme == "http" and host in ("localhost", "127.0.0.1"))
+    dev_http_local = ("http" == req.url.scheme and host in ("localhost", "127.0.0.1"))
     return (is_https and not dev_http_local)
 
 def set_session_cookie(resp: Response, req: Request, token: str) -> None:
@@ -457,22 +451,22 @@ async def webclient_requires_login(request: Request, call_next):
 
     if path.startswith("/app"):
         # gate register page with short-lived cookie
-        if path == "/app/register.html":
+        if "/app/register.html" == path:
             # If already logged in, send folks to the next step in the flow.
             sess = await anyio.to_thread.run_sync(get_session, request)
             if sess:
-                if request.cookies.get("flow_stage") == "store_ok":
+                if "store_ok" == request.cookies.get("flow_stage"):
                     return RedirectResponse("/app/dashboard.html", status_code=303)
                 return RedirectResponse("/app/store.html", status_code=303)
 
         # store page requires session
-        if path == "/app/store.html":
+        if "/app/store.html" == path:
             sess = await anyio.to_thread.run_sync(get_session, request)
             if not sess:
                 return RedirectResponse("/app/index.html", status_code=303)
 
         # dashboard requires session + stage
-        if path == "/app/dashboard.html":
+        if "/app/dashboard.html" == path:
             sess = await anyio.to_thread.run_sync(get_session, request)
             if not sess:
                 return RedirectResponse("/app/index.html", status_code=303)
@@ -588,7 +582,7 @@ def api_request_secret(body: dict):
 def api_list_grants(body: dict):
     try:
         sender_id = body["sender_id"]
-        summary = list_grants_for_sender(sender_id)
+        summary = query_grants_for(sender_id)
         return {"action": GRANTS_SUMMARY, "payload": summary}
     except Exception as e:
         return {"action": "ERROR", "payload": {"error": str(e)}}
@@ -756,7 +750,7 @@ def api_restricted_field(req: Request):
 
 # -------------------------------------------------------------
 
-if __name__ == "__main__":
+if "__main__" == __name__:
     init_db()
     import uvicorn
     uvicorn.run("proxy:app", host=PROXY_HOST, port=PROXY_PORT, reload=False)

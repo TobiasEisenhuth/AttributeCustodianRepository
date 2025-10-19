@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 # pre proxy core
 from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
 import psycopg
+import uuid
 import msgpack
 import secrets
 
@@ -64,78 +65,85 @@ def init_db():
         # users
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
-              user_id TEXT PRIMARY KEY,
-              email TEXT UNIQUE NOT NULL,
-              password_hash TEXT NOT NULL
+                user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL
             );
         """)
-        # session
+        # sessions
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
-              user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              token TEXT PRIMARY KEY,
-              expires_at TIMESTAMPTZ NOT NULL
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                token TEXT PRIMARY KEY,
+                expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '5 minutes')
             );
         """)
         # encrypted user blob
         conn.execute("""
             CREATE TABLE IF NOT EXISTS user_blob_store (
-              user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              blob BYTEA NOT NULL
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                blob BYTEA NOT NULL
             );
         """)
-        # ciphers
+        # crypto_bundle
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS ciphers (
-              user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              secret_id TEXT NOT NULL,
-              capsule BYTEA NOT NULL,
-              ciphertext BYTEA NOT NULL,
-              sender_public_key BYTEA NOT NULL,
-              sender_verifying_key BYTEA NOT NULL,
-              PRIMARY KEY (user_id, secret_id)
+            CREATE TABLE IF NOT EXISTS crypto_bundle (
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                secret_id TEXT NOT NULL,
+                capsule BYTEA NOT NULL,
+                ciphertext BYTEA NOT NULL,
+                sender_public_key BYTEA NOT NULL,
+                sender_verifying_key BYTEA NOT NULL,
+                PRIMARY KEY (user_id, secret_id)
             );
         """)
-        # grants 
-        # TODO merge grants and secret_id_mappping
+        # grants(user_id,) = row
         conn.execute("""
             CREATE TABLE IF NOT EXISTS grants (
-              delegator_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              delegatee_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              delegator_secret_id TEXT NOT NULL,
-              delegatee_secret_id TEXT NOT NULL,
-              kfrags_b BYTEA NOT NULL,
-              PRIMARY KEY (delegator_id, delegatee_id, delegator_secret_id),
-              UNIQUE (delegator_id, delegatee_id, delegatee_secret_id),
-              CONSTRAINT not_selfmap CHECK (delegator_id <> delegatee_id),
-              FOREIGN KEY (delegator_id, delegator_secret_id) REFERENCES ciphers(user_id, secret_id) ON DELETE CASCADE,
-              CREATE INDEX ON grants (delegatee_id, delegatee_secret_id);
+                delegator_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                delegatee_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                delegator_secret_id TEXT NOT NULL,
+                delegatee_secret_id TEXT NOT NULL,
+                kfrags_b BYTEA NOT NULL,
+                PRIMARY KEY (delegator_id, delegatee_id, delegator_secret_id),
+                UNIQUE (delegator_id, delegatee_id, delegatee_secret_id),
+                CONSTRAINT not_selfmap CHECK (delegator_id <> delegatee_id),
+                FOREIGN KEY (delegator_id, delegator_secret_id)
+                    REFERENCES crypto_bundle(user_id, secret_id) ON DELETE RESTRICT
             );
         """)
-        # inbox
+        # post office
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS inbox (
-              user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-              msg BYTEA NOT NULL
+            CREATE TABLE IF NOT EXISTS post_office (
+                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                msg BYTEA NOT NULL
             );
         """)
+        # # fast fetching of delegator_secret_id by delegatee request
+        # conn.execute("""
+        #     CREATE INDEX IF NOT EXISTS grants_by_delegatee
+        #     ON grants (delegatee_id, delegatee_secret_id)
+        # """)
     print("[Proxy] DB initialized.")
 
 # =================== CRS DB HELPERS ===================
 
 def upsert_secret(payload: Dict[str, Any]) -> None:
     with get_conn() as conn:
-        conn.execute("""
-            INSERT INTO ciphers (
-              user_id, secret_id, capsule, ciphertext, sender_public_key, sender_verifying_key
-            )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (user_id, secret_id) DO UPDATE SET
-              capsule = EXCLUDED.capsule,
-              ciphertext = EXCLUDED.ciphertext,
-              sender_public_key = EXCLUDED.sender_public_key,
-              sender_verifying_key = EXCLUDED.sender_verifying_key
-        """, (
+        conn.execute(
+            """
+            INSERT INTO crypto_bundle (
+                user_id, secret_id, capsule, ciphertext, sender_public_key, sender_verifying_key
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s
+            ) ON CONFLICT (
+                user_id, secret_id
+            ) DO UPDATE SET
+                capsule = EXCLUDED.capsule,
+                ciphertext = EXCLUDED.ciphertext,
+                sender_public_key = EXCLUDED.sender_public_key,
+                sender_verifying_key = EXCLUDED.sender_verifying_key
+            """, (
             payload["user_id"],
             payload["secret_id"],
             payload["capsule"],
@@ -144,33 +152,48 @@ def upsert_secret(payload: Dict[str, Any]) -> None:
             payload["sender_verifying_key"],
         ))
 
-def erase_cipher(user_id: str, secret_id: str) -> None:
+def erase_crypto_bundle(user_id: uuid, secret_id: str) -> None:
     with get_conn() as conn:
-        conn.execute("DELETE FROM ciphers WHERE user_id=%s AND secret_id=%s", (user_id, secret_id))
-        conn.execute("DELETE FROM grants  WHERE user_id=%s AND secret_id=%s", (user_id, secret_id))
+        conn.execute("DELETE FROM crypto_bundle WHERE user_id=%s AND secret_id=%s", (user_id, secret_id))
+        conn.execute("DELETE FROM grants  WHERE user_id=%s AND delegator_secret_id=%s", (user_id, secret_id))
 
-def upsert_grant(delegator_id: str, delegatee_id: str, secret_id: str, kfrags_bytes_list: List[bytes]) -> None:
+def upsert_grant(
+    delegator_id: uuid,
+    delegatee_id: uuid,
+    delegator_secret_id: str,
+    delegatee_secret_id: str,
+    kfrags_bytes_list: List[bytes]
+) -> None:
     kfrags = msgpack.packb(kfrags_bytes_list, use_bin_type=True)
     with get_conn() as conn:
-        conn.execute("""
-            INSERT INTO grants (delegator_id, delegatee_id, secret_id, kfrags)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (delegator_id, delegatee_id, secret_id) DO UPDATE SET
-              kfrags = EXCLUDED.kfrags
-        """, (delegator_id, delegatee_id, secret_id, kfrags))
+        conn.execute(
+            """
+            INSERT INTO grants (
+                delegator_id, delegatee_id, delegator_secret_id, delegatee_secret_id, kfrags_b
+            ) VALUES (
+                %s, %s, %s, %s, %s
+            ) ON CONFLICT (
+                delegator_id, delegatee_id, delegatee_secret_id
+            ) DO UPDATE SET
+              delegator_secret_id = EXCLUDED.delegator_secret_id,
+              kfrags_b = EXCLUDED.kfrags_b
+            """,
+            (delegator_id, delegatee_id, delegator_secret_id, delegatee_secret_id, kfrags)
+        )
 
-def revoke_grant(delegator_id: str, delegatee_id: str, secret_id: str) -> None:
+def erase_grant(delegator_id: uuid, delegatee_id: uuid, delegator_secret_id: str) -> None:
     with get_conn() as conn:
-        conn.execute("DELETE FROM grants WHERE delegator_id=%s AND delegatee_id=%s AND secret_id=%s",
-                     (delegator_id, delegatee_id, secret_id))
+        conn.execute("DELETE FROM grants WHERE delegator_id=%s AND delegatee_id=%s AND delegator_secret_id=%s",
+            (delegator_id, delegatee_id, delegator_secret_id))
 
-def load_cipher(user_id: str, secret_id: str):
+def fetch_crypto_bundle(user_id: uuid, secret_id: str):
     with get_conn() as conn:
         row = conn.execute("""
             SELECT capsule, ciphertext, sender_public_key, sender_verifying_key
-            FROM ciphers
+            FROM crypto_bundle
             WHERE user_id=%s AND secret_id=%s
-        """, (user_id, secret_id)).fetchone()
+            """,
+            (user_id, secret_id)).fetchone()
     if not row:
         return None
     capsule_b, ciphertext_b, spk_b, svk_b = row
@@ -181,25 +204,25 @@ def load_cipher(user_id: str, secret_id: str):
         "sender_verifying_key": PublicKey.from_compressed_bytes(svk_b),
     }
 
-def fetch_grant_kfrags(delegator_id: str, delegatee_id: str, secret_id: str) -> List[KeyFrag]:
+def fetch_granted_kfrags(delegator_id: uuid, delegatee_id: uuid, delegatee_secret_id: str) -> List[KeyFrag]:
     with get_conn() as conn:
         row = conn.execute("""
             SELECT kfrags_b
             FROM grants
-            WHERE delegator_id=%s AND delegatee_id=%s AND secret_id=%s
-        """, (delegator_id, delegatee_id, secret_id)).fetchone()
+            WHERE delegator_id=%s AND delegatee_id=%s AND delegatee_secret_id=%s
+        """, (delegator_id, delegatee_id, delegatee_secret_id)).fetchone()
     if not row:
         return []
     (blob,) = row
     kfrag_bytes_list = msgpack.unpackb(blob, raw=False)
     return [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
-#^
-def query_grants_for(user_id: str) -> dict:
+
+def query_grants_for(user_id: uuid) -> dict:
     by_secret: Dict[str, List[str]] = {}
     total_grants = 0
     with get_conn() as conn:
         all_users_secret_id = [r[0] for r in conn.execute(
-            "SELECT secret_id FROM ciphers WHERE user_id=%s", (user_id,)
+            "SELECT secret_id FROM crypto_bundle WHERE user_id=%s", (user_id,)
         ).fetchall()]
         for secret_id in all_users_secret_id:
             by_secret.setdefault(secret_id, [])
@@ -210,35 +233,22 @@ def query_grants_for(user_id: str) -> dict:
     for secret_id, delegatee_id in rows:
         by_secret.setdefault(secret_id, []).append(delegatee_id)
         total_grants += 1
-    return {"by_secret": by_secret, "totals": {"ciphers": len(by_secret), "grants": total_grants}}
+    return {"by_secret": by_secret, "totals": {"crypto_bundle": len(by_secret), "grants": total_grants}}
 
 # ---------- inbox helpers ----------
-def enqueue_for_sender(sender_id: str, action: str, payload: dict) -> None:
-    blob = msgpack.packb({"action": action, "payload": payload}, use_bin_type=True)
-    with get_conn() as conn:
-        conn.execute("INSERT INTO sender_inbox (sender_id, msg_blob) VALUES (%s, %s)", (sender_id, blob))
 
-def enqueue_for_receiver(receiver_id: str, action: str, payload: dict) -> None:
-    blob = msgpack.packb({"action": action, "payload": payload}, use_bin_type=True)
+def enqueue_to_user(user_id: uuid, action: str, payload: dict) -> None:
+    msg = msgpack.packb({"action": action, "payload": payload}, use_bin_type=True)
     with get_conn() as conn:
-        conn.execute("INSERT INTO receiver_inbox (receiver_id, msg_blob) VALUES (%s, %s)", (receiver_id, blob))
+        conn.execute("INSERT INTO post_office (user_id, msg) VALUES (%s, %s)", (user_id, msg))
 
-def pull_sender_inbox(sender_id: str) -> List[dict]:
+def pull_user_inbox(user_id: uuid) -> List[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT msg_blob FROM sender_inbox WHERE sender_id=%s ORDER BY created_at ASC",
-            (sender_id,)
+            "SELECT msg FROM post_office WHERE user_id=%s",
+            (user_id,)
         ).fetchall()
-        conn.execute("DELETE FROM sender_inbox WHERE sender_id=%s", (sender_id,))
-    return [msgpack.unpackb(r[0], raw=False) for r in rows]
-
-def pull_receiver_inbox(receiver_id: str) -> List[dict]:
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT msg_blob FROM receiver_inbox WHERE receiver_id=%s ORDER BY created_at ASC",
-            (receiver_id,)
-        ).fetchall()
-        conn.execute("DELETE FROM receiver_inbox WHERE receiver_id=%s", (receiver_id,))
+        conn.execute("DELETE FROM post_office WHERE user_id=%s", (user_id,))
     return [msgpack.unpackb(r[0], raw=False) for r in rows]
 
 # =================== AUTH (email + password) ===================
@@ -339,13 +349,13 @@ def create_user(email: str, display_name: Optional[str], password: str) -> str:
     validate_password(password)
     pw_hash = ph.hash(password)
     with get_conn() as conn:
-        row = conn.execute("SELECT id FROM users WHERE email=%s", (email,)).fetchone()
+        row = conn.execute("SELECT user_id FROM users WHERE email=%s", (email,)).fetchone()
         if row:
             raise HTTPException(status_code=409, detail="Email already registered")
         user_id = secrets.token_hex(16)
         conn.execute("""
-            INSERT INTO users (id, email, display_name, password_hash)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO users (user_id, email, password_hash)
+            VALUES (%s, %s, %s)
         """, (user_id, email, display_name or email, pw_hash))
         return user_id
 
@@ -353,23 +363,23 @@ def get_user_by_email(email: str) -> Optional[dict]:
     email = validate_email(email)
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, email, display_name, password_hash FROM users WHERE email=%s",
+            "SELECT user_id, email, password_hash FROM users WHERE email=%s",
             (email,),
         ).fetchone()
     if not row:
         return None
     return {"id": row[0], "email": row[1], "display_name": row[2], "password_hash": row[3]}
 
-def create_session(user_id: str, req: Request) -> str:
+def create_session(user_id: uuid, req: Request) -> str:
     token = secrets.token_urlsafe(32)
     expires_at = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
     ua = req.headers.get("user-agent", "")
     ip = (req.client.host if req.client else "") or ""
     with get_conn() as conn:
         conn.execute("""
-            INSERT INTO sessions (token, user_id, expires_at, user_agent, ip)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (token, user_id, expires_at, ua, ip))
+            INSERT INTO sessions (token, user_id, expires_at)
+            VALUES (%s, %s, %s)
+        """, (token, user_id, expires_at))
     return token
 
 def get_session(req: Request) -> Optional[dict]:
@@ -386,7 +396,7 @@ def get_session(req: Request) -> Optional[dict]:
         """, (token,)).fetchone()
     if not row:
         return None
-    return {"user_id": row[0], "email": row[1], "display_name": row[2], "expires_at": row[3]}
+    return {"user_id": row[0], "email": row[1], "expires_at": row[2]}
 
 def delete_session(req: Request) -> None:
     cookies = req.cookies or {}
@@ -400,31 +410,13 @@ def delete_session(req: Request) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     await anyio.to_thread.run_sync(init_db)
     yield
 
 app = FastAPI(title="CRS Proxy API", lifespan=lifespan)
 
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-# Serve the browser app at /app (support both old 'web' and new 'web_client')
 _base_dir = os.path.dirname(__file__)
-_candidates = [
-    os.path.join(_base_dir, "web_client"),            # container: /app/web_client
-    os.path.join(_base_dir, "web"),                   # container (legacy): /app/web
-    os.path.join(_base_dir, "..", "web_client"),     # local dev: src/python_server -> ../web_client
-    os.path.join(_base_dir, "..", "web"),            # local dev (legacy)
-]
-for _p in _candidates:
-    if os.path.isdir(_p):
-        web_dir = os.path.abspath(_p)
-        break
-else:
-    # default to new name under current dir; FastAPI will error on startup if missing
-    web_dir = os.path.abspath(os.path.join(_base_dir, "web_client"))
+web_dir = os.path.abspath(os.path.join(_base_dir, "web_client"))
 
 app.mount("/app", StaticFiles(directory=web_dir, html=True), name="app")
 
@@ -437,10 +429,10 @@ ALLOW_ANON_PATHS = {
     "/app/",
     "/app/index.html",
     "/app/style.css",
-    "/app/auth.js",
+#    "/app/auth.js",
     "/app/favicon.ico",
 }
-ALLOW_PREFIXES = ("/auth", "/api", "/health")
+ALLOW_PREFIXES = ("/auth", "/api")
 
 @app.middleware("http")
 async def webclient_requires_login(request: Request, call_next):
@@ -484,25 +476,43 @@ async def webclient_requires_login(request: Request, call_next):
 
 @app.post("/api/add_or_update_secret")
 def api_add_or_update_secret(body: dict):
+    session_id = body.get("session_id")
+    if not session_id or not isinstance(session_id, str):
+        raise HTTPException(status_code=401, detail="Missing or invalid session")
+    
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT user_id
+            FROM sessions
+            WHERE token = %s AND expires_at > now()
+            """,
+            (session_id,)).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=401, detail="Session expired or invalid")
+    
+    (user_id,) = row
+
     try:
-        # TODO change sender_id with session token
         payload = {
-            "sender_id": body["sender_id"],
+            "user_id": user_id,
             "secret_id": body["secret_id"],
             "capsule": b64d(body["capsule_b64"]),
             "ciphertext": b64d(body["ciphertext_b64"]),
             "sender_public_key": b64d(body["sender_public_key_b64"]),
             "sender_verifying_key": b64d(body["sender_verifying_key_b64"]),
-        }
+        }    
         upsert_secret(payload)
         return _ok()
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Missing field: {e.args[0]}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/erase_secret")
 def api_delete_secret(body: dict):
     try:
-        erase_cipher(body["sender_id"], body["secret_id"])
+        erase_crypto_bundle(body["sender_id"], body["secret_id"])
         return _ok()
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -531,7 +541,7 @@ def api_grant_access_receiver(body: dict):
 @app.post("/api/revoke_access")
 def api_revoke_access(body: dict):
     try:
-        revoke_grant(body["sender_id"], body["receiver_id"], body["secret_id"])
+        erase_grant(body["sender_id"], body["receiver_id"], body["secret_id"])
         return _ok()
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -544,18 +554,18 @@ def api_request_secret(body: dict):
         secret_id   = body["secret_id"]
         receiving_pk  = PublicKey.from_compressed_bytes(b64d(body["receiver_public_key_b64"]))
 
-        secret = load_cipher(sender_id, secret_id)
-        if not secret:
+        crypto_bundle = fetch_crypto_bundle(sender_id, secret_id)
+        if not crypto_bundle:
             return {"action": "ERROR", "payload": {"error": f"Unknown secret '{secret_id}'"}}
 
-        kfrags = fetch_grant_kfrags(sender_id, receiver_id, secret_id)
+        kfrags = fetch_granted_kfrags(sender_id, receiver_id, secret_id)
         if not kfrags:
             return {"action": "ERROR", "payload": {"error": f"No grant for {receiver_id} -> {secret_id}"}}
 
-        capsule       = secret["capsule"]
-        ciphertext    = secret["ciphertext"]
-        delegating_pk = secret["sender_public_key"]
-        verifying_pk  = secret["sender_verifying_key"]
+        capsule       = crypto_bundle["capsule"]
+        ciphertext    = crypto_bundle["ciphertext"]
+        delegating_pk = crypto_bundle["sender_public_key"]
+        verifying_pk  = crypto_bundle["sender_verifying_key"]
 
         verified_kfrags = [
             kf.verify(
@@ -595,7 +605,7 @@ def api_request_access(body: dict):
         secret_id   = body["secret_id"]
         if not sender_id or not receiver_id or not secret_id:
             raise ValueError("Missing sender_id/receiver_id/secret_id")
-        enqueue_for_sender(sender_id, REQUEST_ACCESS, body)
+        enqueue_to_user(sender_id, REQUEST_ACCESS, body)
         return _ok()
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

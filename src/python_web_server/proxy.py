@@ -24,6 +24,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import RedirectResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
 
 # web assambly mimetypes (for wasm umbral bindings)
@@ -64,6 +65,8 @@ def get_conn():
 
 def init_db():
     with get_conn() as conn:
+        # UUID generator for gen_random_uuid()
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
         # users
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -121,11 +124,6 @@ def init_db():
                 msg BYTEA NOT NULL
             );
         """)
-        # # fast fetching of delegator_secret_id by delegatee request
-        # conn.execute("""
-        #     CREATE INDEX IF NOT EXISTS grants_by_delegatee
-        #     ON grants (delegatee_id, delegatee_secret_id)
-        # """)
     print("[Proxy] DB initialized.")
 
 # =================== CRS DB HELPERS ===================
@@ -272,31 +270,20 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
-def cookie_name_and_secure(req: Request) -> tuple[str, bool]:
-    if req.url.scheme == "https":
-        return "__Host-session", True
-    return "session", False
-
-def secure_flag(req: Request) -> bool:
-    return req.url.scheme == "https"
-
 def set_session_cookie(resp: Response, req: Request, token: str) -> None:
-    name, secure = cookie_name_and_secure(req)
     resp.set_cookie(
-        key=name,
+        key="__Host-session",
         value=token,
         httponly=True,
         samesite="strict",
-        secure=secure,
+        secure=True,
         path="/",
         max_age=SESSION_TTL_SECONDS,
     )
 
 def clear_session_cookie(resp: Response, req: Request) -> None:
-    name, _ = cookie_name_and_secure(req)
-    resp.delete_cookie(name, path="/")
+    resp.delete_cookie("__Host-session", path="/")
 
-# Flow cookies (UI gating)
 REG_COOKIE = "reg_ok"         # allows /app/register.html for a short time after pressing the button
 STAGE_COOKIE = "flow_stage"   # set to "store_ok" after successful decrypt/create
 
@@ -312,7 +299,7 @@ def set_reg_cookie(resp: Response, req: Request) -> None:
     )
 
 def clear_reg_cookie(resp: Response) -> None:
-    resp.delete_cookie(REG_COOKIE, path="/app/register.html")
+    resp.delete_cookie("reg_ok", path="/app/register.html")
 
 def set_stage_cookie(resp: Response, req: Request, value: str) -> None:
     resp.set_cookie(
@@ -320,7 +307,7 @@ def set_stage_cookie(resp: Response, req: Request, value: str) -> None:
         value=value,
         httponly=True,
         samesite="strict",
-        secure=secure_flag(req),
+        secure=True,
         path="/",
         max_age=SESSION_TTL_SECONDS,
     )
@@ -339,20 +326,20 @@ def validate_password(pw: str) -> str:
         raise HTTPException(status_code=400, detail="Password too short (min 10 characters)")
     return pw
 
-def create_user(email: str, password: str) -> str:
+def create_user(email: str, password: str) -> uuid.UUID:
     email = validate_email(email)
     validate_password(password)
     pw_hash = ph.hash(password)
     with get_conn() as conn:
-        row = conn.execute("SELECT user_id FROM users WHERE email=%s", (email,)).fetchone()
-        if row:
+        if conn.execute("SELECT 1 FROM users WHERE email=%s", (email,)).fetchone():
             raise HTTPException(status_code=409, detail="Email already registered")
-        user_id = secrets.token_hex(16)
-        conn.execute("""
-            INSERT INTO users (user_id, email, password_hash)
-            VALUES (%s, %s, %s)
-        """, (user_id, email, pw_hash))
-    return user_id
+        cur = conn.execute("""
+            INSERT INTO users (email, password_hash)
+            VALUES (%s, %s)
+            RETURNING user_id
+        """, (email, pw_hash))
+        (user_id,) = cur.fetchone()
+        return user_id
 
 def get_user_by_email(email: str) -> Optional[dict]:
     email = validate_email(email)
@@ -368,8 +355,6 @@ def get_user_by_email(email: str) -> Optional[dict]:
 def create_session(user_id: uuid, req: Request) -> str:
     token = secrets.token_urlsafe(32)
     expires_at = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
-    ua = req.headers.get("user-agent", "")
-    ip = (req.client.host if req.client else "") or ""
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO sessions (token, user_id, expires_at)
@@ -377,14 +362,26 @@ def create_session(user_id: uuid, req: Request) -> str:
         """, (token, user_id, expires_at))
     return token
 
-def get_session(req: Request) -> Optional[dict]:
-    cookies = req.cookies or {}
-    token = cookies.get("__Host-session") or cookies.get("session")
+def session_user_id(req: Request) -> Optional[uuid.UUID]:
+    token = (req.cookies or {}).get("__Host-session")
     if not token:
         return None
     with get_conn() as conn:
         row = conn.execute("""
-            SELECT s.user_id, u.email, u.display_name, s.expires_at
+            SELECT s.user_id
+            FROM sessions s
+            WHERE s.token=%s AND s.expires_at > NOW()
+        """, (token,)).fetchone()
+    return row[0] if row else None
+
+def get_session(req: Request) -> Optional[dict]:
+    cookies = req.cookies or {}
+    token = cookies.get("__Host-session")
+    if not token:
+        return None
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT s.user_id, u.email, s.expires_at
             FROM sessions s
             JOIN users u ON u.user_id = s.user_id
             WHERE s.token=%s AND s.expires_at > NOW()
@@ -393,9 +390,53 @@ def get_session(req: Request) -> Optional[dict]:
         return None
     return {"user_id": row[0], "email": row[1], "expires_at": row[2]}
 
+def session_user(req: Request) -> uuid:
+    cookies = req.cookies or {}
+    token = cookies.get("__Host-session")
+    if not token:
+        return None
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT s.user_id, u.email, s.expires_at
+            FROM sessions s
+            JOIN users u ON u.user_id = s.user_id
+            WHERE s.token=%s AND s.expires_at > NOW()
+        """, (token,)).fetchone()
+    if not row:
+        return None
+    return {"user_id": row[0], "email": row[1], "expires_at": row[2]}
+
+def _is_logged_in_sync(token: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sessions WHERE token=%s AND expires_at > NOW()",
+            (token,)
+        ).fetchone()
+    return bool(row)
+
+async def is_logged_in(request: Request) -> bool:
+    token = (request.cookies or {}).get("__Host-session")
+    if not token:
+        return False
+    return await anyio.to_thread.run_sync(_is_logged_in_sync, token)
+
+def _user_id_for_token_sync(token: str):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id FROM sessions WHERE token=%s AND expires_at > NOW()",
+            (token,)
+        ).fetchone()
+    return row[0] if row else None
+
+async def _session_user_id(request: Request):
+    token = (request.cookies or {}).get("__Host-session")
+    if not token:
+        return None
+    return await anyio.to_thread.run_sync(_user_id_for_token_sync, token)
+
 def delete_session(req: Request) -> None:
     cookies = req.cookies or {}
-    token = cookies.get("__Host-session") or cookies.get("session")
+    token = cookies.get("__Host-session")
     if not token:
         return
     with get_conn() as conn:
@@ -409,8 +450,8 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="CRS Proxy API", lifespan=lifespan)
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
-
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["app.localhost"])
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["app.localhost"])
 
 _base_dir = os.path.dirname(__file__)
 web_dir = os.path.abspath(os.path.join(_base_dir, "web_client"))
@@ -422,52 +463,62 @@ def _ok(payload: dict | None = None) -> JSONResponse:
 
 # --------- Require login for Web Client (/app/*) only + flow gating ----------
 
-ALLOW_ANON_PATHS = {
-    "/app/",
-    "/app/index.html",
+LOGIN_PAGE = "/app/login.html"
+DASHBOARD_PAGE = "/app/dashboard.html"
+
+PRE_LOGIN_PATHS = {
+    "/",
+    LOGIN_PAGE,
     "/app/style.css",
     "/app/auth.js",
     "/app/favicon.ico",
 }
-ALLOW_PREFIXES = ("/auth", "/api")
+
+
 
 @app.middleware("http")
-async def webclient_requires_login(request: Request, call_next):
+async def gatekeeper(request: Request, call_next):
     path = request.url.path
 
-    if path.startswith(ALLOW_PREFIXES):
+    if path.startswith("/auth"):
         return await call_next(request)
 
-    if path.startswith("/app"):
-        # gate register page with short-lived cookie
-        if "/app/register.html" == path:
-            # If already logged in, send folks to the next step in the flow.
-            sess = await anyio.to_thread.run_sync(get_session, request)
-            if sess:
-                if "store_ok" == request.cookies.get("flow_stage"):
-                    return RedirectResponse("/app/dashboard.html", status_code=303)
-                return RedirectResponse("/app/store.html", status_code=303)
+    if path in PRE_LOGIN_PATHS:
+        return await call_next(request)
 
-        # store page requires session
-        if "/app/store.html" == path:
-            sess = await anyio.to_thread.run_sync(get_session, request)
-            if not sess:
-                return RedirectResponse("/app/index.html", status_code=303)
+    user_id = await _session_user_id(request)
+    logged_in = bool(user_id)
 
-        # dashboard requires session + stage
-        if "/app/dashboard.html" == path:
-            sess = await anyio.to_thread.run_sync(get_session, request)
-            if not sess:
-                return RedirectResponse("/app/index.html", status_code=303)
-            if request.cookies.get("flow_stage") != "store_ok":
-                return RedirectResponse("/app/store.html", status_code=303)
+    if not logged_in:
+        return RedirectResponse(LOGIN_PAGE, status_code=303)
 
-        if request.method in ("GET", "HEAD"):
-            sess = await anyio.to_thread.run_sync(get_session, request)
-            if not sess and path not in ALLOW_ANON_PATHS and path != "/app/register.html":
-                return RedirectResponse("/app/index.html", status_code=303)
+    # starting here, login is guaranteed
+    if path.startswith("/api"):
+        request.state.user_id = user_id
+        return await call_next(request)
 
-    return await call_next(request)
+    if path in ALLOW_ANON_PATHS:
+        return await call_next(request)
+    else:
+        return RedirectResponse(DASHBOARD_PAGE, status_code=303)
+    
+    # # If not logged in: redirect all other GET/HEAD to login; 401 for non-GET
+    # if not logged_in:
+    #     if request.method in ("GET", "HEAD"):
+    #         return RedirectResponse(LOGIN_PAGE, status_code=303)
+    #     raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # # If logged in and user hits /app/ base, send them to dashboard
+    # if request.method in ("GET", "HEAD") and path in ("/app/",):
+    #     return RedirectResponse(DASHBOARD_PAGE, status_code=303)
+
+    # response = await call_next(request)
+
+    # # Rule 2: Fallback if no target (404) → redirect to dashboard (or login)
+    # if response.status_code == 404 and request.method in ("GET", "HEAD"):
+    #     return RedirectResponse(DASHBOARD_PAGE if logged_in else LOGIN_PAGE, status_code=303)
+
+    # return response
 
 # -------------- CRS API --------------
 
@@ -628,43 +679,11 @@ async def webclient_requires_login(request: Request, call_next):
 # -------------- NEW: Auth & flow endpoints --------------
 
 @app.get("/")
-def root():
-    return RedirectResponse("/app/", status_code=307)
-
-@app.get("/auth/session")
-def auth_session(req: Request):
+def root(req: Request):
     sess = get_session(req)
-    if not sess:
-        raise HTTPException(status_code=401, detail="No active session")
-    return {
-        "user": {
-            "id": sess["user_id"],
-            "email": sess["email"],
-            "display_name": sess["display_name"],
-        },
-        "expires_at": sess["expires_at"].isoformat(),
-    }
-
-@app.post("/auth/logout")
-def auth_logout(req: Request):
-    delete_session(req)
-    resp = _ok({"ok": True})
-    clear_session_cookie(resp, req)
-    clear_reg_cookie(resp)
-    clear_stage_cookie(resp)
-    return resp
-
-@app.post("/auth/register")
-def auth_register(req: Request, body: dict):
-    email = validate_email(body.get("email", ""))
-    password = validate_password(body.get("password", ""))
-    display_name = (body.get("display_name") or email)
-    user_id = create_user(email, display_name, password)
-    token = create_session(user_id, req)
-    resp = _ok({"ok": True})
-    set_session_cookie(resp, req, token)
-    clear_reg_cookie(resp)
-    return resp
+    if sess:
+        return RedirectResponse("/app/dashboard.html", status_code=303)
+    return RedirectResponse("/app/login.html", status_code=303)
 
 @app.post("/auth/login")
 def auth_login(req: Request, body: dict):
@@ -695,23 +714,58 @@ def auth_login(req: Request, body: dict):
     set_session_cookie(resp, req, token)
     return resp
 
-@app.post("/auth/allow_register")
-def allow_register(req: Request):
-    resp = _ok({"ok": True})
-    set_reg_cookie(resp, req)
-    return resp
-
-@app.post("/auth/stage")
-def set_stage(req: Request, body: dict):
+@app.get("/auth/session")
+def auth_session(req: Request):
     sess = get_session(req)
     if not sess:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    stage = (body or {}).get("stage")
-    if stage not in ("store_ok",):
-        raise HTTPException(status_code=400, detail="Unknown stage")
-    resp = _ok({"ok": True, "stage": stage})
-    set_stage_cookie(resp, req, stage)
+        raise HTTPException(status_code=401, detail="No active session")
+    return {
+        "user": {
+            "id": sess["user_id"],
+            "email": sess["email"]
+        },
+        "expires_at": sess["expires_at"].isoformat(),
+    }
+
+@app.post("/auth/logout")
+def auth_logout(req: Request):
+    delete_session(req)
+    resp = _ok({"ok": True})
+    clear_session_cookie(resp, req)
+    clear_reg_cookie(resp)
+    clear_stage_cookie(resp)
     return resp
+
+
+
+@app.post("/auth/register")
+def auth_register(req: Request, body: dict):
+    email = validate_email(body.get("email", ""))
+    password = validate_password(body.get("password", ""))
+    user_id = create_user(email, password)
+    token = create_session(user_id, req)
+    resp = _ok({"ok": True})
+    set_session_cookie(resp, req, token)
+    clear_reg_cookie(resp)
+    return resp
+
+# @app.post("/auth/allow_register")
+# def allow_register(req: Request):
+#     resp = _ok({"ok": True})
+#     set_reg_cookie(resp, req)
+#     return resp
+
+# @app.post("/auth/stage")
+# def set_stage(req: Request, body: dict):
+#     sess = get_session(req)
+#     if not sess:
+#         raise HTTPException(status_code=401, detail="Not authenticated")
+#     stage = (body or {}).get("stage")
+#     if stage not in ("store_ok",):
+#         raise HTTPException(status_code=400, detail="Unknown stage")
+#     resp = _ok({"ok": True, "stage": stage})
+#     set_stage_cookie(resp, req, stage)
+#     return resp
 
 # -------------- NEW: Encrypted per-user store API --------------
 
@@ -758,4 +812,11 @@ def set_stage(req: Request, body: dict):
 
 if "__main__" == __name__:
     init_db()
-    uvicorn.run("proxy:app", host=PROXY_HOST, port=PROXY_PORT, reload=False)
+    uvicorn.run(
+        "proxy:app",
+        host=PROXY_HOST,
+        port=PROXY_PORT,
+        reload=False,
+        proxy_headers=True,
+        forwarded_allow_ips="172.18.0.0/16",
+    )

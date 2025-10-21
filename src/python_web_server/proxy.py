@@ -446,7 +446,6 @@ LOGIN_PAGE = "/app/login.html"
 DASHBOARD_PAGE = "/app/dashboard.html"
 
 PRE_LOGIN_PATHS = {
-    "/",
     LOGIN_PAGE,
     "/app/style.css",
     "/app/auth.js",
@@ -479,9 +478,9 @@ async def gatekeeper(request: Request, call_next):
 
     # serve login or skip if already in session
     if path in PRE_LOGIN_PATHS:
-        if path == LOGIN_PAGE and not logged_in:
-            return await call_next(request)
-        return RedirectResponse(DASHBOARD_PAGE, status_code=303)
+        if path == LOGIN_PAGE and logged_in:
+            return RedirectResponse(DASHBOARD_PAGE, status_code=303)
+        return await call_next(request)
 
     # not serving anything web without login
     if not logged_in:

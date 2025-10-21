@@ -456,14 +456,14 @@ PRE_LOGIN_PATHS = {
 async def gatekeeper(request: Request, call_next):
     path = request.url.path
 
-    # auth backend always availbale
+    # auth Backend always availbale
     if path.startswith("/auth"):
         return await call_next(request)
 
     user_id = await user_id_by_session(request)
     logged_in = bool(user_id)
 
-    # api always available but only response in session
+    # API always exposed but only available in session
     if path.startswith("/api"):
         if not logged_in:
             return JSONResponse({"error": "not_authenticated"}, status_code=401)
@@ -489,28 +489,10 @@ async def gatekeeper(request: Request, call_next):
         return JSONResponse({"error": "not_authenticated"}, status_code=401)
 
     # if we can't serve it ... dashboard it is
-    resp = await call_next(request)
-    if resp.status_code == 404 and request.method in ("GET", "HEAD"):
+    response = await call_next(request)
+    if response.status_code == 404 and request.method in ("GET", "HEAD"):
         return RedirectResponse(DASHBOARD_PAGE, status_code=303)
-    return resp
-    
-    # # If not logged in: redirect all other GET/HEAD to login; 401 for non-GET
-    # if not logged_in:
-    #     if request.method in ("GET", "HEAD"):
-    #         return RedirectResponse(LOGIN_PAGE, status_code=303)
-    #     raise HTTPException(status_code=401, detail="Not authenticated")
-
-    # # If logged in and user hits /app/ base, send them to dashboard
-    # if request.method in ("GET", "HEAD") and path in ("/app/",):
-    #     return RedirectResponse(DASHBOARD_PAGE, status_code=303)
-
-    # response = await call_next(request)
-
-    # # Rule 2: Fallback if no target (404) → redirect to dashboard (or login)
-    # if response.status_code == 404 and request.method in ("GET", "HEAD"):
-    #     return RedirectResponse(DASHBOARD_PAGE if logged_in else LOGIN_PAGE, status_code=303)
-
-    # return response
+    return response
 
 # -------------- CRS API --------------
 

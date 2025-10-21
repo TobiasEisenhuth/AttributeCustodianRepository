@@ -1,0 +1,32 @@
+:root {
+  --bg:#fff; --fg:#111; --muted:#666; --ok:#1b8f3b; --err:#c0392b; --card:#f6f8fa; --accent:#005fcc;
+}
+@media (prefers-color-scheme: dark){
+  :root { --bg:#0f1115; --fg:#e6e6e6; --muted:#9aa0a6; --card:#1a1f29; }
+}
+*{box-sizing:border-box}
+body{font-family:system-ui,Segoe UI,Roboto,Ubuntu,Arial,sans-serif;background:var(--bg);color:var(--fg);max-width:960px;margin:0 auto;padding:1rem;line-height:1.4}
+h1{margin:.2rem 0 0;font-size:1.5rem} h2{margin-top:1.2rem}
+.site-header{display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.brand{display:flex;align-items:center;gap:.6rem}.logo{font-size:1.6rem}
+.site-nav{display:flex;flex-wrap:wrap;gap:.5rem}
+.nav-btn{border:1px solid #ccc;padding:.4rem .6rem;border-radius:.5rem;background:transparent;cursor:pointer}
+.nav-btn:hover{border-color:var(--accent)}
+.bar{display:flex;align-items:center;gap:1rem;margin:.8rem 0 1.2rem;flex-wrap:wrap}
+.bar label.inline{display:inline-flex;align-items:center;gap:.5rem}
+.bar input[type="text"]{width:12rem}
+.badge{padding:.2rem .5rem;border-radius:.5rem;border:1px solid #ccc}.badge.ok{border-color:var(--ok);color:var(--ok)}.badge.bad{border-color:var(--err);color:var(--err)}
+.view.hidden{display:none}
+.card{background:var(--card);border-radius:.6rem;padding:1rem;border:1px solid #e1e4e8}
+label{display:grid;gap:.4rem;margin:.6rem 0}
+input[type="text"],input[type="password"],input[type="file"],input[type="email"]{padding:.5rem .6rem;border-radius:.4rem;border:1px solid #ccc;background:transparent;color:inherit}
+.actions{display:flex;gap:.5rem;margin-top:.6rem;flex-wrap:wrap}
+button{border:1px solid #bbb;padding:.45rem .7rem;border-radius:.5rem;background:#fff2;color:inherit;cursor:pointer}
+button:hover{border-color:var(--accent)}button.danger{border-color:var(--err);color:var(--err)}
+.codeblock{background:var(--card);padding:.8rem;border-radius:.6rem;border:1px solid #e1e4e8;overflow:auto}
+.list{display:grid;gap:.6rem;margin-top:.8rem}
+.toast{margin:.6rem 0;border-radius:.4rem;padding:.5rem .6rem;border:1px solid #ccc}
+.toast.ok{border-color:var(--ok);color:var(--ok)}.toast.error{border-color:var(--err);color:var(--err)}.toast.info{opacity:.9}
+.muted{color:var(--muted)}.site-footer{margin:1.5rem 0;color:var(--muted)}
+.grid2{display:grid;grid-template-columns:1fr;gap:1rem}
+@media(min-width:820px){.grid2{grid-template-columns:1fr 1fr}}

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard • CRS</title>
+  <link rel="icon" href="/app/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/app/style.css" />
+  <meta name="color-scheme" content="light dark" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">🔐</span>
+      <h1>CRS — Dashboard</h1>
+    </div>
+    <nav class="site-nav">
+      <a class="nav-btn" href="/app/sender.html">Sender Tools</a>
+    </nav>
+  </header>
+
+  <section class="bar">
+    <span>User: <span id="sessionBadge" class="badge">checking…</span></span>
+  </section>
+
+  <main id="app">
+    <section id="status" aria-live="polite"></section>
+
+    <div class="grid2">
+      <div class="card">
+        <h2>Restricted Field</h2>
+        <div class="actions">
+          <button id="btn-fetch">Fetch restricted field</button>
+        </div>
+        <pre id="out" class="codeblock"></pre>
+      </div>
+
+      <div class="card">
+        <h2>Session</h2>
+        <div class="actions">
+          <button id="btn-logout" class="danger">Logout</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="/app/auth.js"></script>
+  <script type="module" src="/app/dashboard.js"></script>
+</body>
+</html>

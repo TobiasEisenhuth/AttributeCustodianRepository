@@ -1,0 +1,12 @@
+app.localhost:443 {
+    tls /etc/ssl/local/app.localhost.pem /etc/ssl/local/app.localhost-key.pem
+
+    encode gzip
+
+    reverse_proxy crs-proxy:8000 {
+        header_up Host              {host}
+        header_up X-Forwarded-Host  {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For   {remote}
+    }
+}

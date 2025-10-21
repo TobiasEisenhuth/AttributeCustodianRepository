@@ -3,14 +3,16 @@ from umbral_pre import SecretKey, PublicKey, Capsule, CapsuleFrag, decrypt_reenc
 from protocol import *
 from typing import Dict
 
-RECEIVER_ID: str = ""  # set at startup
+# A local label for your encrypted store filename only (NOT the server user_id)
+RECEIVER_PROFILE: str = ""  # set at startup
 
 # ===== Persistence config (encrypted only) =====
-RECEIVER_STORE_FILE: str = ""  # set after ID prompt
+RECEIVER_STORE_FILE: str = ""  # set after profile prompt
 MAGIC_ENC = b"ACRE"  # Alice Client Receiver Encrypted
 
 store: Dict[str, Dict[str, dict]] = {}
 _RECEIVER_PASS: str = ""  # set at startup
+_LOGIN_EMAIL: str = ""    # display only
 
 # ===== Util =====
 def fp(b: bytes) -> str:
@@ -52,7 +54,7 @@ def save_state():
 
 def load_state_or_init():
     global store, _RECEIVER_PASS
-    _RECEIVER_PASS, obj = require_password_and_load(RECEIVER_STORE_FILE, MAGIC_ENC, role_label=f"Receiver:{RECEIVER_ID}")
+    _RECEIVER_PASS, obj = require_password_and_load(RECEIVER_STORE_FILE, MAGIC_ENC, role_label=f"ReceiverProfile:{RECEIVER_PROFILE}")
     store = _deserialize_receiver_store(obj)
     total_grants = sum(
         1 for m in store.values() for rec in m.values()
@@ -62,11 +64,12 @@ def load_state_or_init():
         1 for m in store.values() for rec in m.values()
         if rec.get("public_key")
     )
-    print(f"[Receiver {RECEIVER_ID}] Loaded store: {total_keys} keypairs, {total_grants} grants.")
+    print(f"[Receiver {RECEIVER_PROFILE}] Loaded store: {total_keys} keypairs, {total_grants} grants.")
 
 # ===== Proxy inbox pull for grants =====
 def pull_my_grants():
-    msg = api_post("/pull_inbox/receiver", {"receiver_id": RECEIVER_ID})
+    # Auth cookie identifies me; do not send receiver_id anymore
+    msg = api_post("/pull_inbox/receiver", {})
     if msg.get("action") != INBOX_CONTENTS:
         print(f"[Receiver] Unexpected inbox reply: {msg.get('action')}")
         return
@@ -74,8 +77,7 @@ def pull_my_grants():
         if m.get("action") != GRANT_ACCESS_RECEIVER:
             continue
         p = m["payload"]
-        if p.get("receiver_id") != RECEIVER_ID:
-            continue  # not for me
+        # No receiver_id check here; the server already filtered by my session
         sender_id = p["sender_id"]
         secret_id = p["secret_id"]
         srow = store.setdefault(sender_id, {}).setdefault(secret_id, {
@@ -89,7 +91,7 @@ def pull_my_grants():
             vpk = PublicKey.from_compressed_bytes(b64d(p["verifying_key_b64"]))
             srow["sender_public_key"] = spk
             srow["verifying_key"] = vpk
-            print(f"[Receiver {RECEIVER_ID}] Pulled grant for '{secret_id}' from '{sender_id}'.")
+            print(f"[Receiver {RECEIVER_PROFILE}] Pulled grant for '{secret_id}' from '{sender_id}'.")
         except Exception as e:
             print(f"[Receiver] Bad grant payload: {e}")
     save_state()
@@ -115,16 +117,14 @@ def key_gen(sender_id, secret_id):
 def request_access(sender_id, secret_id):
     public_key = key_gen(sender_id, secret_id)
     payload = {
-        "sender_id": sender_id,
-        "receiver_id": RECEIVER_ID,
-        "secret_id": secret_id,
+        "sender_id": sender_id,                          # WHO we want to access from
+        "secret_id": secret_id,                          # WHICH secret
         "receiver_public_key_b64": b64e(public_key.to_compressed_bytes())
     }
     api_post("/request_access", payload)
-    print(f"[Receiver {RECEIVER_ID}] Requested access to '{secret_id}' from '{sender_id}' (via proxy).")
+    print(f"[Receiver {RECEIVER_PROFILE}] Requested access to '{secret_id}' from '{sender_id}' (via proxy).")
 
 def request_and_decrypt(sender_id, secret_id):
-    # pull any grant notices for me first
     pull_my_grants()
 
     if sender_id not in store or secret_id not in store[sender_id]:
@@ -140,14 +140,13 @@ def request_and_decrypt(sender_id, secret_id):
         return
 
     payload = {
-        "receiver_id": RECEIVER_ID,
         "sender_id": sender_id,
         "secret_id": secret_id,
         "receiver_public_key_b64": b64e(srow["public_key"].to_compressed_bytes())
     }
     data = api_post("/request_secret", payload)
 
-    if data["action"] == ERROR:
+    if data.get("action") == ERROR:
         print(f"[Receiver] Error: {data['payload']['error']}")
         return
 
@@ -172,7 +171,7 @@ def request_and_decrypt(sender_id, secret_id):
         cfrags,
         ciphertext
     )
-    print(f"[Receiver {RECEIVER_ID}] Decrypted '{secret_id}' from '{sender_id}': {plaintext}")
+    print(f"[Receiver {RECEIVER_PROFILE}] Decrypted '{secret_id}' from '{sender_id}': {plaintext}")
 
 # ===== CLI =====
 def clear():
@@ -213,7 +212,7 @@ def menu_loop():
             1 for m in store.values() for rec in m.values()
             if rec.get("public_key") is not None
         )
-        print(f"=== Receiver: {RECEIVER_ID} ===")
+        print(f"=== Receiver Profile: {RECEIVER_PROFILE} | {_LOGIN_EMAIL} ===")
         print("Stored grants:", total_grants)
         print("Local keypairs:", total_keys)
         print()
@@ -245,14 +244,29 @@ def menu_loop():
             input("Unknown choice. Enter to continue...")
 
 if __name__ == "__main__":
-    # ---- ID prompt & per-profile store selection ----
+    # ---- Profile & per-profile store selection ----
     while True:
-        RECEIVER_ID = input("Enter Receiver ID (profile name): ").strip()
-        if RECEIVER_ID:
+        RECEIVER_PROFILE = input("Enter local profile name (for encrypted store file): ").strip()
+        if RECEIVER_PROFILE:
             break
-        print("Receiver ID cannot be empty.")
-    RECEIVER_STORE_FILE = os.getenv("RECEIVER_STORE_FILE") or f"receiver_store_{RECEIVER_ID}.msgpack"
+        print("Profile name cannot be empty.")
+    RECEIVER_STORE_FILE = os.getenv("RECEIVER_STORE_FILE") or f"receiver_store_{RECEIVER_PROFILE}.msgpack"
 
-    print(f"[Receiver {RECEIVER_ID}] Using store file: {RECEIVER_STORE_FILE}")
+    # ---- Login to the proxy first (session cookie) ----
+    print(f"[Receiver {RECEIVER_PROFILE}] Proxy base: {PROXY_BASE_URL}")
+    _LOGIN_EMAIL = input("Login email: ").strip()
+    _PW = getpass.getpass("Password: ")
+
+    try:
+        login(_LOGIN_EMAIL, _PW)
+        print("[Receiver] Logged in.")
+    except requests.HTTPError as e:
+        print(f"[Receiver] Login failed: {e.response.text if e.response is not None else e}")
+        raise SystemExit(1)
+
+    # ---- Load (or create) local encrypted store ----
+    print(f"[Receiver {RECEIVER_PROFILE}] Using store file: {RECEIVER_STORE_FILE}")
     load_state_or_init()
+
+    # ---- Run CLI ----
     menu_loop()

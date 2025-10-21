@@ -8,45 +8,68 @@ import requests
 from typing import Optional
 
 # ===== Actions =====
-# Alice
 ADD_OR_UPDATE_SECRET  = "ADD_OR_UPDATE_SECRET"
 DELETE_SECRET         = "DELETE_SECRET"
 GRANT_ACCESS_PROXY    = "GRANT_ACCESS_PROXY"
 GRANT_ACCESS_RECEIVER = "GRANT_ACCESS_RECEIVER"
 REVOKE_ACCESS         = "REVOKE_ACCESS"
-
-# Ursula (proxy) -> Bob
 RESPONSE_SECRET       = "RESPONSE_SECRET"
-
-# Bob
 REQUEST_ACCESS        = "REQUEST_ACCESS"
 REQUEST_SECRET        = "REQUEST_SECRET"
-
-# NEW (Sender <-> Proxy)
 LIST_GRANTS           = "LIST_GRANTS"
 GRANTS_SUMMARY        = "GRANTS_SUMMARY"
-
-# inbox actions
-PULL_INBOX_SENDER     = "PULL_INBOX_SENDER"       # sender pulls pending requests
-PULL_INBOX_RECEIVER   = "PULL_INBOX_RECEIVER"     # receiver pulls pending grants
+PULL_INBOX_SENDER     = "PULL_INBOX_SENDER"
+PULL_INBOX_RECEIVER   = "PULL_INBOX_RECEIVER"
 INBOX_CONTENTS        = "INBOX_CONTENTS"
-
 ERROR                 = "ERROR"
 
 # ===== HTTP client base =====
-# One knob for everyone (receiver.py, CLI tools, etc.)
-PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "http://localhost:8000")
-API_BASE = PROXY_BASE_URL.rstrip("/")
+# Default to HTTPS through your Caddy proxy
+PROXY_BASE_URL = os.getenv("PROXY_BASE_URL", "https://app.localhost").rstrip("/")
+API_BASE = PROXY_BASE_URL  # keep naming from your code
+
+# TLS verification:
+# - default: True (use system CA store)
+# - if PROXY_CA_BUNDLE is set: path to a CA bundle file
+# - if PROXY_VERIFY=0: disable verification (DEV ONLY)
+_SESSION = requests.Session()
+_verify: bool | str = True
+_ca = os.getenv("PROXY_CA_BUNDLE")
+if _ca:
+    _verify = _ca
+elif os.getenv("PROXY_VERIFY", "1") == "0":
+    _verify = False
+
+def _post(path: str, payload: dict, timeout: Optional[float] = 15.0) -> requests.Response:
+    """Raw POST, no /api prefix magic."""
+    if not path.startswith("/"):
+        path = "/" + path
+    url = API_BASE + path
+    return _SESSION.post(url, json=payload, timeout=timeout, verify=_verify)
 
 def api_post(path: str, payload: dict, timeout: Optional[float] = 15.0) -> dict:
+    """POST to /api/*, maintaining the session cookie."""
     if not path.startswith("/"):
         path = "/" + path
     url = API_BASE + (path if path.startswith("/api/") else "/api" + path)
-    r = requests.post(url, json=payload, timeout=timeout)
+    r = _SESSION.post(url, json=payload, timeout=timeout, verify=_verify)
     r.raise_for_status()
     return r.json()
 
-# ===== Base64 helpers (JSON-safe bytes) =====
+def login(email: str, password: str, timeout: Optional[float] = 15.0) -> dict:
+    """Authenticate and store the session cookie in the session jar."""
+    r = _post("/auth/login", {"email": email, "password": password}, timeout=timeout)
+    r.raise_for_status()
+    # Cookie is now stored in _SESSION automatically
+    return r.json()
+
+def logout(timeout: Optional[float] = 10.0) -> None:
+    try:
+        _post("/auth/logout", {}, timeout=timeout)
+    except Exception:
+        pass
+
+# ===== Base64 helpers =====
 def b64e(b: bytes) -> str:
     return base64.b64encode(b).decode("ascii")
 
@@ -66,7 +89,6 @@ def _require_crypto_or_exit():
 
 def _derive_key(passphrase: str, salt: bytes) -> bytes:
     import hashlib
-    # scrypt parameters: interactive-safe; tune n if needed
     return hashlib.scrypt(passphrase.encode("utf-8"), salt=salt, n=2**14, r=8, p=1, dklen=32)
 
 def _save_bytes_atomic(path: str, data: bytes) -> None:
@@ -84,7 +106,6 @@ def _save_bytes_atomic(path: str, data: bytes) -> None:
             pass
 
 def save_store_encrypted(path: str, obj: dict, passphrase: str, magic_enc: bytes):
-    """Always encrypt; format: magic(4) + ver(1) + salt(16) + nonce(12) + ct"""
     _require_crypto_or_exit()
     payload = msgpack.packb(obj, use_bin_type=True)
     import os as _os
@@ -97,7 +118,6 @@ def save_store_encrypted(path: str, obj: dict, passphrase: str, magic_enc: bytes
     _save_bytes_atomic(path, data)
 
 def load_store_encrypted(path: str, passphrase: str, magic_enc: bytes) -> dict:
-    """Return dict on success; raise ValueError on auth failure/magic mismatch."""
     _require_crypto_or_exit()
     with open(path, "rb") as f:
         raw = f.read()
@@ -119,14 +139,8 @@ def load_store_encrypted(path: str, passphrase: str, magic_enc: bytes) -> dict:
     return msgpack.unpackb(payload, raw=False)
 
 def require_password_and_load(path: str, magic_enc: bytes, role_label: str) -> tuple[str, dict]:
-    """
-    If file exists: prompt up to 3 times for password; on failure -> exit(1).
-    If file missing: prompt to set a new password (enter twice); create empty dict.
-    Returns (passphrase, loaded_obj_dict).
-    """
     _require_crypto_or_exit()
     if os.path.exists(path):
-        # Existing store: ask for password (3 tries), else exit
         for attempt in range(1, 4):
             pw = getpass.getpass(f"[{role_label}] Password (attempt {attempt}/3): ")
             if not pw:
@@ -141,7 +155,6 @@ def require_password_and_load(path: str, magic_enc: bytes, role_label: str) -> t
         print(f"[{role_label}] Too many failed attempts. Exiting.")
         sys.exit(1)
     else:
-        # New store: set password (twice)
         while True:
             pw1 = getpass.getpass(f"[{role_label}] Set new store password: ")
             pw2 = getpass.getpass(f"[{role_label}] Repeat password: ")

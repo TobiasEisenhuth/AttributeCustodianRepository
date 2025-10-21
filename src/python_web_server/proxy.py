@@ -1,5 +1,13 @@
 # language utils
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Annotated
+from pydantic import BaseModel, EmailStr, StringConstraints
+from pydantic.types import StrictStr
+
+Password = Annotated[StrictStr, StringConstraints(min_length=15, strip_whitespace=False)]
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: Password
 
 # pre proxy core
 from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
@@ -11,6 +19,7 @@ import secrets
 # system utils
 import os
 import sys
+import time
 
 # utils
 import re
@@ -71,7 +80,7 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                email TEXT UNIQUE NOT NULL,
+                email CITEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL
             );
         """)
@@ -265,8 +274,6 @@ ph = PasswordHasher(
     type=Argon2Type.ID,
 )
 
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -315,20 +322,7 @@ def set_stage_cookie(resp: Response, req: Request, value: str) -> None:
 def clear_stage_cookie(resp: Response) -> None:
     resp.delete_cookie(STAGE_COOKIE, path="/")
 
-def validate_email(email: str) -> str:
-    e = (email or "").strip().lower()
-    if not EMAIL_RE.match(e):
-        raise HTTPException(status_code=400, detail="Invalid email address")
-    return e
-
-def validate_password(pw: str) -> str:
-    if not pw or len(pw) < 10:
-        raise HTTPException(status_code=400, detail="Password too short (min 10 characters)")
-    return pw
-
-def create_user(email: str, password: str) -> uuid.UUID:
-    email = validate_email(email)
-    validate_password(password)
+def create_user(email: EmailStr, password: Password) -> uuid.UUID:
     pw_hash = ph.hash(password)
     with get_conn() as conn:
         if conn.execute("SELECT 1 FROM users WHERE email=%s", (email,)).fetchone():
@@ -341,11 +335,10 @@ def create_user(email: str, password: str) -> uuid.UUID:
         (user_id,) = cur.fetchone()
         return user_id
 
-def get_user_by_email(email: str) -> Optional[dict]:
-    email = validate_email(email)
+def get_user_by_email(email: EmailStr) -> Optional[dict]:
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT user_id, email, password_hash FROM users WHERE email=%s",
+            "SELECT password_hash FROM users WHERE email=%s",
             (email,),
         ).fetchone()
     if not row:
@@ -461,7 +454,7 @@ app.mount("/app", StaticFiles(directory=web_dir, html=True), name="app")
 def _ok(payload: dict | None = None) -> JSONResponse:
     return JSONResponse(payload or {"ok": True})
 
-# --------- Require login for Web Client (/app/*) only + flow gating ----------
+# =================== Middleware Wiring ===================
 
 LOGIN_PAGE = "/app/login.html"
 DASHBOARD_PAGE = "/app/dashboard.html"
@@ -473,8 +466,6 @@ PRE_LOGIN_PATHS = {
     "/app/auth.js",
     "/app/favicon.ico",
 }
-
-
 
 @app.middleware("http")
 async def gatekeeper(request: Request, call_next):
@@ -678,40 +669,55 @@ async def gatekeeper(request: Request, call_next):
 
 # -------------- NEW: Auth & flow endpoints --------------
 
-@app.get("/")
-def root(req: Request):
-    sess = get_session(req)
-    if sess:
-        return RedirectResponse("/app/dashboard.html", status_code=303)
-    return RedirectResponse("/app/login.html", status_code=303)
+# @app.get("/")
+# def root(req: Request):
+#     sess = get_session(req)
+#     if sess:
+#         return RedirectResponse("/app/dashboard.html", status_code=303)
+#     return RedirectResponse("/app/login.html", status_code=303)
+
+@app.post("/auth/register")
+def auth_register(req: Request, body: LoginIn):
+    user_id = create_user(body.email, body.password)
+    token = create_session(user_id, req)
+    resp = _ok({"ok": True})
+    set_session_cookie(resp, req, token)
+    clear_reg_cookie(resp)
+    return resp
+
+DUMMY_HASH = ph.hash("€0nStDumrnyPW-15")
 
 @app.post("/auth/login")
-def auth_login(req: Request, body: dict):
-    email = validate_email(body.get("email", ""))
-    password = body.get("password", "") or ""
-    user = get_user_by_email(email)
-    dummy_hash = ph.hash("x"*12)
-    stored_hash = (user or {}).get("password_hash") or dummy_hash
+def auth_login(req: Request, body: LoginIn):
+    user_entry = get_user_by_email(body.email)
+    stored_hash = (user_entry or {}).get("password_hash") or DUMMY_HASH
+
     try:
-        ok = ph.verify(stored_hash, password)
+        ok = ph.verify(stored_hash, body.password)
     except (VerifyMismatchError, InvalidHash):
         ok = False
 
-    if not (user and ok):
-        import time as _t; _t.sleep(0.25)
+    if not (user_entry and ok):
+        time.sleep(0.25)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    try:
-        if user and ph.check_needs_rehash(stored_hash):
-            new_hash = ph.hash(password)
-            with get_conn() as conn:
-                conn.execute("UPDATE users SET password_hash=%s WHERE user_id=%s", (new_hash, user["user_id"]))
-    except Exception:
-        pass
+    # if ph.check_needs_rehash(stored_hash):
+    #     new_hash = ph.hash(body.password)
+    #     with get_conn() as conn:
+    #         conn.execute("UPDATE users SET password_hash=%s WHERE user_id=%s", (new_hash, user_entry["user_id"]))
 
-    token = create_session(user["user_id"], req)
+    token = create_session(user_entry["user_id"], req)
     resp = _ok({"ok": True})
     set_session_cookie(resp, req, token)
+    return resp
+
+@app.post("/auth/logout")
+def auth_logout(req: Request):
+    delete_session(req)
+    resp = _ok({"ok": True})
+    clear_session_cookie(resp, req)
+    clear_reg_cookie(resp)
+    clear_stage_cookie(resp)
     return resp
 
 @app.get("/auth/session")
@@ -726,28 +732,6 @@ def auth_session(req: Request):
         },
         "expires_at": sess["expires_at"].isoformat(),
     }
-
-@app.post("/auth/logout")
-def auth_logout(req: Request):
-    delete_session(req)
-    resp = _ok({"ok": True})
-    clear_session_cookie(resp, req)
-    clear_reg_cookie(resp)
-    clear_stage_cookie(resp)
-    return resp
-
-
-
-@app.post("/auth/register")
-def auth_register(req: Request, body: dict):
-    email = validate_email(body.get("email", ""))
-    password = validate_password(body.get("password", ""))
-    user_id = create_user(email, password)
-    token = create_session(user_id, req)
-    resp = _ok({"ok": True})
-    set_session_cookie(resp, req, token)
-    clear_reg_cookie(resp)
-    return resp
 
 # @app.post("/auth/allow_register")
 # def allow_register(req: Request):

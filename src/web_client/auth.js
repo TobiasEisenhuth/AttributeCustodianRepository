@@ -1,41 +1,42 @@
-// /app/auth.js
-export async function session() {
-  const r = await fetch("/auth/session");
-  if (!r.ok) throw new Error("No active session");
-  const j = await r.json();
-  return j.user;
-}
-
-async function postJSON(url, body) {
-  const r = await fetch(url, {
+async function postJSON(url, data) {
+  const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : null,
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(data),
   });
-  if (!r.ok) {
+  if (!res.ok) {
     let msg = "Request failed";
-    try { const t = await r.text(); msg = t || msg; } catch {}
+    try { msg = (await res.json()).detail || msg; } catch {}
     throw new Error(msg);
   }
-  return r.json();
+  return res.json();
 }
 
-export async function login(email, password) {
-  return postJSON("/auth/login", { email, password });
+const loginForm = document.getElementById("login-form");
+if (loginForm) {
+  loginForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(loginForm).entries());
+    try {
+      await postJSON("/auth/login", data);
+      location.href = "/app/dashboard.html";
+    } catch (err) {
+      document.getElementById("login-error").textContent = err.message;
+    }
+  });
 }
 
-export async function register(email, password, display_name) {
-  return postJSON("/auth/register", { email, password, display_name });
-}
-
-export async function logout() {
-  return postJSON("/auth/logout");
-}
-
-export async function allowRegister() {
-  return postJSON("/auth/allow_register");
-}
-
-export async function setStage(stage) {
-  return postJSON("/auth/stage", { stage });
+const regForm = document.getElementById("register-form");
+if (regForm) {
+  regForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(regForm).entries());
+    try {
+      await postJSON("/auth/register", data);
+      location.href = "/app/dashboard.html";
+    } catch (err) {
+      document.getElementById("register-error").textContent = err.message;
+    }
+  });
 }

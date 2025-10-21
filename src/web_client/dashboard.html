@@ -2,49 +2,45 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <title>Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Dashboard • CRS</title>
-  <link rel="icon" href="/app/favicon.ico" sizes="any">
-  <link rel="stylesheet" href="/app/style.css" />
-  <meta name="color-scheme" content="light dark" />
+  <link rel="icon" href="/app/favicon.ico">
+  <link rel="stylesheet" href="/app/style.css">
 </head>
-<body>
-  <header class="site-header">
-    <div class="brand">
-      <span class="logo" aria-hidden="true">🔐</span>
-      <h1>CRS — Dashboard</h1>
-    </div>
-    <nav class="site-nav">
-      <a class="nav-btn" href="/app/sender.html">Sender Tools</a>
-    </nav>
-  </header>
+<body class="center">
+  <div class="card">
+    <h1>Dashboard</h1>
+    <p id="hello">Checking session…</p>
+    <button id="logout">Log out</button>
+  </div>
 
-  <section class="bar">
-    <span>User: <span id="sessionBadge" class="badge">checking…</span></span>
-  </section>
+  <script>
+    async function getJSON(url, opts = {}) {
+      const res = await fetch(url, { credentials: "include", ...opts });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
 
-  <main id="app">
-    <section id="status" aria-live="polite"></section>
+    // Load session + greet, or bounce to login if not authenticated
+    (async () => {
+      try {
+        const s = await getJSON("/auth/session");
+        document.getElementById("hello").textContent = `Hello ${s.user.email}!`;
+      } catch {
+        location.href = "/app/login.html";
+      }
+    })();
 
-    <div class="grid2">
-      <div class="card">
-        <h2>Restricted Field</h2>
-        <div class="actions">
-          <button id="btn-fetch">Fetch restricted field</button>
-        </div>
-        <pre id="out" class="codeblock"></pre>
-      </div>
-
-      <div class="card">
-        <h2>Session</h2>
-        <div class="actions">
-          <button id="btn-logout" class="danger">Logout</button>
-        </div>
-      </div>
-    </div>
-  </main>
-
-  <script type="module" src="/app/auth.js"></script>
-  <script type="module" src="/app/dashboard.js"></script>
+    // Log out
+    document.getElementById("logout").addEventListener("click", async () => {
+      const btn = document.getElementById("logout");
+      btn.disabled = true;
+      try {
+        await fetch("/auth/logout", { method: "POST", credentials: "include" });
+      } finally {
+        location.href = "/app/login.html";
+      }
+    });
+  </script>
 </body>
 </html>

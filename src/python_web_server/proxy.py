@@ -291,36 +291,36 @@ def set_session_cookie(resp: Response, req: Request, token: str) -> None:
 def clear_session_cookie(resp: Response, req: Request) -> None:
     resp.delete_cookie("__Host-session", path="/")
 
-REG_COOKIE = "reg_ok"         # allows /app/register.html for a short time after pressing the button
-STAGE_COOKIE = "flow_stage"   # set to "store_ok" after successful decrypt/create
+# REG_COOKIE = "reg_ok"         # allows /app/register.html for a short time after pressing the button
+# STAGE_COOKIE = "flow_stage"   # set to "store_ok" after successful decrypt/create
 
-def set_reg_cookie(resp: Response, req: Request) -> None:
-    resp.set_cookie(
-        key=REG_COOKIE,
-        value="1",
-        httponly=False,
-        samesite="lax",
-        secure=secure_flag(req),
-        path="/app/register.html",
-        max_age=120,  # 2 minutes
-    )
+# def set_reg_cookie(resp: Response, req: Request) -> None:
+#     resp.set_cookie(
+#         key=REG_COOKIE,
+#         value="1",
+#         httponly=False,
+#         samesite="lax",
+#         secure=secure_flag(req),
+#         path="/app/register.html",
+#         max_age=120,  # 2 minutes
+#     )
 
-def clear_reg_cookie(resp: Response) -> None:
-    resp.delete_cookie("reg_ok", path="/app/register.html")
+# def clear_reg_cookie(resp: Response) -> None:
+#     resp.delete_cookie("reg_ok", path="/app/register.html")
 
-def set_stage_cookie(resp: Response, req: Request, value: str) -> None:
-    resp.set_cookie(
-        key=STAGE_COOKIE,
-        value=value,
-        httponly=True,
-        samesite="strict",
-        secure=True,
-        path="/",
-        max_age=SESSION_TTL_SECONDS,
-    )
+# def set_stage_cookie(resp: Response, req: Request, value: str) -> None:
+#     resp.set_cookie(
+#         key=STAGE_COOKIE,
+#         value=value,
+#         httponly=True,
+#         samesite="strict",
+#         secure=True,
+#         path="/",
+#         max_age=SESSION_TTL_SECONDS,
+#     )
 
-def clear_stage_cookie(resp: Response) -> None:
-    resp.delete_cookie(STAGE_COOKIE, path="/")
+# def clear_stage_cookie(resp: Response) -> None:
+#     resp.delete_cookie(STAGE_COOKIE, path="/")
 
 def create_user(email: EmailStr, password: Password) -> uuid.UUID:
     pw_hash = ph.hash(password)
@@ -335,16 +335,6 @@ def create_user(email: EmailStr, password: Password) -> uuid.UUID:
         (user_id,) = cur.fetchone()
         return user_id
 
-def get_user_by_email(email: EmailStr) -> Optional[dict]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT password_hash FROM users WHERE email=%s",
-            (email,),
-        ).fetchone()
-    if not row:
-        return None
-    return {"user_id": row[0], "email": row[1], "password_hash": row[2]}
-
 def create_session(user_id: uuid, req: Request) -> str:
     token = secrets.token_urlsafe(32)
     expires_at = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
@@ -355,17 +345,27 @@ def create_session(user_id: uuid, req: Request) -> str:
         """, (token, user_id, expires_at))
     return token
 
-def session_user_id(req: Request) -> Optional[uuid.UUID]:
-    token = (req.cookies or {}).get("__Host-session")
-    if not token:
-        return None
+def get_user_by_email(email: EmailStr) -> Optional[dict]:
     with get_conn() as conn:
-        row = conn.execute("""
-            SELECT s.user_id
-            FROM sessions s
-            WHERE s.token=%s AND s.expires_at > NOW()
-        """, (token,)).fetchone()
-    return row[0] if row else None
+        row = conn.execute(
+            "SELECT user_id, password_hash FROM users WHERE email=%s",
+            (email,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"user_id": row[0], "password_hash": row[1]}
+
+# def session_user_id(req: Request) -> Optional[uuid.UUID]:
+#     token = (req.cookies or {}).get("__Host-session")
+#     if not token:
+#         return None
+#     with get_conn() as conn:
+#         row = conn.execute("""
+#             SELECT s.user_id
+#             FROM sessions s
+#             WHERE s.token=%s AND s.expires_at > NOW()
+#         """, (token,)).fetchone()
+#     return row[0] if row else None
 
 def get_session(req: Request) -> Optional[dict]:
     cookies = req.cookies or {}
@@ -399,21 +399,7 @@ def session_user(req: Request) -> uuid:
         return None
     return {"user_id": row[0], "email": row[1], "expires_at": row[2]}
 
-def _is_logged_in_sync(token: str) -> bool:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM sessions WHERE token=%s AND expires_at > NOW()",
-            (token,)
-        ).fetchone()
-    return bool(row)
-
-async def is_logged_in(request: Request) -> bool:
-    token = (request.cookies or {}).get("__Host-session")
-    if not token:
-        return False
-    return await anyio.to_thread.run_sync(_is_logged_in_sync, token)
-
-def _user_id_for_token_sync(token: str):
+def user_id_by_token(token: str) -> Optional[uuid.UUID]:
     with get_conn() as conn:
         row = conn.execute(
             "SELECT user_id FROM sessions WHERE token=%s AND expires_at > NOW()",
@@ -421,11 +407,11 @@ def _user_id_for_token_sync(token: str):
         ).fetchone()
     return row[0] if row else None
 
-async def _session_user_id(request: Request):
+async def user_id_by_session(request: Request) -> Optional[uuid.UUID]:
     token = (request.cookies or {}).get("__Host-session")
     if not token:
         return None
-    return await anyio.to_thread.run_sync(_user_id_for_token_sync, token)
+    return await anyio.to_thread.run_sync(user_id_by_token, token)
 
 def delete_session(req: Request) -> None:
     cookies = req.cookies or {}
@@ -471,27 +457,43 @@ PRE_LOGIN_PATHS = {
 async def gatekeeper(request: Request, call_next):
     path = request.url.path
 
+    # auth backend always availbale
     if path.startswith("/auth"):
         return await call_next(request)
 
-    if path in PRE_LOGIN_PATHS:
-        return await call_next(request)
-
-    user_id = await _session_user_id(request)
+    user_id = await user_id_by_session(request)
     logged_in = bool(user_id)
 
-    if not logged_in:
-        return RedirectResponse(LOGIN_PAGE, status_code=303)
-
-    # starting here, login is guaranteed
+    # api always available but only response in session
     if path.startswith("/api"):
+        if not logged_in:
+            return JSONResponse({"error": "not_authenticated"}, status_code=401)
         request.state.user_id = user_id
         return await call_next(request)
 
-    if path in ALLOW_ANON_PATHS:
-        return await call_next(request)
-    else:
+    # default to login page or dashboard depending on session or nah
+    if path == "/":
+        if not logged_in:
+            return RedirectResponse(LOGIN_PAGE, status_code=303)
         return RedirectResponse(DASHBOARD_PAGE, status_code=303)
+
+    # serve login or skip if already in session
+    if path in PRE_LOGIN_PATHS:
+        if path == LOGIN_PAGE and not logged_in:
+            return await call_next(request)
+        return RedirectResponse(DASHBOARD_PAGE, status_code=303)
+
+    # not serving anything web without login
+    if not logged_in:
+        if request.method in ("GET", "HEAD"):
+            return RedirectResponse(LOGIN_PAGE, status_code=303)
+        return JSONResponse({"error": "not_authenticated"}, status_code=401)
+
+    # if we can't serve it ... dashboard it is
+    resp = await call_next(request)
+    if resp.status_code == 404 and request.method in ("GET", "HEAD"):
+        return RedirectResponse(DASHBOARD_PAGE, status_code=303)
+    return resp
     
     # # If not logged in: redirect all other GET/HEAD to login; 401 for non-GET
     # if not logged_in:
@@ -682,7 +684,7 @@ def auth_register(req: Request, body: LoginIn):
     token = create_session(user_id, req)
     resp = _ok({"ok": True})
     set_session_cookie(resp, req, token)
-    clear_reg_cookie(resp)
+    # clear_reg_cookie(resp)
     return resp
 
 DUMMY_HASH = ph.hash("€0nStDumrnyPW-15")
@@ -716,8 +718,8 @@ def auth_logout(req: Request):
     delete_session(req)
     resp = _ok({"ok": True})
     clear_session_cookie(resp, req)
-    clear_reg_cookie(resp)
-    clear_stage_cookie(resp)
+    # clear_reg_cookie(resp)
+    # clear_stage_cookie(resp)
     return resp
 
 @app.get("/auth/session")
@@ -727,10 +729,8 @@ def auth_session(req: Request):
         raise HTTPException(status_code=401, detail="No active session")
     return {
         "user": {
-            "id": sess["user_id"],
             "email": sess["email"]
-        },
-        "expires_at": sess["expires_at"].isoformat(),
+        }
     }
 
 # @app.post("/auth/allow_register")

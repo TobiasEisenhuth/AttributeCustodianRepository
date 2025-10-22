@@ -10,7 +10,7 @@ from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
 import psycopg
 import uuid
 import msgpack
-import secrets
+import items
 
 # system utils
 import os
@@ -43,9 +43,9 @@ from argon2.exceptions import VerifyMismatchError, InvalidHash
 
 from protocol import (
     b64d, b64e,
-    ADD_OR_UPDATE_SECRET, DELETE_SECRET, GRANT_ACCESS_PROXY, GRANT_ACCESS_RECEIVER,
-    REVOKE_ACCESS, REQUEST_SECRET, LIST_GRANTS, GRANTS_SUMMARY, REQUEST_ACCESS,
-    PULL_INBOX_SENDER, PULL_INBOX_RECEIVER, INBOX_CONTENTS, RESPONSE_SECRET
+    ADD_OR_UPDATE_item, DELETE_item, GRANT_ACCESS_PROXY, GRANT_ACCESS_RECEIVER,
+    REVOKE_ACCESS, REQUEST_item, LIST_GRANTS, GRANTS_SUMMARY, REQUEST_ACCESS,
+    PULL_INBOX_SENDER, PULL_INBOX_RECEIVER, INBOX_CONTENTS, RESPONSE_item
 )
 
 PROXY_HOST = os.getenv("PROXY_HOST", "0.0.0.0")
@@ -99,12 +99,12 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS crypto_bundle (
                 user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                secret_id TEXT NOT NULL,
+                item_id TEXT NOT NULL,
                 capsule BYTEA NOT NULL,
                 ciphertext BYTEA NOT NULL,
                 sender_public_key BYTEA NOT NULL,
                 sender_verifying_key BYTEA NOT NULL,
-                PRIMARY KEY (user_id, secret_id)
+                PRIMARY KEY (user_id, item_id)
             );
         """)
         # grants
@@ -112,14 +112,14 @@ def init_db():
             CREATE TABLE IF NOT EXISTS grants (
                 sender_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 receiver_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                sender_secret_id TEXT NOT NULL,
-                receiver_secret_id TEXT NOT NULL,
+                sender_item_id TEXT NOT NULL,
+                receiver_item_id TEXT NOT NULL,
                 kfrags_b BYTEA NOT NULL,
-                PRIMARY KEY (sender_id, receiver_id, sender_secret_id),
-                UNIQUE (sender_id, receiver_id, receiver_secret_id),
+                PRIMARY KEY (sender_id, receiver_id, sender_item_id),
+                UNIQUE (sender_id, receiver_id, receiver_item_id),
                 CONSTRAINT not_selfmap CHECK (sender_id <> receiver_id),
-                FOREIGN KEY (sender_id, sender_secret_id)
-                    REFERENCES crypto_bundle(user_id, secret_id) ON DELETE RESTRICT
+                FOREIGN KEY (sender_id, sender_item_id)
+                    REFERENCES crypto_bundle(user_id, item_id) ON DELETE RESTRICT
             );
         """)
         # post office
@@ -178,7 +178,7 @@ def create_user(email: LoginRequest.email, password: LoginRequest.password) -> u
         return user_id
 
 def create_session(user_id: uuid, req: Request) -> str:
-    token = secrets.token_urlsafe(32)
+    token = items.token_urlsafe(32)
     expires_at = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
     with get_conn() as conn:
         conn.execute("""
@@ -280,14 +280,14 @@ def delete_session(req: Request) -> None:
 
 # =================== PRE DB HELPERS ===================
 
-def fetch_crypto_bundle(user_id: uuid, secret_id: str):
+def fetch_crypto_bundle(user_id: uuid, item_id: str):
     with get_conn() as conn:
         row = conn.execute("""
             SELECT capsule, ciphertext, sender_public_key, sender_verifying_key
             FROM crypto_bundle
-            WHERE user_id=%s AND secret_id=%s
+            WHERE user_id=%s AND item_id=%s
             """,
-            (user_id, secret_id)).fetchone()
+            (user_id, item_id)).fetchone()
     if not row:
         return None
     capsule_b, ciphertext_b, spk_b, svk_b = row
@@ -298,13 +298,13 @@ def fetch_crypto_bundle(user_id: uuid, secret_id: str):
         "sender_verifying_key": PublicKey.from_compressed_bytes(svk_b),
     }
 
-def fetch_granted_kfrags(sender_id: uuid, receiver_id: uuid, receiver_secret_id: str) -> List[KeyFrag]:
+def fetch_granted_kfrags(sender_id: uuid, receiver_id: uuid, receiver_item_id: str) -> List[KeyFrag]:
     with get_conn() as conn:
         row = conn.execute("""
             SELECT kfrags_b
             FROM grants
-            WHERE sender_id=%s AND receiver_id=%s AND receiver_secret_id=%s
-        """, (sender_id, receiver_id, receiver_secret_id)).fetchone()
+            WHERE sender_id=%s AND receiver_id=%s AND receiver_item_id=%s
+        """, (sender_id, receiver_id, receiver_item_id)).fetchone()
     if not row:
         return []
     (blob,) = row
@@ -312,22 +312,22 @@ def fetch_granted_kfrags(sender_id: uuid, receiver_id: uuid, receiver_secret_id:
     return [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
 
 # def query_grants_for(user_id: uuid) -> dict:
-#     by_secret: Dict[str, List[str]] = {}
+#     by_item: Dict[str, List[str]] = {}
 #     total_grants = 0
 #     with get_conn() as conn:
-#         all_users_secret_id = [r[0] for r in conn.execute(
-#             "SELECT secret_id FROM crypto_bundle WHERE user_id=%s", (user_id,)
+#         all_users_item_id = [r[0] for r in conn.execute(
+#             "SELECT item_id FROM crypto_bundle WHERE user_id=%s", (user_id,)
 #         ).fetchall()]
-#         for secret_id in all_users_secret_id:
-#             by_secret.setdefault(secret_id, [])
+#         for item_id in all_users_item_id:
+#             by_item.setdefault(item_id, [])
 #         rows = conn.execute(
 #             "SELECT sender_id, receiver_id FROM grants WHERE user_id=%s ORDER BY sender_id, receiver_id",
 #             (user_id,)
 #         ).fetchall()
-#     for secret_id, receiver_id in rows:
-#         by_secret.setdefault(secret_id, []).append(receiver_id)
+#     for item_id, receiver_id in rows:
+#         by_item.setdefault(item_id, []).append(receiver_id)
 #         total_grants += 1
-#     return {"by_secret": by_secret, "totals": {"crypto_bundle": len(by_secret), "grants": total_grants}}
+#     return {"by_item": by_item, "totals": {"crypto_bundle": len(by_item), "grants": total_grants}}
 
 # ---------- inbox helpers ----------
 
@@ -476,30 +476,30 @@ def auth_session(req: Request):
 
 # ------------------- /api ---------------------
 
-class UpsertSecretRequest(BaseModel):
-    secret_id: str
+class UpsertitemRequest(BaseModel):
+    item_id: str
     capsule_b64: str
     ciphertext_b64: str
     sender_public_key_b64: str
     sender_verifying_key_b64: str
 
-@app.post("/api/upsert_secret")
-def api_upsert_secret(request: Request, body: UpsertSecretRequest):
+@app.post("/api/upsert_item")
+def api_upsert_item(request: Request, body: UpsertitemRequest):
 
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO crypto_bundle (
-                user_id, secret_id, capsule, ciphertext, sender_public_key, sender_verifying_key
+                user_id, item_id, capsule, ciphertext, sender_public_key, sender_verifying_key
             )
             VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (user_id, secret_id) DO UPDATE SET
+            ON CONFLICT (user_id, item_id) DO UPDATE SET
                 capsule = EXCLUDED.capsule,
                 ciphertext = EXCLUDED.ciphertext,
                 sender_public_key = EXCLUDED.sender_public_key,
                 sender_verifying_key = EXCLUDED.sender_verifying_key
         """,(
                 request.state.user_id,
-                body.secret_id,
+                body.item_id,
                 b64d(body.capsule_b64),
                 b64d(body.ciphertext_b64),
                 b64d(body.sender_public_key_b64),
@@ -507,21 +507,21 @@ def api_upsert_secret(request: Request, body: UpsertSecretRequest):
         ),)
     return _ok()
 
-class EraseSecretRequest(BaseModel):
-    secret_id: str
+class EraseitemRequest(BaseModel):
+    item_id: str
 
-@app.post("/api/erase_secret")
-def api_erase_secret(request: Request, body: EraseSecretRequest):
+@app.post("/api/erase_item")
+def api_erase_item(request: Request, body: EraseitemRequest):
     user_id = request.state.user_id
 
     try:
         with get_conn() as conn:
             cursor = conn.execute(
-                "DELETE FROM crypto_bundle WHERE user_id=%s AND secret_id=%s",
-                (user_id, body.secret_id),
+                "DELETE FROM crypto_bundle WHERE user_id=%s AND item_id=%s",
+                (user_id, body.item_id),
             )
             if cursor.rowcount == 0:
-                raise HTTPException(status_code=404, detail="secret_not_found")
+                raise HTTPException(status_code=404, detail="item_not_found")
             return _ok()
 
     except psycopg.errors.ForeignKeyViolation:
@@ -529,9 +529,9 @@ def api_erase_secret(request: Request, body: EraseSecretRequest):
             rows = conn.execute("""
                 SELECT DISTINCT receiver_id
                 FROM grants
-                WHERE sender_id=%s AND sender_secret_id=%s
+                WHERE sender_id=%s AND sender_item_id=%s
                 ORDER BY receiver_id
-            """,(user_id,body.secret_id),
+            """,(user_id,body.item_id),
             ).fetchall()
         receivers = [r[0] for r in rows]
         return JSONResponse(
@@ -546,8 +546,8 @@ def api_erase_secret(request: Request, body: EraseSecretRequest):
 
 class GrantAccessRequest(BaseModel):
     receiver_id: uuid.UUID
-    sender_secret_id: str
-    receiver_secret_id: str
+    sender_item_id: str
+    receiver_item_id: str
     kfrags_b64: List[str]
 
 @app.post("/api/grant_access")
@@ -563,17 +563,17 @@ def api_grant_access(request: Request, body: GrantAccessRequest):
     try:
         with get_conn() as conn:
             conn.execute("""
-                INSERT INTO grants (sender_id, receiver_id, sender_secret_id, receiver_secret_id, kfrags_b)
+                INSERT INTO grants (sender_id, receiver_id, sender_item_id, receiver_item_id, kfrags_b)
                 VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (sender_id, receiver_id, receiver_secret_id)
+                ON CONFLICT (sender_id, receiver_id, receiver_item_id)
                 DO UPDATE SET
-                    sender_secret_id = EXCLUDED.sender_secret_id,
+                    sender_item_id = EXCLUDED.sender_item_id,
                     kfrags_b            = EXCLUDED.kfrags_b
             """,(
                 sender_id,
                 body.receiver_id,
-                body.sender_secret_id,
-                body.receiver_secret_id,
+                body.sender_item_id,
+                body.receiver_item_id,
                 kfrags_blob,
             ),)
         return _ok()
@@ -585,7 +585,7 @@ def api_grant_access(request: Request, body: GrantAccessRequest):
 
 class RevokeAccessRequest(BaseModel):
     receiver_id: uuid.UUID
-    sender_secret_id: str
+    sender_item_id: str
 
 @app.post("/api/revoke_access")
 def api_revoke_access(request: Request, body: RevokeAccessRequest):
@@ -594,22 +594,22 @@ def api_revoke_access(request: Request, body: RevokeAccessRequest):
     with get_conn() as conn:
         cur = conn.execute("""
             DELETE FROM grants
-            WHERE sender_id=%s AND receiver_id=%s AND receiver_secret_id=%s
+            WHERE sender_id=%s AND receiver_id=%s AND receiver_item_id=%s
         """,
-            (sender_id, body.receiver_id, body.sender_secret_id),
+            (sender_id, body.receiver_id, body.sender_item_id),
         )
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="grant_not_found")
 
     return _ok()
 
-class RequestSecretRequest(BaseModel):
+class RequestitemRequest(BaseModel):
     sender_id: uuid.UUID
-    receiver_secret_id: str
+    receiver_item_id: str
     receiver_public_key_b64: str
 
-@app.post("/api/request_secret")
-def api_request_secret(request: Request, body: RequestSecretRequest):
+@app.post("/api/request_item")
+def api_request_item(request: Request, body: RequestitemRequest):
     receiver_id = request.state.user_id
 
     try:
@@ -619,19 +619,19 @@ def api_request_secret(request: Request, body: RequestSecretRequest):
 
     with get_conn() as conn:
         grant_row = conn.execute("""
-            SELECT sender_secret_id, kfrags_b
+            SELECT sender_item_id, kfrags_b
             FROM grants
             WHERE sender_id=%s
               AND receiver_id=%s
-              AND receiver_secret_id=%s
+              AND receiver_item_id=%s
         """,
-            (body.sender_id, receiver_id, body.receiver_secret_id),
+            (body.sender_id, receiver_id, body.receiver_item_id),
         ).fetchone()
 
     if not grant_row:
         raise HTTPException(status_code=404, detail="grant_not_found")
 
-    sender_secret_id, kfrags_blob = grant_row
+    sender_item_id, kfrags_blob = grant_row
     kfrag_bytes_list = msgpack.unpackb(kfrags_blob, raw=False)
     kfrags: List[KeyFrag] = [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
 
@@ -639,13 +639,13 @@ def api_request_secret(request: Request, body: RequestSecretRequest):
         bundle_row = conn.execute("""
             SELECT capsule, ciphertext, sender_public_key, sender_verifying_key
             FROM crypto_bundle
-            WHERE user_id=%s AND secret_id=%s
+            WHERE user_id=%s AND item_id=%s
         """,
-            (body.sender_id, sender_secret_id),
+            (body.sender_id, sender_item_id),
         ).fetchone()
 
     if not bundle_row:
-        raise HTTPException(status_code=404, detail="secret_not_found")
+        raise HTTPException(status_code=404, detail="item_not_found")
 
     capsule_b, ciphertext_b, spk_b, svk_b = bundle_row
     capsule       = Capsule.from_bytes(capsule_b)
@@ -683,9 +683,9 @@ def api_request_secret(request: Request, body: RequestSecretRequest):
 #     try:
 #         sender_id   = body["sender_id"]
 #         receiver_id = body["receiver_id"]
-#         secret_id   = body["secret_id"]
-#         if not sender_id or not receiver_id or not secret_id:
-#             raise ValueError("Missing sender_id/receiver_id/secret_id")
+#         item_id   = body["item_id"]
+#         if not sender_id or not receiver_id or not item_id:
+#             raise ValueError("Missing sender_id/receiver_id/item_id")
 #         enqueue_to_user(sender_id, REQUEST_ACCESS, body)
 #         return _ok()
 #     except Exception as e:

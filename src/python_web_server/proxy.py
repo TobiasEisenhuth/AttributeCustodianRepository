@@ -42,7 +42,8 @@ from common import (
     LoginRequest,
     UpsertItemRequest, EraseItemRequest,
     GrantAccessRequest, RevokeAccessRequest,
-    RequestItemRequest
+    RequestItemRequest,
+    SaveToVaultRequest, LoadFromVaultRequest,
 )
 
 PROXY_HOST = os.getenv("PROXY_HOST", "0.0.0.0")
@@ -562,6 +563,41 @@ def api_request_item(request: Request, body: RequestItemRequest):
         "ciphertext_b64": b64e(ciphertext),
         "cfrags_b64": [b64e(bytes(c)) for c in cfrags],
     }
+
+@app.put("/api/save_to_vault")
+def api_save_to_vault(request: Request, body: SaveToVaultRequest):
+    user_id = request.state.user_id
+    try:
+        blob = b64d(body.blob_b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad_blob_b64")
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO vault (user_id, blob)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                blob = EXCLUDED.blob
+            """,
+            (user_id, blob),
+        )
+    return _ok()
+
+@app.get("/api/load_from_vault")
+def api_load_from_vault(request: Request, body: LoadFromVaultRequest):
+    user_id = request.state.user_id
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT blob FROM vault WHERE user_id=%s",
+            (user_id,),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="vault_not_found")
+
+    (blob,) = row
+    return {"blob_b64": b64e(blob)}
 
 # -------------------------------------------------------------
 

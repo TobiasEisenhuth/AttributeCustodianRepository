@@ -1,11 +1,4 @@
-import os
-import sys
-import msgpack
-import tempfile
-import getpass
-import base64
-import requests
-from typing import List, Optional, Annotated
+from typing import List, Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, StringConstraints
@@ -42,3 +35,9 @@ class RequestItemRequest(BaseModel):
     sender_id: UUID
     receiver_item_id: str
     receiver_public_key_b64: str
+
+class SaveToVaultRequest(BaseModel):
+    blob_b64: Annotated[StrictStr, StringConstraints(min_length=1)]
+
+class LoadFromVaultRequest(BaseModel):
+    pass

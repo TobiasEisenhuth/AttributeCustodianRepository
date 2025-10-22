@@ -10,7 +10,7 @@ from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
 import psycopg
 import uuid
 import msgpack
-import items
+import secrets
 
 # system utils
 import os
@@ -235,49 +235,6 @@ def delete_session(req: Request) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM sessions WHERE token=%s", (token,))
 
-# REG_COOKIE = "reg_ok"         # allows /app/register.html for a short time after pressing the button
-# STAGE_COOKIE = "flow_stage"   # set to "store_ok" after successful decrypt/create
-
-# def set_reg_cookie(resp: Response, req: Request) -> None:
-#     resp.set_cookie(
-#         key=REG_COOKIE,
-#         value="1",
-#         httponly=False,
-#         samesite="lax",
-#         secure=secure_flag(req),
-#         path="/app/register.html",
-#         max_age=120,  # 2 minutes
-#     )
-
-# def clear_reg_cookie(resp: Response) -> None:
-#     resp.delete_cookie("reg_ok", path="/app/register.html")
-
-# def set_stage_cookie(resp: Response, req: Request, value: str) -> None:
-#     resp.set_cookie(
-#         key=STAGE_COOKIE,
-#         value=value,
-#         httponly=True,
-#         samesite="strict",
-#         secure=True,
-#         path="/",
-#         max_age=SESSION_TTL_SECONDS,
-#     )
-
-# def clear_stage_cookie(resp: Response) -> None:
-#     resp.delete_cookie(STAGE_COOKIE, path="/")
-
-# def session_user_id(req: Request) -> Optional[uuid.UUID]:
-#     token = (req.cookies or {}).get("__Host-session")
-#     if not token:
-#         return None
-#     with get_conn() as conn:
-#         row = conn.execute("""
-#             SELECT s.user_id
-#             FROM sessions s
-#             WHERE s.token=%s AND s.expires_at > NOW()
-#         """, (token,)).fetchone()
-#     return row[0] if row else None
-
 # =================== PRE DB HELPERS ===================
 
 def fetch_crypto_bundle(user_id: uuid, item_id: str):
@@ -310,40 +267,6 @@ def fetch_granted_kfrags(sender_id: uuid, receiver_id: uuid, receiver_item_id: s
     (blob,) = row
     kfrag_bytes_list = msgpack.unpackb(blob, raw=False)
     return [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
-
-# def query_grants_for(user_id: uuid) -> dict:
-#     by_item: Dict[str, List[str]] = {}
-#     total_grants = 0
-#     with get_conn() as conn:
-#         all_users_item_id = [r[0] for r in conn.execute(
-#             "SELECT item_id FROM crypto_bundle WHERE user_id=%s", (user_id,)
-#         ).fetchall()]
-#         for item_id in all_users_item_id:
-#             by_item.setdefault(item_id, [])
-#         rows = conn.execute(
-#             "SELECT sender_id, receiver_id FROM grants WHERE user_id=%s ORDER BY sender_id, receiver_id",
-#             (user_id,)
-#         ).fetchall()
-#     for item_id, receiver_id in rows:
-#         by_item.setdefault(item_id, []).append(receiver_id)
-#         total_grants += 1
-#     return {"by_item": by_item, "totals": {"crypto_bundle": len(by_item), "grants": total_grants}}
-
-# ---------- inbox helpers ----------
-
-# def enqueue_to_user(user_id: uuid, action: str, payload: dict) -> None:
-#     msg = msgpack.packb({"action": action, "payload": payload}, use_bin_type=True)
-#     with get_conn() as conn:
-#         conn.execute("INSERT INTO post_office (user_id, msg) VALUES (%s, %s)", (user_id, msg))
-
-# def pull_user_inbox(user_id: uuid) -> List[dict]:
-#     with get_conn() as conn:
-#         rows = conn.execute(
-#             "SELECT msg FROM post_office WHERE user_id=%s",
-#             (user_id,)
-#         ).fetchall()
-#         conn.execute("DELETE FROM post_office WHERE user_id=%s", (user_id,))
-#     return [msgpack.unpackb(r[0], raw=False) for r in rows]
 
 # =================== FastAPI app ===================
 
@@ -668,114 +591,6 @@ def api_request_item(request: Request, body: RequestitemRequest):
         "ciphertext_b64": b64e(ciphertext),
         "cfrags_b64": [b64e(bytes(c)) for c in cfrags],
     }
-
-# @app.post("/api/list_grants")
-# def api_list_grants(body: dict):
-#     try:
-#         sender_id = body["sender_id"]
-#         summary = query_grants_for(sender_id)
-#         return {"action": GRANTS_SUMMARY, "payload": summary}
-#     except Exception as e:
-#         return {"action": "ERROR", "payload": {"error": str(e)}}
-
-# @app.post("/api/request_access")
-# def api_request_access(body: dict):
-#     try:
-#         sender_id   = body["sender_id"]
-#         receiver_id = body["receiver_id"]
-#         item_id   = body["item_id"]
-#         if not sender_id or not receiver_id or not item_id:
-#             raise ValueError("Missing sender_id/receiver_id/item_id")
-#         enqueue_to_user(sender_id, REQUEST_ACCESS, body)
-#         return _ok()
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=str(e))
-
-# @app.post("/api/pull_inbox/sender")
-# def api_pull_inbox_sender(body: dict):
-#     try:
-#         sender_id = body["sender_id"]
-#         msgs = pull_sender_inbox(sender_id)
-#         return {"action": INBOX_CONTENTS, "payload": {"messages": msgs}}
-#     except Exception as e:
-#         return {"action": "ERROR", "payload": {"error": str(e)}}
-
-# @app.post("/api/pull_inbox/receiver")
-# def api_pull_inbox_receiver(body: dict):
-#     try:
-#         receiver_id = body["receiver_id"]
-#         msgs = pull_receiver_inbox(receiver_id)
-#         return {"action": INBOX_CONTENTS, "payload": {"messages": msgs}}
-#     except Exception as e:
-#         return {"action": "ERROR", "payload": {"error": str(e)}}
-
-# -------------- NEW: Auth & flow endpoints --------------
-
-# @app.get("/")
-# def root(req: Request):
-#     sess = get_session_user_by_request(req)
-#     if sess:
-#         return RedirectResponse("/app/dashboard.html", status_code=303)
-#     return RedirectResponse("/app/login.html", status_code=303)
-
-# @app.post("/auth/allow_register")
-# def allow_register(req: Request):
-#     resp = _ok({"ok": True})
-#     set_reg_cookie(resp, req)
-#     return resp
-
-# @app.post("/auth/stage")
-# def set_stage(req: Request, body: dict):
-#     sess = get_session_user_by_request(req)
-#     if not sess:
-#         raise HTTPException(status_code=401, detail="Not authenticated")
-#     stage = (body or {}).get("stage")
-#     if stage not in ("store_ok",):
-#         raise HTTPException(status_code=400, detail="Unknown stage")
-#     resp = _ok({"ok": True, "stage": stage})
-#     set_stage_cookie(resp, req, stage)
-#     return resp
-
-# -------------- NEW: Encrypted per-user store API --------------
-
-# @app.get("/api/user_store")
-# def api_user_store_get(req: Request):
-#     """Return encrypted store blob if present; never returns plaintext."""
-#     sess = get_session_user_by_request(req)
-#     if not sess:
-#         raise HTTPException(status_code=401, detail="Not authenticated")
-#     with get_conn() as conn:
-#         cstore = conn.execute("SELECT blob FROM vault WHERE user_id=%s", (sess["user_id"],)).fetchone()
-#     if not cstore:
-#         return {"exists": False}
-#     return {"exists": True, "blob_b64": b64e(cstore)}
-
-# @app.post("/api/user_store")
-# def api_user_store_put(req: Request, body: dict):
-#     """Replace encrypted store blob with client-provided ciphertext."""
-#     sess = get_session_user_by_request(req)
-#     if not sess:
-#         raise HTTPException(status_code=401, detail="Not authenticated")
-#     blob_b64 = (body or {}).get("blob_b64") or ""
-#     if not blob_b64:
-#         raise HTTPException(status_code=400, detail="Missing blob_b64")
-#     blob = b64d(blob_b64)
-#     with get_conn() as conn:
-#         conn.execute("""
-#             INSERT INTO vault (user_id, blob)
-#             VALUES (%s, %s, NOW())
-#             ON CONFLICT (user_id) DO UPDATE SET blob=EXCLUDED.blob, updated_at=NOW()
-#         """, (sess["user_id"], blob))
-#     return _ok({"ok": True})
-
-# -------------- Example restricted field --------------
-
-# @app.get("/api/restricted_field")
-# def api_restricted_field(req: Request):
-#     sess = get_session_user_by_request(req)
-#     if not sess:
-#         raise HTTPException(status_code=401, detail="Not authenticated")
-#     return {"field": f"Hello {sess['display_name']} — this is your restricted field."}
 
 # -------------------------------------------------------------
 

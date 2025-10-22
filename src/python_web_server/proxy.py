@@ -178,7 +178,7 @@ def create_user(email: LoginRequest.email, password: LoginRequest.password) -> u
         return user_id
 
 def create_session(user_id: uuid, req: Request) -> str:
-    token = items.token_urlsafe(32)
+    token = secrets.token_urlsafe(32)
     expires_at = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
     with get_conn() as conn:
         conn.execute("""

@@ -1,14 +1,11 @@
 # language utils
-from typing import List, Dict, Any, Optional, Annotated
-from pydantic import BaseModel, EmailStr, StringConstraints
-from pydantic.types import StrictStr
-
-from common import LoginRequest
+from typing import List, Optional
+from pydantic import EmailStr
+from uuid import UUID
 
 # pre proxy core
 from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
 import psycopg
-import uuid
 import msgpack
 import secrets
 
@@ -18,7 +15,6 @@ import sys
 import time
 
 # utils
-import re
 from datetime import datetime, timedelta, timezone
 
 # web utils
@@ -41,11 +37,12 @@ from argon2 import PasswordHasher
 from argon2.low_level import Type as Argon2Type
 from argon2.exceptions import VerifyMismatchError, InvalidHash
 
-from protocol import (
+from common import (
     b64d, b64e,
-    ADD_OR_UPDATE_item, DELETE_item, GRANT_ACCESS_PROXY, GRANT_ACCESS_RECEIVER,
-    REVOKE_ACCESS, REQUEST_item, LIST_GRANTS, GRANTS_SUMMARY, REQUEST_ACCESS,
-    PULL_INBOX_SENDER, PULL_INBOX_RECEIVER, INBOX_CONTENTS, RESPONSE_item
+    LoginRequest,
+    UpsertItemRequest, EraseItemRequest,
+    GrantAccessRequest, RevokeAccessRequest,
+    RequestItemRequest
 )
 
 PROXY_HOST = os.getenv("PROXY_HOST", "0.0.0.0")
@@ -70,8 +67,8 @@ def get_conn():
 
 def init_db():
     with get_conn() as conn:
-        # UUID generator for gen_random_uuid()
         conn.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+        conn.execute("CREATE EXTENSION IF NOT EXISTS citext;")
         # users
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -164,7 +161,7 @@ def clear_session_cookie(resp: Response, req: Request) -> None:
 
 # =================== AUTH DB HELPERS ===================
 
-def create_user(email: LoginRequest.email, password: LoginRequest.password) -> uuid.UUID:
+def create_user(email: LoginRequest.email, password: LoginRequest.password) -> UUID:
     pw_hash = ph.hash(password)
     with get_conn() as conn:
         if conn.execute("SELECT 1 FROM users WHERE email=%s", (email,)).fetchone():
@@ -177,7 +174,7 @@ def create_user(email: LoginRequest.email, password: LoginRequest.password) -> u
         (user_id,) = cursor.fetchone()
         return user_id
 
-def create_session(user_id: uuid, req: Request) -> str:
+def create_session(user_id: UUID, req: Request) -> str:
     token = secrets.token_urlsafe(32)
     expires_at = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
     with get_conn() as conn:
@@ -213,7 +210,7 @@ def get_session_user_by_request(req: Request) -> Optional[dict]:
         return None
     return {"user_id": row[0], "email": row[1]}
 
-def user_id_by_token(token: str) -> Optional[uuid.UUID]:
+def user_id_by_token(token: str) -> Optional[UUID]:
     with get_conn() as conn:
         row = conn.execute(
             "SELECT user_id FROM sessions WHERE token=%s AND expires_at > NOW()",
@@ -221,7 +218,7 @@ def user_id_by_token(token: str) -> Optional[uuid.UUID]:
         ).fetchone()
     return row[0] if row else None
 
-async def user_id_by_session(request: Request) -> Optional[uuid.UUID]:
+async def user_id_by_session(request: Request) -> Optional[UUID]:
     token = (request.cookies or {}).get("__Host-session")
     if not token:
         return None
@@ -237,7 +234,7 @@ def delete_session(req: Request) -> None:
 
 # =================== PRE DB HELPERS ===================
 
-def fetch_crypto_bundle(user_id: uuid, item_id: str):
+def fetch_crypto_bundle(user_id: UUID, item_id: str):
     with get_conn() as conn:
         row = conn.execute("""
             SELECT capsule, ciphertext, sender_public_key, sender_verifying_key
@@ -255,7 +252,7 @@ def fetch_crypto_bundle(user_id: uuid, item_id: str):
         "sender_verifying_key": PublicKey.from_compressed_bytes(svk_b),
     }
 
-def fetch_granted_kfrags(sender_id: uuid, receiver_id: uuid, receiver_item_id: str) -> List[KeyFrag]:
+def fetch_granted_kfrags(sender_id: UUID, receiver_id: UUID, receiver_item_id: str) -> List[KeyFrag]:
     with get_conn() as conn:
         row = conn.execute("""
             SELECT kfrags_b
@@ -399,15 +396,8 @@ def auth_session(req: Request):
 
 # ------------------- /api ---------------------
 
-class UpsertitemRequest(BaseModel):
-    item_id: str
-    capsule_b64: str
-    ciphertext_b64: str
-    sender_public_key_b64: str
-    sender_verifying_key_b64: str
-
 @app.post("/api/upsert_item")
-def api_upsert_item(request: Request, body: UpsertitemRequest):
+def api_upsert_item(request: Request, body: UpsertItemRequest):
 
     with get_conn() as conn:
         conn.execute("""
@@ -430,11 +420,8 @@ def api_upsert_item(request: Request, body: UpsertitemRequest):
         ),)
     return _ok()
 
-class EraseitemRequest(BaseModel):
-    item_id: str
-
 @app.post("/api/erase_item")
-def api_erase_item(request: Request, body: EraseitemRequest):
+def api_erase_item(request: Request, body: EraseItemRequest):
     user_id = request.state.user_id
 
     try:
@@ -465,13 +452,6 @@ def api_erase_item(request: Request, body: EraseitemRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-class GrantAccessRequest(BaseModel):
-    receiver_id: uuid.UUID
-    sender_item_id: str
-    receiver_item_id: str
-    kfrags_b64: List[str]
 
 @app.post("/api/grant_access")
 def api_grant_access(request: Request, body: GrantAccessRequest):
@@ -506,10 +486,6 @@ def api_grant_access(request: Request, body: GrantAccessRequest):
     except Exception:
         raise HTTPException(status_code=500, detail="internal_error")
 
-class RevokeAccessRequest(BaseModel):
-    receiver_id: uuid.UUID
-    sender_item_id: str
-
 @app.post("/api/revoke_access")
 def api_revoke_access(request: Request, body: RevokeAccessRequest):
     sender_id = request.state.user_id
@@ -517,7 +493,7 @@ def api_revoke_access(request: Request, body: RevokeAccessRequest):
     with get_conn() as conn:
         cur = conn.execute("""
             DELETE FROM grants
-            WHERE sender_id=%s AND receiver_id=%s AND receiver_item_id=%s
+            WHERE sender_id=%s AND receiver_id=%s AND sender_item_id=%s
         """,
             (sender_id, body.receiver_id, body.sender_item_id),
         )
@@ -526,13 +502,8 @@ def api_revoke_access(request: Request, body: RevokeAccessRequest):
 
     return _ok()
 
-class RequestitemRequest(BaseModel):
-    sender_id: uuid.UUID
-    receiver_item_id: str
-    receiver_public_key_b64: str
-
 @app.post("/api/request_item")
-def api_request_item(request: Request, body: RequestitemRequest):
+def api_request_item(request: Request, body: RequestItemRequest):
     receiver_id = request.state.user_id
 
     try:

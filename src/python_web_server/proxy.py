@@ -3,11 +3,7 @@ from typing import List, Dict, Any, Optional, Annotated
 from pydantic import BaseModel, EmailStr, StringConstraints
 from pydantic.types import StrictStr
 
-Password = Annotated[StrictStr, StringConstraints(min_length=15, strip_whitespace=False)]
-
-class LoginIn(BaseModel):
-    email: EmailStr
-    password: Password
+from common import LoginRequest
 
 # pre proxy core
 from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
@@ -94,8 +90,8 @@ def init_db():
         """)
         # user's encrypted store
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS encrypted_store (
-                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            CREATE TABLE IF NOT EXISTS vault (
+                user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
                 blob BYTEA NOT NULL
             );
         """)
@@ -111,7 +107,7 @@ def init_db():
                 PRIMARY KEY (user_id, secret_id)
             );
         """)
-        # grants(user_id,) = row
+        # grants
         conn.execute("""
             CREATE TABLE IF NOT EXISTS grants (
                 delegator_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -135,96 +131,185 @@ def init_db():
         """)
     print("[Proxy] DB initialized.")
 
-# =================== CRS DB HELPERS ===================
+# =================== AUTH (email + password) ===================
 
-# def upsert_secret(payload: Dict[str, Any]) -> None:
-#     with get_conn() as conn:
-#         conn.execute(
-#             """
-#             INSERT INTO crypto_bundle (
-#                 user_id, secret_id, capsule, ciphertext, sender_public_key, sender_verifying_key
-#             ) VALUES (
-#                 %s, %s, %s, %s, %s, %s
-#             ) ON CONFLICT (
-#                 user_id, secret_id
-#             ) DO UPDATE SET
-#                 capsule = EXCLUDED.capsule,
-#                 ciphertext = EXCLUDED.ciphertext,
-#                 sender_public_key = EXCLUDED.sender_public_key,
-#                 sender_verifying_key = EXCLUDED.sender_verifying_key
-#             """, (
-#             payload["user_id"],
-#             payload["secret_id"],
-#             payload["capsule"],
-#             payload["ciphertext"],
-#             payload["sender_public_key"],
-#             payload["sender_verifying_key"],
-#         ))
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60*5)))  # default 5 minutes
 
-# def erase_crypto_bundle(user_id: uuid, secret_id: str) -> None:
-#     with get_conn() as conn:
-#         conn.execute("DELETE FROM crypto_bundle WHERE user_id=%s AND secret_id=%s", (user_id, secret_id))
-#         conn.execute("DELETE FROM grants  WHERE user_id=%s AND delegator_secret_id=%s", (user_id, secret_id))
+# Argon2id parameters (balanced & modern)
+ph = PasswordHasher(
+    time_cost=3,
+    memory_cost=64 * 1024,  # 64 MiB
+    parallelism=2,
+    hash_len=32,
+    salt_len=16,
+    type=Argon2Type.ID,
+)
 
-# def upsert_grant(
-#     delegator_id: uuid,
-#     delegatee_id: uuid,
-#     delegator_secret_id: str,
-#     delegatee_secret_id: str,
-#     kfrags_bytes_list: List[bytes]
-# ) -> None:
-#     kfrags = msgpack.packb(kfrags_bytes_list, use_bin_type=True)
-#     with get_conn() as conn:
-#         conn.execute(
-#             """
-#             INSERT INTO grants (
-#                 delegator_id, delegatee_id, delegator_secret_id, delegatee_secret_id, kfrags_b
-#             ) VALUES (
-#                 %s, %s, %s, %s, %s
-#             ) ON CONFLICT (
-#                 delegator_id, delegatee_id, delegatee_secret_id
-#             ) DO UPDATE SET
-#               delegator_secret_id = EXCLUDED.delegator_secret_id,
-#               kfrags_b = EXCLUDED.kfrags_b
-#             """,
-#             (delegator_id, delegatee_id, delegator_secret_id, delegatee_secret_id, kfrags)
-#         )
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
-# def erase_grant(delegator_id: uuid, delegatee_id: uuid, delegator_secret_id: str) -> None:
-#     with get_conn() as conn:
-#         conn.execute("DELETE FROM grants WHERE delegator_id=%s AND delegatee_id=%s AND delegator_secret_id=%s",
-#             (delegator_id, delegatee_id, delegator_secret_id))
+def set_session_cookie(resp: Response, req: Request, token: str) -> None:
+    resp.set_cookie(
+        key="__Host-session",
+        value=token,
+        httponly=True,
+        samesite="strict",
+        secure=True,
+        path="/",
+        max_age=SESSION_TTL_SECONDS,
+    )
 
-# def fetch_crypto_bundle(user_id: uuid, secret_id: str):
-#     with get_conn() as conn:
-#         row = conn.execute("""
-#             SELECT capsule, ciphertext, sender_public_key, sender_verifying_key
-#             FROM crypto_bundle
-#             WHERE user_id=%s AND secret_id=%s
-#             """,
-#             (user_id, secret_id)).fetchone()
-#     if not row:
+def clear_session_cookie(resp: Response, req: Request) -> None:
+    resp.delete_cookie("__Host-session", path="/")
+
+# =================== AUTH DB HELPERS ===================
+
+def create_user(email: LoginRequest.email, password: LoginRequest.password) -> uuid.UUID:
+    pw_hash = ph.hash(password)
+    with get_conn() as conn:
+        if conn.execute("SELECT 1 FROM users WHERE email=%s", (email,)).fetchone():
+            raise HTTPException(status_code=409, detail="Email already registered")
+        cursor = conn.execute("""
+            INSERT INTO users (email, password_hash)
+            VALUES (%s, %s)
+            RETURNING user_id
+        """, (email, pw_hash))
+        (user_id,) = cursor.fetchone()
+        return user_id
+
+def create_session(user_id: uuid, req: Request) -> str:
+    token = secrets.token_urlsafe(32)
+    expires_at = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO sessions (token, user_id, expires_at)
+            VALUES (%s, %s, %s)
+        """, (token, user_id, expires_at))
+    return token
+
+def get_user_by_email(email: EmailStr) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id, password_hash FROM users WHERE email=%s",
+            (email,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"user_id": row[0], "password_hash": row[1]}
+
+def get_session_user_by_request(req: Request) -> Optional[dict]:
+    cookies = req.cookies or {}
+    token = cookies.get("__Host-session")
+    if not token:
+        return None
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT s.user_id, u.email, s.expires_at
+            FROM sessions s
+            JOIN users u ON u.user_id = s.user_id
+            WHERE s.token=%s AND s.expires_at > NOW()
+        """, (token,)).fetchone()
+    if not row:
+        return None
+    return {"user_id": row[0], "email": row[1]}
+
+def user_id_by_token(token: str) -> Optional[uuid.UUID]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id FROM sessions WHERE token=%s AND expires_at > NOW()",
+            (token,)
+        ).fetchone()
+    return row[0] if row else None
+
+async def user_id_by_session(request: Request) -> Optional[uuid.UUID]:
+    token = (request.cookies or {}).get("__Host-session")
+    if not token:
+        return None
+    return await anyio.to_thread.run_sync(user_id_by_token, token)
+
+def delete_session(req: Request) -> None:
+    cookies = req.cookies or {}
+    token = cookies.get("__Host-session")
+    if not token:
+        return
+    with get_conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE token=%s", (token,))
+
+# REG_COOKIE = "reg_ok"         # allows /app/register.html for a short time after pressing the button
+# STAGE_COOKIE = "flow_stage"   # set to "store_ok" after successful decrypt/create
+
+# def set_reg_cookie(resp: Response, req: Request) -> None:
+#     resp.set_cookie(
+#         key=REG_COOKIE,
+#         value="1",
+#         httponly=False,
+#         samesite="lax",
+#         secure=secure_flag(req),
+#         path="/app/register.html",
+#         max_age=120,  # 2 minutes
+#     )
+
+# def clear_reg_cookie(resp: Response) -> None:
+#     resp.delete_cookie("reg_ok", path="/app/register.html")
+
+# def set_stage_cookie(resp: Response, req: Request, value: str) -> None:
+#     resp.set_cookie(
+#         key=STAGE_COOKIE,
+#         value=value,
+#         httponly=True,
+#         samesite="strict",
+#         secure=True,
+#         path="/",
+#         max_age=SESSION_TTL_SECONDS,
+#     )
+
+# def clear_stage_cookie(resp: Response) -> None:
+#     resp.delete_cookie(STAGE_COOKIE, path="/")
+
+# def session_user_id(req: Request) -> Optional[uuid.UUID]:
+#     token = (req.cookies or {}).get("__Host-session")
+#     if not token:
 #         return None
-#     capsule_b, ciphertext_b, spk_b, svk_b = row
-#     return {
-#         "capsule": Capsule.from_bytes(capsule_b),
-#         "ciphertext": ciphertext_b,
-#         "sender_public_key": PublicKey.from_compressed_bytes(spk_b),
-#         "sender_verifying_key": PublicKey.from_compressed_bytes(svk_b),
-#     }
-
-# def fetch_granted_kfrags(delegator_id: uuid, delegatee_id: uuid, delegatee_secret_id: str) -> List[KeyFrag]:
 #     with get_conn() as conn:
 #         row = conn.execute("""
-#             SELECT kfrags_b
-#             FROM grants
-#             WHERE delegator_id=%s AND delegatee_id=%s AND delegatee_secret_id=%s
-#         """, (delegator_id, delegatee_id, delegatee_secret_id)).fetchone()
-#     if not row:
-#         return []
-#     (blob,) = row
-#     kfrag_bytes_list = msgpack.unpackb(blob, raw=False)
-#     return [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
+#             SELECT s.user_id
+#             FROM sessions s
+#             WHERE s.token=%s AND s.expires_at > NOW()
+#         """, (token,)).fetchone()
+#     return row[0] if row else None
+
+# =================== PRE DB HELPERS ===================
+
+def fetch_crypto_bundle(user_id: uuid, secret_id: str):
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT capsule, ciphertext, sender_public_key, sender_verifying_key
+            FROM crypto_bundle
+            WHERE user_id=%s AND secret_id=%s
+            """,
+            (user_id, secret_id)).fetchone()
+    if not row:
+        return None
+    capsule_b, ciphertext_b, spk_b, svk_b = row
+    return {
+        "capsule": Capsule.from_bytes(capsule_b),
+        "ciphertext": ciphertext_b,
+        "sender_public_key": PublicKey.from_compressed_bytes(spk_b),
+        "sender_verifying_key": PublicKey.from_compressed_bytes(svk_b),
+    }
+
+def fetch_granted_kfrags(delegator_id: uuid, delegatee_id: uuid, delegatee_secret_id: str) -> List[KeyFrag]:
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT kfrags_b
+            FROM grants
+            WHERE delegator_id=%s AND delegatee_id=%s AND delegatee_secret_id=%s
+        """, (delegator_id, delegatee_id, delegatee_secret_id)).fetchone()
+    if not row:
+        return []
+    (blob,) = row
+    kfrag_bytes_list = msgpack.unpackb(blob, raw=False)
+    return [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
 
 # def query_grants_for(user_id: uuid) -> dict:
 #     by_secret: Dict[str, List[str]] = {}
@@ -259,167 +344,6 @@ def init_db():
 #         ).fetchall()
 #         conn.execute("DELETE FROM post_office WHERE user_id=%s", (user_id,))
 #     return [msgpack.unpackb(r[0], raw=False) for r in rows]
-
-# =================== AUTH (email + password) ===================
-
-SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60*5)))  # default 5 minutes
-
-# Argon2id parameters (balanced & modern)
-ph = PasswordHasher(
-    time_cost=3,
-    memory_cost=64 * 1024,  # 64 MiB
-    parallelism=2,
-    hash_len=32,
-    salt_len=16,
-    type=Argon2Type.ID,
-)
-
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-def set_session_cookie(resp: Response, req: Request, token: str) -> None:
-    resp.set_cookie(
-        key="__Host-session",
-        value=token,
-        httponly=True,
-        samesite="strict",
-        secure=True,
-        path="/",
-        max_age=SESSION_TTL_SECONDS,
-    )
-
-def clear_session_cookie(resp: Response, req: Request) -> None:
-    resp.delete_cookie("__Host-session", path="/")
-
-# REG_COOKIE = "reg_ok"         # allows /app/register.html for a short time after pressing the button
-# STAGE_COOKIE = "flow_stage"   # set to "store_ok" after successful decrypt/create
-
-# def set_reg_cookie(resp: Response, req: Request) -> None:
-#     resp.set_cookie(
-#         key=REG_COOKIE,
-#         value="1",
-#         httponly=False,
-#         samesite="lax",
-#         secure=secure_flag(req),
-#         path="/app/register.html",
-#         max_age=120,  # 2 minutes
-#     )
-
-# def clear_reg_cookie(resp: Response) -> None:
-#     resp.delete_cookie("reg_ok", path="/app/register.html")
-
-# def set_stage_cookie(resp: Response, req: Request, value: str) -> None:
-#     resp.set_cookie(
-#         key=STAGE_COOKIE,
-#         value=value,
-#         httponly=True,
-#         samesite="strict",
-#         secure=True,
-#         path="/",
-#         max_age=SESSION_TTL_SECONDS,
-#     )
-
-# def clear_stage_cookie(resp: Response) -> None:
-#     resp.delete_cookie(STAGE_COOKIE, path="/")
-
-def create_user(email: EmailStr, password: Password) -> uuid.UUID:
-    pw_hash = ph.hash(password)
-    with get_conn() as conn:
-        if conn.execute("SELECT 1 FROM users WHERE email=%s", (email,)).fetchone():
-            raise HTTPException(status_code=409, detail="Email already registered")
-        cur = conn.execute("""
-            INSERT INTO users (email, password_hash)
-            VALUES (%s, %s)
-            RETURNING user_id
-        """, (email, pw_hash))
-        (user_id,) = cur.fetchone()
-        return user_id
-
-def create_session(user_id: uuid, req: Request) -> str:
-    token = secrets.token_urlsafe(32)
-    expires_at = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
-    with get_conn() as conn:
-        conn.execute("""
-            INSERT INTO sessions (token, user_id, expires_at)
-            VALUES (%s, %s, %s)
-        """, (token, user_id, expires_at))
-    return token
-
-def get_user_by_email(email: EmailStr) -> Optional[dict]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT user_id, password_hash FROM users WHERE email=%s",
-            (email,),
-        ).fetchone()
-    if not row:
-        return None
-    return {"user_id": row[0], "password_hash": row[1]}
-
-# def session_user_id(req: Request) -> Optional[uuid.UUID]:
-#     token = (req.cookies or {}).get("__Host-session")
-#     if not token:
-#         return None
-#     with get_conn() as conn:
-#         row = conn.execute("""
-#             SELECT s.user_id
-#             FROM sessions s
-#             WHERE s.token=%s AND s.expires_at > NOW()
-#         """, (token,)).fetchone()
-#     return row[0] if row else None
-
-def get_session(req: Request) -> Optional[dict]:
-    cookies = req.cookies or {}
-    token = cookies.get("__Host-session")
-    if not token:
-        return None
-    with get_conn() as conn:
-        row = conn.execute("""
-            SELECT s.user_id, u.email, s.expires_at
-            FROM sessions s
-            JOIN users u ON u.user_id = s.user_id
-            WHERE s.token=%s AND s.expires_at > NOW()
-        """, (token,)).fetchone()
-    if not row:
-        return None
-    return {"user_id": row[0], "email": row[1], "expires_at": row[2]}
-
-def session_user(req: Request) -> uuid:
-    cookies = req.cookies or {}
-    token = cookies.get("__Host-session")
-    if not token:
-        return None
-    with get_conn() as conn:
-        row = conn.execute("""
-            SELECT s.user_id, u.email, s.expires_at
-            FROM sessions s
-            JOIN users u ON u.user_id = s.user_id
-            WHERE s.token=%s AND s.expires_at > NOW()
-        """, (token,)).fetchone()
-    if not row:
-        return None
-    return {"user_id": row[0], "email": row[1], "expires_at": row[2]}
-
-def user_id_by_token(token: str) -> Optional[uuid.UUID]:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT user_id FROM sessions WHERE token=%s AND expires_at > NOW()",
-            (token,)
-        ).fetchone()
-    return row[0] if row else None
-
-async def user_id_by_session(request: Request) -> Optional[uuid.UUID]:
-    token = (request.cookies or {}).get("__Host-session")
-    if not token:
-        return None
-    return await anyio.to_thread.run_sync(user_id_by_token, token)
-
-def delete_session(req: Request) -> None:
-    cookies = req.cookies or {}
-    token = cookies.get("__Host-session")
-    if not token:
-        return
-    with get_conn() as conn:
-        conn.execute("DELETE FROM sessions WHERE token=%s", (token,))
 
 # =================== FastAPI app ===================
 
@@ -494,121 +418,256 @@ async def gatekeeper(request: Request, call_next):
         return RedirectResponse(DASHBOARD_PAGE, status_code=303)
     return response
 
-# -------------- CRS API --------------
+# =================== CRS API ===================
 
-# @app.post("/api/add_or_update_secret")
-# def api_add_or_update_secret(body: dict):
-#     session_id = body.get("session_id")
-#     if not session_id or not isinstance(session_id, str):
-#         raise HTTPException(status_code=401, detail="Missing or invalid session")
-    
-#     with get_conn() as conn:
-#         row = conn.execute("""
-#             SELECT user_id
-#             FROM sessions
-#             WHERE token = %s AND expires_at > now()
-#             """,
-#             (session_id,)).fetchone()
+# ------------------- /auth ---------------------
 
-#     if not row:
-#         raise HTTPException(status_code=401, detail="Session expired or invalid")
-    
-#     (user_id,) = row
+@app.post("/auth/register")
+def auth_register(req: Request, body: LoginRequest):
+    user_id = create_user(body.email, body.password)
+    token = create_session(user_id, req)
+    resp = _ok({"ok": True})
+    set_session_cookie(resp, req, token)
+    return resp
 
-#     try:
-#         payload = {
-#             "user_id": user_id,
-#             "secret_id": body["secret_id"],
-#             "capsule": b64d(body["capsule_b64"]),
-#             "ciphertext": b64d(body["ciphertext_b64"]),
-#             "sender_public_key": b64d(body["sender_public_key_b64"]),
-#             "sender_verifying_key": b64d(body["sender_verifying_key_b64"]),
-#         }    
-#         upsert_secret(payload)
-#         return _ok()
-#     except KeyError as e:
-#         raise HTTPException(status_code=400, detail=f"Missing field: {e.args[0]}")
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=str(e))
+DUMMY_HASH = ph.hash("€0nStDumrnyPW-15")
 
-# @app.post("/api/erase_secret")
-# def api_delete_secret(body: dict):
-#     try:
-#         erase_crypto_bundle(body["sender_id"], body["secret_id"])
-#         return _ok()
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=str(e))
+@app.post("/auth/login")
+def auth_login(req: Request, body: LoginRequest):
+    user_entry = get_user_by_email(body.email)
+    stored_hash = (user_entry or {}).get("password_hash") or DUMMY_HASH
 
-# @app.post("/api/grant_access_proxy")
-# def api_grant_access_proxy(body: dict):
-#     try:
-#         sender_id   = body["sender_id"]
-#         receiver_id = body["receiver_id"]
-#         secret_id   = body["secret_id"]
-#         kfrags      = [b64d(b) for b in body["kfrags_b64"]]
-#         upsert_grant(sender_id, receiver_id, secret_id, kfrags)
-#         return _ok()
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=str(e))
+    try:
+        ok = ph.verify(stored_hash, body.password)
+    except (VerifyMismatchError, InvalidHash):
+        ok = False
 
-# @app.post("/api/grant_access_receiver")
-# def api_grant_access_receiver(body: dict):
-#     try:
-#         receiver_id = body["receiver_id"]
-#         enqueue_for_receiver(receiver_id, GRANT_ACCESS_RECEIVER, body)
-#         return _ok()
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=str(e))
+    if not (user_entry and ok):
+        time.sleep(0.25)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
 
-# @app.post("/api/revoke_access")
-# def api_revoke_access(body: dict):
-#     try:
-#         erase_grant(body["sender_id"], body["receiver_id"], body["secret_id"])
-#         return _ok()
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=str(e))
+    if ph.check_needs_rehash(stored_hash):
+        new_hash = ph.hash(body.password)
+        with get_conn() as conn:
+            conn.execute("UPDATE users SET password_hash=%s WHERE user_id=%s", (new_hash, user_entry["user_id"]))
 
-# @app.post("/api/request_secret")
-# def api_request_secret(body: dict):
-#     try:
-#         receiver_id = body["receiver_id"]
-#         sender_id   = body["sender_id"]
-#         secret_id   = body["secret_id"]
-#         receiving_pk  = PublicKey.from_compressed_bytes(b64d(body["receiver_public_key_b64"]))
+    token = create_session(user_entry["user_id"], req)
+    resp = _ok({"ok": True})
+    set_session_cookie(resp, req, token)
+    return resp
 
-#         crypto_bundle = fetch_crypto_bundle(sender_id, secret_id)
-#         if not crypto_bundle:
-#             return {"action": "ERROR", "payload": {"error": f"Unknown secret '{secret_id}'"}}
+@app.post("/auth/logout")
+def auth_logout(req: Request):
+    delete_session(req)
+    resp = _ok({"ok": True})
+    clear_session_cookie(resp, req)
+    return resp
 
-#         kfrags = fetch_granted_kfrags(sender_id, receiver_id, secret_id)
-#         if not kfrags:
-#             return {"action": "ERROR", "payload": {"error": f"No grant for {receiver_id} -> {secret_id}"}}
+@app.get("/auth/session")
+def auth_session(req: Request):
+    user = get_session_user_by_request(req)
+    if not user:
+        raise HTTPException(status_code=401, detail="No active session")
+    return {
+        "user": {
+            "email": user["email"]
+        }
+    }
 
-#         capsule       = crypto_bundle["capsule"]
-#         ciphertext    = crypto_bundle["ciphertext"]
-#         delegating_pk = crypto_bundle["sender_public_key"]
-#         verifying_pk  = crypto_bundle["sender_verifying_key"]
+# ------------------- /api ---------------------
 
-#         verified_kfrags = [
-#             kf.verify(
-#                 delegating_pk=delegating_pk,
-#                 receiving_pk=receiving_pk,
-#                 verifying_pk=verifying_pk
-#             )
-#             for kf in kfrags
-#         ]
-#         cfrags = [reencrypt(capsule=capsule, kfrag=vkf) for vkf in verified_kfrags]
+class UpsertSecretRequest(BaseModel):
+    secret_id: str
+    capsule_b64: str
+    ciphertext_b64: str
+    sender_public_key_b64: str
+    sender_verifying_key_b64: str
 
-#         return {
-#             "action": RESPONSE_SECRET,
-#             "payload": {
-#                 "capsule_b64": b64e(bytes(capsule)),
-#                 "ciphertext_b64": b64e(ciphertext),
-#                 "cfrags_b64": [b64e(bytes(c)) for c in cfrags]
-#             }
-#         }
-#     except Exception as e:
-#         return {"action": "ERROR", "payload": {"error": f"Proxy error: {e}"}}
+@app.post("/api/upsert_secret")
+def api_upsert_secret(request: Request, body: UpsertSecretRequest):
+
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO crypto_bundle (
+                user_id, secret_id, capsule, ciphertext, sender_public_key, sender_verifying_key
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id, secret_id) DO UPDATE SET
+                capsule = EXCLUDED.capsule,
+                ciphertext = EXCLUDED.ciphertext,
+                sender_public_key = EXCLUDED.sender_public_key,
+                sender_verifying_key = EXCLUDED.sender_verifying_key
+        """,(
+                request.state.user_id,
+                body.secret_id,
+                b64d(body.capsule_b64),
+                b64d(body.ciphertext_b64),
+                b64d(body.sender_public_key_b64),
+                b64d(body.sender_verifying_key_b64),
+        ),)
+    return _ok()
+
+class EraseSecretRequest(BaseModel):
+    secret_id: str
+
+@app.post("/api/erase_secret")
+def api_erase_secret(request: Request, body: EraseSecretRequest):
+    user_id = request.state.user_id
+
+    try:
+        with get_conn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM crypto_bundle WHERE user_id=%s AND secret_id=%s",
+                (user_id, body.secret_id),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="secret_not_found")
+            return _ok()
+
+    except psycopg.errors.ForeignKeyViolation:
+        with get_conn() as conn:
+            rows = conn.execute("""
+                SELECT DISTINCT delegatee_id
+                FROM grants
+                WHERE delegator_id=%s AND delegator_secret_id=%s
+                ORDER BY delegatee_id
+            """,(user_id,body.secret_id),
+            ).fetchall()
+        delegatees = [r[0] for r in rows]
+        return JSONResponse(
+            {"error": "grants_exist", "delegatee_ids": delegatees},
+            status_code=409,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class GrantAccessRequest(BaseModel):
+    delegatee_id: uuid.UUID
+    delegator_secret_id: str
+    delegatee_secret_id: str
+    kfrags_b64: List[str]
+
+@app.post("/api/grant_access")
+def api_grant_access(request: Request, body: GrantAccessRequest):
+    delegator_id = request.state.user_id
+
+    try:
+        kfrags_bytes = [b64d(b) for b in body.kfrags_b64]
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad_kfrags_b64")
+    kfrags_blob = msgpack.packb(kfrags_bytes, use_bin_type=True)
+
+    try:
+        with get_conn() as conn:
+            conn.execute("""
+                INSERT INTO grants (delegator_id, delegatee_id, delegator_secret_id, delegatee_secret_id, kfrags_b)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (delegator_id, delegatee_id, delegatee_secret_id)
+                DO UPDATE SET
+                    delegator_secret_id = EXCLUDED.delegator_secret_id,
+                    kfrags_b            = EXCLUDED.kfrags_b
+            """,(
+                delegator_id,
+                body.delegatee_id,
+                body.delegator_secret_id,
+                body.delegatee_secret_id,
+                kfrags_blob,
+            ),)
+        return _ok()
+
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="internal_error")
+
+class RevokeAccessRequest(BaseModel):
+    delegatee_id: uuid.UUID
+    delegator_secret_id: str
+
+@app.post("/api/revoke_access")
+def api_revoke_access(request: Request, body: RevokeAccessRequest):
+    delegator_id = request.state.user_id
+
+    with get_conn() as conn:
+        cur = conn.execute("""
+            DELETE FROM grants
+            WHERE delegator_id=%s AND delegatee_id=%s AND delegatee_secret_id=%s
+        """,
+            (delegator_id, body.delegatee_id, body.delegator_secret_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="grant_not_found")
+
+    return _ok()
+
+class RequestSecretRequest(BaseModel):
+    delegator_id: uuid.UUID
+    delegatee_secret_id: str
+    delegatee_public_key_b64: str
+
+@app.post("/api/request_secret")
+def api_request_secret(request: Request, body: RequestSecretRequest):
+    delegatee_id = request.state.user_id
+
+    try:
+        delegatee_pk = PublicKey.from_compressed_bytes(b64d(body.delegatee_public_key_b64))
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad_delegatee_public_key")
+
+    with get_conn() as conn:
+        grant_row = conn.execute("""
+            SELECT delegator_secret_id, kfrags_b
+            FROM grants
+            WHERE delegator_id=%s
+              AND delegatee_id=%s
+              AND delegatee_secret_id=%s
+        """,
+            (body.delegator_id, delegatee_id, body.delegatee_secret_id),
+        ).fetchone()
+
+    if not grant_row:
+        raise HTTPException(status_code=404, detail="grant_not_found")
+
+    delegator_secret_id, kfrags_blob = grant_row
+    kfrag_bytes_list = msgpack.unpackb(kfrags_blob, raw=False)
+    kfrags: List[KeyFrag] = [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
+
+    with get_conn() as conn:
+        bundle_row = conn.execute("""
+            SELECT capsule, ciphertext, sender_public_key, sender_verifying_key
+            FROM crypto_bundle
+            WHERE user_id=%s AND secret_id=%s
+        """,
+            (body.delegator_id, delegator_secret_id),
+        ).fetchone()
+
+    if not bundle_row:
+        raise HTTPException(status_code=404, detail="secret_not_found")
+
+    capsule_b, ciphertext_b, spk_b, svk_b = bundle_row
+    capsule       = Capsule.from_bytes(capsule_b)
+    ciphertext    = ciphertext_b
+    delegating_pk = PublicKey.from_compressed_bytes(spk_b)
+    verifying_pk  = PublicKey.from_compressed_bytes(svk_b)
+
+    verified_kfrags = [
+        kf.verify(
+            delegating_pk=delegating_pk,
+            receiving_pk=delegatee_pk,
+            verifying_pk=verifying_pk,
+        )
+        for kf in kfrags
+    ]
+    cfrags = [reencrypt(capsule=capsule, kfrag=vkf) for vkf in verified_kfrags]
+
+    return {
+        "capsule_b64": b64e(bytes(capsule)),
+        "ciphertext_b64": b64e(ciphertext),
+        "cfrags_b64": [b64e(bytes(c)) for c in cfrags],
+    }
 
 # @app.post("/api/list_grants")
 # def api_list_grants(body: dict):
@@ -654,65 +713,10 @@ async def gatekeeper(request: Request, call_next):
 
 # @app.get("/")
 # def root(req: Request):
-#     sess = get_session(req)
+#     sess = get_session_user_by_request(req)
 #     if sess:
 #         return RedirectResponse("/app/dashboard.html", status_code=303)
 #     return RedirectResponse("/app/login.html", status_code=303)
-
-@app.post("/auth/register")
-def auth_register(req: Request, body: LoginIn):
-    user_id = create_user(body.email, body.password)
-    token = create_session(user_id, req)
-    resp = _ok({"ok": True})
-    set_session_cookie(resp, req, token)
-    # clear_reg_cookie(resp)
-    return resp
-
-DUMMY_HASH = ph.hash("€0nStDumrnyPW-15")
-
-@app.post("/auth/login")
-def auth_login(req: Request, body: LoginIn):
-    user_entry = get_user_by_email(body.email)
-    stored_hash = (user_entry or {}).get("password_hash") or DUMMY_HASH
-
-    try:
-        ok = ph.verify(stored_hash, body.password)
-    except (VerifyMismatchError, InvalidHash):
-        ok = False
-
-    if not (user_entry and ok):
-        time.sleep(0.25)
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    # if ph.check_needs_rehash(stored_hash):
-    #     new_hash = ph.hash(body.password)
-    #     with get_conn() as conn:
-    #         conn.execute("UPDATE users SET password_hash=%s WHERE user_id=%s", (new_hash, user_entry["user_id"]))
-
-    token = create_session(user_entry["user_id"], req)
-    resp = _ok({"ok": True})
-    set_session_cookie(resp, req, token)
-    return resp
-
-@app.post("/auth/logout")
-def auth_logout(req: Request):
-    delete_session(req)
-    resp = _ok({"ok": True})
-    clear_session_cookie(resp, req)
-    # clear_reg_cookie(resp)
-    # clear_stage_cookie(resp)
-    return resp
-
-@app.get("/auth/session")
-def auth_session(req: Request):
-    sess = get_session(req)
-    if not sess:
-        raise HTTPException(status_code=401, detail="No active session")
-    return {
-        "user": {
-            "email": sess["email"]
-        }
-    }
 
 # @app.post("/auth/allow_register")
 # def allow_register(req: Request):
@@ -722,7 +726,7 @@ def auth_session(req: Request):
 
 # @app.post("/auth/stage")
 # def set_stage(req: Request, body: dict):
-#     sess = get_session(req)
+#     sess = get_session_user_by_request(req)
 #     if not sess:
 #         raise HTTPException(status_code=401, detail="Not authenticated")
 #     stage = (body or {}).get("stage")
@@ -737,11 +741,11 @@ def auth_session(req: Request):
 # @app.get("/api/user_store")
 # def api_user_store_get(req: Request):
 #     """Return encrypted store blob if present; never returns plaintext."""
-#     sess = get_session(req)
+#     sess = get_session_user_by_request(req)
 #     if not sess:
 #         raise HTTPException(status_code=401, detail="Not authenticated")
 #     with get_conn() as conn:
-#         cstore = conn.execute("SELECT blob FROM encrypted_store WHERE user_id=%s", (sess["user_id"],)).fetchone()
+#         cstore = conn.execute("SELECT blob FROM vault WHERE user_id=%s", (sess["user_id"],)).fetchone()
 #     if not cstore:
 #         return {"exists": False}
 #     return {"exists": True, "blob_b64": b64e(cstore)}
@@ -749,7 +753,7 @@ def auth_session(req: Request):
 # @app.post("/api/user_store")
 # def api_user_store_put(req: Request, body: dict):
 #     """Replace encrypted store blob with client-provided ciphertext."""
-#     sess = get_session(req)
+#     sess = get_session_user_by_request(req)
 #     if not sess:
 #         raise HTTPException(status_code=401, detail="Not authenticated")
 #     blob_b64 = (body or {}).get("blob_b64") or ""
@@ -758,7 +762,7 @@ def auth_session(req: Request):
 #     blob = b64d(blob_b64)
 #     with get_conn() as conn:
 #         conn.execute("""
-#             INSERT INTO encrypted_store (user_id, blob)
+#             INSERT INTO vault (user_id, blob)
 #             VALUES (%s, %s, NOW())
 #             ON CONFLICT (user_id) DO UPDATE SET blob=EXCLUDED.blob, updated_at=NOW()
 #         """, (sess["user_id"], blob))
@@ -768,7 +772,7 @@ def auth_session(req: Request):
 
 # @app.get("/api/restricted_field")
 # def api_restricted_field(req: Request):
-#     sess = get_session(req)
+#     sess = get_session_user_by_request(req)
 #     if not sess:
 #         raise HTTPException(status_code=401, detail="Not authenticated")
 #     return {"field": f"Hello {sess['display_name']} — this is your restricted field."}

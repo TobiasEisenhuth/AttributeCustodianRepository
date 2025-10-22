@@ -13,7 +13,7 @@ from pydantic.types import StrictStr
 MINIMAL_PASSWORD_LENGTH = 15
 Password = Annotated[StrictStr, StringConstraints(min_length=MINIMAL_PASSWORD_LENGTH, strip_whitespace=False)]
 
-class LoginIn(BaseModel):
+class LoginRequest(BaseModel):
     email: EmailStr
     password: Password
 

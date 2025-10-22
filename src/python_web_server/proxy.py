@@ -110,15 +110,15 @@ def init_db():
         # grants
         conn.execute("""
             CREATE TABLE IF NOT EXISTS grants (
-                delegator_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                delegatee_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                delegator_secret_id TEXT NOT NULL,
-                delegatee_secret_id TEXT NOT NULL,
+                sender_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                receiver_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                sender_secret_id TEXT NOT NULL,
+                receiver_secret_id TEXT NOT NULL,
                 kfrags_b BYTEA NOT NULL,
-                PRIMARY KEY (delegator_id, delegatee_id, delegator_secret_id),
-                UNIQUE (delegator_id, delegatee_id, delegatee_secret_id),
-                CONSTRAINT not_selfmap CHECK (delegator_id <> delegatee_id),
-                FOREIGN KEY (delegator_id, delegator_secret_id)
+                PRIMARY KEY (sender_id, receiver_id, sender_secret_id),
+                UNIQUE (sender_id, receiver_id, receiver_secret_id),
+                CONSTRAINT not_selfmap CHECK (sender_id <> receiver_id),
+                FOREIGN KEY (sender_id, sender_secret_id)
                     REFERENCES crypto_bundle(user_id, secret_id) ON DELETE RESTRICT
             );
         """)
@@ -298,13 +298,13 @@ def fetch_crypto_bundle(user_id: uuid, secret_id: str):
         "sender_verifying_key": PublicKey.from_compressed_bytes(svk_b),
     }
 
-def fetch_granted_kfrags(delegator_id: uuid, delegatee_id: uuid, delegatee_secret_id: str) -> List[KeyFrag]:
+def fetch_granted_kfrags(sender_id: uuid, receiver_id: uuid, receiver_secret_id: str) -> List[KeyFrag]:
     with get_conn() as conn:
         row = conn.execute("""
             SELECT kfrags_b
             FROM grants
-            WHERE delegator_id=%s AND delegatee_id=%s AND delegatee_secret_id=%s
-        """, (delegator_id, delegatee_id, delegatee_secret_id)).fetchone()
+            WHERE sender_id=%s AND receiver_id=%s AND receiver_secret_id=%s
+        """, (sender_id, receiver_id, receiver_secret_id)).fetchone()
     if not row:
         return []
     (blob,) = row
@@ -321,11 +321,11 @@ def fetch_granted_kfrags(delegator_id: uuid, delegatee_id: uuid, delegatee_secre
 #         for secret_id in all_users_secret_id:
 #             by_secret.setdefault(secret_id, [])
 #         rows = conn.execute(
-#             "SELECT delegator_id, delegatee_id FROM grants WHERE user_id=%s ORDER BY delegator_id, delegatee_id",
+#             "SELECT sender_id, receiver_id FROM grants WHERE user_id=%s ORDER BY sender_id, receiver_id",
 #             (user_id,)
 #         ).fetchall()
-#     for secret_id, delegatee_id in rows:
-#         by_secret.setdefault(secret_id, []).append(delegatee_id)
+#     for secret_id, receiver_id in rows:
+#         by_secret.setdefault(secret_id, []).append(receiver_id)
 #         total_grants += 1
 #     return {"by_secret": by_secret, "totals": {"crypto_bundle": len(by_secret), "grants": total_grants}}
 
@@ -527,15 +527,15 @@ def api_erase_secret(request: Request, body: EraseSecretRequest):
     except psycopg.errors.ForeignKeyViolation:
         with get_conn() as conn:
             rows = conn.execute("""
-                SELECT DISTINCT delegatee_id
+                SELECT DISTINCT receiver_id
                 FROM grants
-                WHERE delegator_id=%s AND delegator_secret_id=%s
-                ORDER BY delegatee_id
+                WHERE sender_id=%s AND sender_secret_id=%s
+                ORDER BY receiver_id
             """,(user_id,body.secret_id),
             ).fetchall()
-        delegatees = [r[0] for r in rows]
+        receivers = [r[0] for r in rows]
         return JSONResponse(
-            {"error": "grants_exist", "delegatee_ids": delegatees},
+            {"error": "grants_exist", "receiver_ids": receivers},
             status_code=409,
         )
     except HTTPException:
@@ -545,14 +545,14 @@ def api_erase_secret(request: Request, body: EraseSecretRequest):
 
 
 class GrantAccessRequest(BaseModel):
-    delegatee_id: uuid.UUID
-    delegator_secret_id: str
-    delegatee_secret_id: str
+    receiver_id: uuid.UUID
+    sender_secret_id: str
+    receiver_secret_id: str
     kfrags_b64: List[str]
 
 @app.post("/api/grant_access")
 def api_grant_access(request: Request, body: GrantAccessRequest):
-    delegator_id = request.state.user_id
+    sender_id = request.state.user_id
 
     try:
         kfrags_bytes = [b64d(b) for b in body.kfrags_b64]
@@ -563,17 +563,17 @@ def api_grant_access(request: Request, body: GrantAccessRequest):
     try:
         with get_conn() as conn:
             conn.execute("""
-                INSERT INTO grants (delegator_id, delegatee_id, delegator_secret_id, delegatee_secret_id, kfrags_b)
+                INSERT INTO grants (sender_id, receiver_id, sender_secret_id, receiver_secret_id, kfrags_b)
                 VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (delegator_id, delegatee_id, delegatee_secret_id)
+                ON CONFLICT (sender_id, receiver_id, receiver_secret_id)
                 DO UPDATE SET
-                    delegator_secret_id = EXCLUDED.delegator_secret_id,
+                    sender_secret_id = EXCLUDED.sender_secret_id,
                     kfrags_b            = EXCLUDED.kfrags_b
             """,(
-                delegator_id,
-                body.delegatee_id,
-                body.delegator_secret_id,
-                body.delegatee_secret_id,
+                sender_id,
+                body.receiver_id,
+                body.sender_secret_id,
+                body.receiver_secret_id,
                 kfrags_blob,
             ),)
         return _ok()
@@ -584,19 +584,19 @@ def api_grant_access(request: Request, body: GrantAccessRequest):
         raise HTTPException(status_code=500, detail="internal_error")
 
 class RevokeAccessRequest(BaseModel):
-    delegatee_id: uuid.UUID
-    delegator_secret_id: str
+    receiver_id: uuid.UUID
+    sender_secret_id: str
 
 @app.post("/api/revoke_access")
 def api_revoke_access(request: Request, body: RevokeAccessRequest):
-    delegator_id = request.state.user_id
+    sender_id = request.state.user_id
 
     with get_conn() as conn:
         cur = conn.execute("""
             DELETE FROM grants
-            WHERE delegator_id=%s AND delegatee_id=%s AND delegatee_secret_id=%s
+            WHERE sender_id=%s AND receiver_id=%s AND receiver_secret_id=%s
         """,
-            (delegator_id, body.delegatee_id, body.delegator_secret_id),
+            (sender_id, body.receiver_id, body.sender_secret_id),
         )
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="grant_not_found")
@@ -604,34 +604,34 @@ def api_revoke_access(request: Request, body: RevokeAccessRequest):
     return _ok()
 
 class RequestSecretRequest(BaseModel):
-    delegator_id: uuid.UUID
-    delegatee_secret_id: str
-    delegatee_public_key_b64: str
+    sender_id: uuid.UUID
+    receiver_secret_id: str
+    receiver_public_key_b64: str
 
 @app.post("/api/request_secret")
 def api_request_secret(request: Request, body: RequestSecretRequest):
-    delegatee_id = request.state.user_id
+    receiver_id = request.state.user_id
 
     try:
-        delegatee_pk = PublicKey.from_compressed_bytes(b64d(body.delegatee_public_key_b64))
+        receiver_pk = PublicKey.from_compressed_bytes(b64d(body.receiver_public_key_b64))
     except Exception:
-        raise HTTPException(status_code=400, detail="bad_delegatee_public_key")
+        raise HTTPException(status_code=400, detail="bad_receiver_public_key")
 
     with get_conn() as conn:
         grant_row = conn.execute("""
-            SELECT delegator_secret_id, kfrags_b
+            SELECT sender_secret_id, kfrags_b
             FROM grants
-            WHERE delegator_id=%s
-              AND delegatee_id=%s
-              AND delegatee_secret_id=%s
+            WHERE sender_id=%s
+              AND receiver_id=%s
+              AND receiver_secret_id=%s
         """,
-            (body.delegator_id, delegatee_id, body.delegatee_secret_id),
+            (body.sender_id, receiver_id, body.receiver_secret_id),
         ).fetchone()
 
     if not grant_row:
         raise HTTPException(status_code=404, detail="grant_not_found")
 
-    delegator_secret_id, kfrags_blob = grant_row
+    sender_secret_id, kfrags_blob = grant_row
     kfrag_bytes_list = msgpack.unpackb(kfrags_blob, raw=False)
     kfrags: List[KeyFrag] = [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
 
@@ -641,7 +641,7 @@ def api_request_secret(request: Request, body: RequestSecretRequest):
             FROM crypto_bundle
             WHERE user_id=%s AND secret_id=%s
         """,
-            (body.delegator_id, delegator_secret_id),
+            (body.sender_id, sender_secret_id),
         ).fetchone()
 
     if not bundle_row:
@@ -656,7 +656,7 @@ def api_request_secret(request: Request, body: RequestSecretRequest):
     verified_kfrags = [
         kf.verify(
             delegating_pk=delegating_pk,
-            receiving_pk=delegatee_pk,
+            receiving_pk=receiver_pk,
             verifying_pk=verifying_pk,
         )
         for kf in kfrags

@@ -47,7 +47,7 @@ from common import (
     GrantAccessRequest, RevokeAccessRequest,
     RequestItemRequest,
     SaveToVaultRequest, LoadFromVaultRequest,
-    PushSolicitationRequest, PullSolicitationRequest, AckSolicitationRequest
+    PushSolicitationRequest, PullSolicitationBundleRequest, AckSolicitationBundleRequest
 )
 
 PROXY_HOST = os.getenv("PROXY_HOST", "0.0.0.0")
@@ -131,13 +131,16 @@ def init_db():
                 requester_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 provider_id  UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 payload JSONB NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (requester_id, provider_id)
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
         """)
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS by_created_at
+            CREATE INDEX IF NOT EXISTS by_provider_and_created
             ON solicitations (provider_id, created_at, request_id);
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS by_pair_and_created
+            ON solicitations (provider_id, requester_id, created_at, request_id);
         """)
     print("[Proxy] DB initialized.")
 
@@ -179,12 +182,12 @@ def create_user(email: LoginRequest.email, password: LoginRequest.password) -> U
     with get_conn() as conn:
         if conn.execute("SELECT 1 FROM users WHERE email=%s", (email,)).fetchone():
             raise HTTPException(status_code=409, detail="Email already registered")
-        cursor = conn.execute("""
+        cur = conn.execute("""
             INSERT INTO users (email, password_hash)
             VALUES (%s, %s)
             RETURNING user_id
         """, (email, pw_hash))
-        (user_id,) = cursor.fetchone()
+        (user_id,) = cur.fetchone()
         return user_id
 
 def create_session(user_id: UUID, req: Request) -> str:
@@ -447,24 +450,9 @@ def api_load_from_vault(request: Request, body: LoadFromVaultRequest):
 # ------------------- post office ---------------------
 
 def _validate_solicitation_payload(payload: Dict[str, Any]) -> None:
-    # Expected minimal shape:
-    # {
-    #   "rows": [
-    #     {
-    #       "field_description": str,
-    #       "secret_id": str,
-    #       "value_example_format": str,
-    #       "requester_public_key_b64": str,
-    #       "default_field_id": str (optional),
-    #       "field_order": int (optional)
-    #     },
-    #     ...
-    #   ]
-    # }
     rows = payload.get("rows")
     if not isinstance(rows, list) or not rows:
         raise HTTPException(status_code=400, detail="invalid_payload_rows")
-
     for r in rows:
         if not isinstance(r, dict):
             raise HTTPException(status_code=400, detail="invalid_row_type")
@@ -472,114 +460,120 @@ def _validate_solicitation_payload(payload: Dict[str, Any]) -> None:
             v = r.get(k)
             if not isinstance(v, str) or not v:
                 raise HTTPException(status_code=400, detail=f"missing_{k}")
-        # optional fields
-        if "default_field_id" in r and not isinstance(r["default_field_id"], str):
-            raise HTTPException(status_code=400, detail="bad_default_field_id")
-        if "field_order" in r and not isinstance(r["field_order"], int):
-            raise HTTPException(status_code=400, detail="bad_field_order")
-        # sanity check pubkey b64 (opaque to server beyond base64 parse)
+        if "default_field" in r and not isinstance(r["default_field"], str):
+            raise HTTPException(status_code=400, detail="bad_default_field")
+        if "request_order" in r and not isinstance(r["request_order"], int):
+            raise HTTPException(status_code=400, detail="bad_request_order")
         try:
             b64d(r["requester_public_key_b64"])
         except Exception:
             raise HTTPException(status_code=400, detail="bad_public_key_b64")
 
-
-# ---- endpoints ----
-
 @app.post("/api/push_solicitation")
 def api_push_solicitation(request: Request, body: PushSolicitationRequest):
     requester_id = request.state.user_id
-
     if requester_id == body.provider_id:
         raise HTTPException(status_code=400, detail="self_request_forbidden")
 
-    # minimal shape validation (keeps server flexible but avoids garbage)
     _validate_solicitation_payload(body.payload)
-
-    # compact JSON and cast to jsonb
     payload_json = json.dumps(body.payload, separators=(",", ":"))
 
     with get_conn() as conn:
-        try:
-            if body.request_id:
-                cur = conn.execute(
-                    """
-                    INSERT INTO solicitations (request_id, requester_id, provider_id, payload)
-                    VALUES (%s, %s, %s, %s::jsonb)
-                    RETURNING request_id, created_at
-                    """,
-                    (body.request_id, requester_id, body.provider_id, payload_json),
-                )
-            else:
-                cur = conn.execute(
-                    """
-                    INSERT INTO solicitations (requester_id, provider_id, payload)
-                    VALUES (%s, %s, %s::jsonb)
-                    RETURNING request_id, created_at
-                    """,
-                    (requester_id, body.provider_id, payload_json),
-                )
-            request_id, created_at = cur.fetchone()
-        except psycopg.errors.UniqueViolation:
-            # enforced by UNIQUE (requester_id, provider_id)
-            raise HTTPException(status_code=409, detail="prev_unacked")
+        cur = conn.execute(
+            """
+            INSERT INTO solicitations (requester_id, provider_id, payload)
+            VALUES (%s, %s, %s::jsonb)
+            RETURNING request_id, created_at
+            """,
+            (requester_id, body.provider_id, payload_json),
+        )
+        request_id, created_at = cur.fetchone()
 
-    # server ack to requester: stored successfully
     return {
         "request_id": str(request_id),
         "created_at": created_at.isoformat(),
     }
 
-
-@app.post("/api/pull_solicitation")
-def api_pull_solicitation(request: Request, body: PullSolicitationRequest):
+@app.post("/api/pull_solicitation_bundle")
+def api_pull_solicitation_bundle(request: Request, body: PullSolicitationBundleRequest):
     provider_id = request.state.user_id
 
-    # fetch 2 to compute has_more without a second round trip
     with get_conn() as conn:
-        rows = conn.execute(
+        head = conn.execute(
             """
-            SELECT request_id, requester_id, payload
+            SELECT requester_id, request_id, created_at
             FROM solicitations
             WHERE provider_id=%s
             ORDER BY created_at ASC, request_id ASC
-            LIMIT 2
+            LIMIT 1
             """,
             (provider_id,),
+        ).fetchone()
+
+        if not head:
+            return {"has_bundle": False, "has_more": False}
+
+        target_requester_id = head[0]
+
+        rows = conn.execute(
+            """
+            SELECT request_id, payload, created_at
+            FROM solicitations
+            WHERE provider_id=%s AND requester_id=%s
+            ORDER BY created_at ASC, request_id ASC
+            """,
+            (provider_id, target_requester_id),
         ).fetchall()
 
-    if not rows:
-        return {"has_request": False, "has_more": False}
+        (has_more,) = conn.execute(
+            """
+            SELECT EXISTS(
+                SELECT 1 FROM solicitations
+                WHERE provider_id=%s AND requester_id <> %s
+            )
+            """,
+            (provider_id, target_requester_id),
+        ).fetchone()
 
-    (request_id, requester_id, payload), *rest = rows
-    has_more = bool(rest)
+    last_created_at = rows[-1][2]
+    last_request_id = rows[-1][0]
 
-    # psycopg3 returns JSONB as dict by default; if not, ensure it is
-    if isinstance(payload, str):
-        payload = json.loads(payload)
+    bundle_requests = []
+    for req_id, payload, created_at in rows:
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        bundle_requests.append({
+            "request_id": str(req_id),
+            "payload": payload,
+            "created_at": created_at.isoformat(),
+        })
 
     return {
-        "has_request": True,
-        "request_id": str(request_id),
-        "requester_id": str(requester_id),
-        "payload": payload,   # opaque JSON your clients understand
-        "has_more": has_more,
+        "has_bundle": True,
+        "requester_id": str(target_requester_id),
+        "bundle": {
+            "requests": bundle_requests,  # oldest -> newest
+            "ack_token": {
+                "max_created_at": last_created_at.isoformat(),
+                "max_request_id": str(last_request_id),
+            },
+        },
+        "has_more": bool(has_more),
     }
 
-
-@app.post("/api/ack_solicitation")
-def api_ack_solicitation(request: Request, body: AckSolicitationRequest):
+@app.post("/api/ack_solicitation_bundle")
+def api_ack_solicitation_bundle(request: Request, body: AckSolicitationBundleRequest):
     provider_id = request.state.user_id
-
     with get_conn() as conn:
         cur = conn.execute(
-            "DELETE FROM solicitations WHERE request_id=%s AND provider_id=%s",
-            (body.request_id, provider_id),
+            """
+            DELETE FROM solicitations
+            WHERE provider_id=%s AND requester_id=%s
+              AND (created_at, request_id) <= (%s, %s)
+            """,
+            (provider_id, body.requester_id, body.max_created_at, body.max_request_id),
         )
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="solicitation_not_found")
-
-    return _ok()
+    return _ok({"deleted": cur.rowcount})
 
 # ------------------- CRS ---------------------
 
@@ -613,11 +607,11 @@ def api_erase_item(request: Request, body: EraseItemRequest):
 
     try:
         with get_conn() as conn:
-            cursor = conn.execute(
+            cur = conn.execute(
                 "DELETE FROM crypto_bundle WHERE user_id=%s AND item_id=%s",
                 (user_id, body.item_id),
             )
-            if cursor.rowcount == 0:
+            if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="item_not_found")
             return _ok()
 

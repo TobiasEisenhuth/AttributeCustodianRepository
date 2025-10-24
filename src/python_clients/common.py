@@ -48,9 +48,9 @@ class PushSolicitationRequest(BaseModel):
     payload: Dict[str, Any]
 
 
-class PullSolicitationRequest(BaseModel):
+class PullSolicitationBundleRequest(BaseModel):
     pass
 
 
-class AckSolicitationRequest(BaseModel):
+class AckSolicitationBundleRequest(BaseModel):
     request_id: UUID

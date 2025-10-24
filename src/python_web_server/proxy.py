@@ -1,5 +1,5 @@
 # language utils
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pydantic import EmailStr
 from uuid import UUID
 
@@ -12,10 +12,13 @@ import secrets
 # system utils
 import os
 import sys
-import time
 
-# utils
+# time
+import time
 from datetime import datetime, timedelta, timezone
+
+# json
+import json
 
 # web utils
 import anyio
@@ -28,7 +31,7 @@ from starlette.responses import RedirectResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from contextlib import asynccontextmanager
 
-# web assambly mimetypes (for wasm umbral bindings)
+# web assambly mimetypes (for serving the wasm umbral bindings)
 import mimetypes;
 mimetypes.add_type('application/wasm', '.wasm')
 
@@ -44,6 +47,7 @@ from common import (
     GrantAccessRequest, RevokeAccessRequest,
     RequestItemRequest,
     SaveToVaultRequest, LoadFromVaultRequest,
+    PushSolicitationRequest, PullSolicitationRequest, AckSolicitationRequest
 )
 
 PROXY_HOST = os.getenv("PROXY_HOST", "0.0.0.0")
@@ -100,32 +104,40 @@ def init_db():
                 item_id TEXT NOT NULL,
                 capsule BYTEA NOT NULL,
                 ciphertext BYTEA NOT NULL,
-                sender_public_key BYTEA NOT NULL,
-                sender_verifying_key BYTEA NOT NULL,
+                provider_public_key BYTEA NOT NULL,
+                provider_verifying_key BYTEA NOT NULL,
                 PRIMARY KEY (user_id, item_id)
             );
         """)
         # grants
         conn.execute("""
             CREATE TABLE IF NOT EXISTS grants (
-                sender_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                receiver_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                sender_item_id TEXT NOT NULL,
-                receiver_item_id TEXT NOT NULL,
+                provider_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                requester_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                provider_item_id TEXT NOT NULL,
+                requester_item_id TEXT NOT NULL,
                 kfrags_b BYTEA NOT NULL,
-                PRIMARY KEY (sender_id, receiver_id, sender_item_id),
-                UNIQUE (sender_id, receiver_id, receiver_item_id),
-                CONSTRAINT not_selfmap CHECK (sender_id <> receiver_id),
-                FOREIGN KEY (sender_id, sender_item_id)
+                PRIMARY KEY (provider_id, requester_id, provider_item_id),
+                UNIQUE (provider_id, requester_id, requester_item_id),
+                CONSTRAINT not_selfmap CHECK (provider_id <> requester_id),
+                FOREIGN KEY (provider_id, provider_item_id)
                     REFERENCES crypto_bundle(user_id, item_id) ON DELETE RESTRICT
             );
         """)
-        # post office
+        # solicitations
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS post_office (
-                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                msg BYTEA NOT NULL
+            CREATE TABLE IF NOT EXISTS solicitations (
+                request_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                requester_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                provider_id  UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                payload JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE (requester_id, provider_id)
             );
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS by_created_at
+            ON solicitations (provider_id, created_at, request_id);
         """)
     print("[Proxy] DB initialized.")
 
@@ -238,7 +250,7 @@ def delete_session(req: Request) -> None:
 def fetch_crypto_bundle(user_id: UUID, item_id: str):
     with get_conn() as conn:
         row = conn.execute("""
-            SELECT capsule, ciphertext, sender_public_key, sender_verifying_key
+            SELECT capsule, ciphertext, provider_public_key, provider_verifying_key
             FROM crypto_bundle
             WHERE user_id=%s AND item_id=%s
             """,
@@ -249,17 +261,17 @@ def fetch_crypto_bundle(user_id: UUID, item_id: str):
     return {
         "capsule": Capsule.from_bytes(capsule_b),
         "ciphertext": ciphertext_b,
-        "sender_public_key": PublicKey.from_compressed_bytes(spk_b),
-        "sender_verifying_key": PublicKey.from_compressed_bytes(svk_b),
+        "provider_public_key": PublicKey.from_compressed_bytes(spk_b),
+        "provider_verifying_key": PublicKey.from_compressed_bytes(svk_b),
     }
 
-def fetch_granted_kfrags(sender_id: UUID, receiver_id: UUID, receiver_item_id: str) -> List[KeyFrag]:
+def fetch_granted_kfrags(provider_id: UUID, requester_id: UUID, requester_item_id: str) -> List[KeyFrag]:
     with get_conn() as conn:
         row = conn.execute("""
             SELECT kfrags_b
             FROM grants
-            WHERE sender_id=%s AND receiver_id=%s AND receiver_item_id=%s
-        """, (sender_id, receiver_id, receiver_item_id)).fetchone()
+            WHERE provider_id=%s AND requester_id=%s AND requester_item_id=%s
+        """, (provider_id, requester_id, requester_item_id)).fetchone()
     if not row:
         return []
     (blob,) = row
@@ -341,7 +353,7 @@ async def gatekeeper(request: Request, call_next):
 
 # =================== CRS API ===================
 
-# ------------------- /auth ---------------------
+# ------------------- authentication ---------------------
 
 @app.post("/auth/register")
 def auth_register(req: Request, body: LoginRequest):
@@ -395,174 +407,7 @@ def auth_session(req: Request):
         }
     }
 
-# ------------------- /api ---------------------
-
-@app.post("/api/upsert_item")
-def api_upsert_item(request: Request, body: UpsertItemRequest):
-
-    with get_conn() as conn:
-        conn.execute("""
-            INSERT INTO crypto_bundle (
-                user_id, item_id, capsule, ciphertext, sender_public_key, sender_verifying_key
-            )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (user_id, item_id) DO UPDATE SET
-                capsule = EXCLUDED.capsule,
-                ciphertext = EXCLUDED.ciphertext,
-                sender_public_key = EXCLUDED.sender_public_key,
-                sender_verifying_key = EXCLUDED.sender_verifying_key
-        """,(
-                request.state.user_id,
-                body.item_id,
-                b64d(body.capsule_b64),
-                b64d(body.ciphertext_b64),
-                b64d(body.sender_public_key_b64),
-                b64d(body.sender_verifying_key_b64),
-        ),)
-    return _ok()
-
-@app.post("/api/erase_item")
-def api_erase_item(request: Request, body: EraseItemRequest):
-    user_id = request.state.user_id
-
-    try:
-        with get_conn() as conn:
-            cursor = conn.execute(
-                "DELETE FROM crypto_bundle WHERE user_id=%s AND item_id=%s",
-                (user_id, body.item_id),
-            )
-            if cursor.rowcount == 0:
-                raise HTTPException(status_code=404, detail="item_not_found")
-            return _ok()
-
-    except psycopg.errors.ForeignKeyViolation:
-        with get_conn() as conn:
-            rows = conn.execute("""
-                SELECT DISTINCT receiver_id
-                FROM grants
-                WHERE sender_id=%s AND sender_item_id=%s
-                ORDER BY receiver_id
-            """,(user_id,body.item_id),
-            ).fetchall()
-        receivers = [r[0] for r in rows]
-        return JSONResponse(
-            {"error": "grants_exist", "receiver_ids": receivers},
-            status_code=409,
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.post("/api/grant_access")
-def api_grant_access(request: Request, body: GrantAccessRequest):
-    sender_id = request.state.user_id
-
-    try:
-        kfrags_bytes = [b64d(b) for b in body.kfrags_b64]
-    except Exception:
-        raise HTTPException(status_code=400, detail="bad_kfrags_b64")
-    kfrags_blob = msgpack.packb(kfrags_bytes, use_bin_type=True)
-
-    try:
-        with get_conn() as conn:
-            conn.execute("""
-                INSERT INTO grants (sender_id, receiver_id, sender_item_id, receiver_item_id, kfrags_b)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (sender_id, receiver_id, receiver_item_id)
-                DO UPDATE SET
-                    sender_item_id = EXCLUDED.sender_item_id,
-                    kfrags_b            = EXCLUDED.kfrags_b
-            """,(
-                sender_id,
-                body.receiver_id,
-                body.sender_item_id,
-                body.receiver_item_id,
-                kfrags_blob,
-            ),)
-        return _ok()
-
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=500, detail="internal_error")
-
-@app.post("/api/revoke_access")
-def api_revoke_access(request: Request, body: RevokeAccessRequest):
-    sender_id = request.state.user_id
-
-    with get_conn() as conn:
-        cur = conn.execute("""
-            DELETE FROM grants
-            WHERE sender_id=%s AND receiver_id=%s AND sender_item_id=%s
-        """,
-            (sender_id, body.receiver_id, body.sender_item_id),
-        )
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="grant_not_found")
-
-    return _ok()
-
-@app.post("/api/request_item")
-def api_request_item(request: Request, body: RequestItemRequest):
-    receiver_id = request.state.user_id
-
-    try:
-        receiver_pk = PublicKey.from_compressed_bytes(b64d(body.receiver_public_key_b64))
-    except Exception:
-        raise HTTPException(status_code=400, detail="bad_receiver_public_key")
-
-    with get_conn() as conn:
-        grant_row = conn.execute("""
-            SELECT sender_item_id, kfrags_b
-            FROM grants
-            WHERE sender_id=%s
-              AND receiver_id=%s
-              AND receiver_item_id=%s
-        """,
-            (body.sender_id, receiver_id, body.receiver_item_id),
-        ).fetchone()
-
-    if not grant_row:
-        raise HTTPException(status_code=404, detail="grant_not_found")
-
-    sender_item_id, kfrags_blob = grant_row
-    kfrag_bytes_list = msgpack.unpackb(kfrags_blob, raw=False)
-    kfrags: List[KeyFrag] = [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
-
-    with get_conn() as conn:
-        bundle_row = conn.execute("""
-            SELECT capsule, ciphertext, sender_public_key, sender_verifying_key
-            FROM crypto_bundle
-            WHERE user_id=%s AND item_id=%s
-        """,
-            (body.sender_id, sender_item_id),
-        ).fetchone()
-
-    if not bundle_row:
-        raise HTTPException(status_code=404, detail="item_not_found")
-
-    capsule_b, ciphertext_b, spk_b, svk_b = bundle_row
-    capsule       = Capsule.from_bytes(capsule_b)
-    ciphertext    = ciphertext_b
-    delegating_pk = PublicKey.from_compressed_bytes(spk_b)
-    verifying_pk  = PublicKey.from_compressed_bytes(svk_b)
-
-    verified_kfrags = [
-        kf.verify(
-            delegating_pk=delegating_pk,
-            receiving_pk=receiver_pk,
-            verifying_pk=verifying_pk,
-        )
-        for kf in kfrags
-    ]
-    cfrags = [reencrypt(capsule=capsule, kfrag=vkf) for vkf in verified_kfrags]
-
-    return {
-        "capsule_b64": b64e(bytes(capsule)),
-        "ciphertext_b64": b64e(ciphertext),
-        "cfrags_b64": [b64e(bytes(c)) for c in cfrags],
-    }
+# ------------------- user vaults ---------------------
 
 @app.put("/api/save_to_vault")
 def api_save_to_vault(request: Request, body: SaveToVaultRequest):
@@ -599,7 +444,313 @@ def api_load_from_vault(request: Request, body: LoadFromVaultRequest):
     (blob,) = row
     return {"blob_b64": b64e(blob)}
 
-# -------------------------------------------------------------
+# ------------------- post office ---------------------
+
+def _validate_solicitation_payload(payload: Dict[str, Any]) -> None:
+    # Expected minimal shape:
+    # {
+    #   "rows": [
+    #     {
+    #       "field_description": str,
+    #       "secret_id": str,
+    #       "value_example_format": str,
+    #       "requester_public_key_b64": str,
+    #       "default_field_id": str (optional),
+    #       "field_order": int (optional)
+    #     },
+    #     ...
+    #   ]
+    # }
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(status_code=400, detail="invalid_payload_rows")
+
+    for r in rows:
+        if not isinstance(r, dict):
+            raise HTTPException(status_code=400, detail="invalid_row_type")
+        for k in ("field_description", "secret_id", "value_example_format", "requester_public_key_b64"):
+            v = r.get(k)
+            if not isinstance(v, str) or not v:
+                raise HTTPException(status_code=400, detail=f"missing_{k}")
+        # optional fields
+        if "default_field_id" in r and not isinstance(r["default_field_id"], str):
+            raise HTTPException(status_code=400, detail="bad_default_field_id")
+        if "field_order" in r and not isinstance(r["field_order"], int):
+            raise HTTPException(status_code=400, detail="bad_field_order")
+        # sanity check pubkey b64 (opaque to server beyond base64 parse)
+        try:
+            b64d(r["requester_public_key_b64"])
+        except Exception:
+            raise HTTPException(status_code=400, detail="bad_public_key_b64")
+
+
+# ---- endpoints ----
+
+@app.post("/api/push_solicitation")
+def api_push_solicitation(request: Request, body: PushSolicitationRequest):
+    requester_id = request.state.user_id
+
+    if requester_id == body.provider_id:
+        raise HTTPException(status_code=400, detail="self_request_forbidden")
+
+    # minimal shape validation (keeps server flexible but avoids garbage)
+    _validate_solicitation_payload(body.payload)
+
+    # compact JSON and cast to jsonb
+    payload_json = json.dumps(body.payload, separators=(",", ":"))
+
+    with get_conn() as conn:
+        try:
+            if body.request_id:
+                cur = conn.execute(
+                    """
+                    INSERT INTO solicitations (request_id, requester_id, provider_id, payload)
+                    VALUES (%s, %s, %s, %s::jsonb)
+                    RETURNING request_id, created_at
+                    """,
+                    (body.request_id, requester_id, body.provider_id, payload_json),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    INSERT INTO solicitations (requester_id, provider_id, payload)
+                    VALUES (%s, %s, %s::jsonb)
+                    RETURNING request_id, created_at
+                    """,
+                    (requester_id, body.provider_id, payload_json),
+                )
+            request_id, created_at = cur.fetchone()
+        except psycopg.errors.UniqueViolation:
+            # enforced by UNIQUE (requester_id, provider_id)
+            raise HTTPException(status_code=409, detail="prev_unacked")
+
+    # server ack to requester: stored successfully
+    return {
+        "request_id": str(request_id),
+        "created_at": created_at.isoformat(),
+    }
+
+
+@app.post("/api/pull_solicitation")
+def api_pull_solicitation(request: Request, body: PullSolicitationRequest):
+    provider_id = request.state.user_id
+
+    # fetch 2 to compute has_more without a second round trip
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT request_id, requester_id, payload
+            FROM solicitations
+            WHERE provider_id=%s
+            ORDER BY created_at ASC, request_id ASC
+            LIMIT 2
+            """,
+            (provider_id,),
+        ).fetchall()
+
+    if not rows:
+        return {"has_request": False, "has_more": False}
+
+    (request_id, requester_id, payload), *rest = rows
+    has_more = bool(rest)
+
+    # psycopg3 returns JSONB as dict by default; if not, ensure it is
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+
+    return {
+        "has_request": True,
+        "request_id": str(request_id),
+        "requester_id": str(requester_id),
+        "payload": payload,   # opaque JSON your clients understand
+        "has_more": has_more,
+    }
+
+
+@app.post("/api/ack_solicitation")
+def api_ack_solicitation(request: Request, body: AckSolicitationRequest):
+    provider_id = request.state.user_id
+
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM solicitations WHERE request_id=%s AND provider_id=%s",
+            (body.request_id, provider_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="solicitation_not_found")
+
+    return _ok()
+
+# ------------------- CRS ---------------------
+
+@app.post("/api/upsert_item")
+def api_upsert_item(request: Request, body: UpsertItemRequest):
+
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO crypto_bundle (
+                user_id, item_id, capsule, ciphertext, provider_public_key, provider_verifying_key
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id, item_id) DO UPDATE SET
+                capsule = EXCLUDED.capsule,
+                ciphertext = EXCLUDED.ciphertext,
+                provider_public_key = EXCLUDED.provider_public_key,
+                provider_verifying_key = EXCLUDED.provider_verifying_key
+        """,(
+                request.state.user_id,
+                body.item_id,
+                b64d(body.capsule_b64),
+                b64d(body.ciphertext_b64),
+                b64d(body.provider_public_key_b64),
+                b64d(body.provider_verifying_key_b64),
+        ),)
+    return _ok()
+
+@app.post("/api/erase_item")
+def api_erase_item(request: Request, body: EraseItemRequest):
+    user_id = request.state.user_id
+
+    try:
+        with get_conn() as conn:
+            cursor = conn.execute(
+                "DELETE FROM crypto_bundle WHERE user_id=%s AND item_id=%s",
+                (user_id, body.item_id),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="item_not_found")
+            return _ok()
+
+    except psycopg.errors.ForeignKeyViolation:
+        with get_conn() as conn:
+            rows = conn.execute("""
+                SELECT DISTINCT requester_id
+                FROM grants
+                WHERE provider_id=%s AND provider_item_id=%s
+                ORDER BY requester_id
+            """,(user_id,body.item_id),
+            ).fetchall()
+        requesters = [r[0] for r in rows]
+        return JSONResponse(
+            {"error": "grants_exist", "requester_ids": requesters},
+            status_code=409,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/grant_access")
+def api_grant_access(request: Request, body: GrantAccessRequest):
+    provider_id = request.state.user_id
+
+    try:
+        kfrags_bytes = [b64d(b) for b in body.kfrags_b64]
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad_kfrags_b64")
+    kfrags_blob = msgpack.packb(kfrags_bytes, use_bin_type=True)
+
+    try:
+        with get_conn() as conn:
+            conn.execute("""
+                INSERT INTO grants (provider_id, requester_id, provider_item_id, requester_item_id, kfrags_b)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (provider_id, requester_id, requester_item_id)
+                DO UPDATE SET
+                    provider_item_id = EXCLUDED.provider_item_id,
+                    kfrags_b            = EXCLUDED.kfrags_b
+            """,(
+                provider_id,
+                body.requester_id,
+                body.provider_item_id,
+                body.requester_item_id,
+                kfrags_blob,
+            ),)
+        return _ok()
+
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="internal_error")
+
+@app.post("/api/revoke_access")
+def api_revoke_access(request: Request, body: RevokeAccessRequest):
+    provider_id = request.state.user_id
+
+    with get_conn() as conn:
+        cur = conn.execute("""
+            DELETE FROM grants
+            WHERE provider_id=%s AND requester_id=%s AND provider_item_id=%s
+        """,
+            (provider_id, body.requester_id, body.provider_item_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="grant_not_found")
+
+    return _ok()
+
+@app.post("/api/request_item")
+def api_request_item(request: Request, body: RequestItemRequest):
+    requester_id = request.state.user_id
+
+    try:
+        requester_pk = PublicKey.from_compressed_bytes(b64d(body.requester_public_key_b64))
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad_requester_public_key")
+
+    with get_conn() as conn:
+        grant_row = conn.execute("""
+            SELECT provider_item_id, kfrags_b
+            FROM grants
+            WHERE provider_id=%s
+              AND requester_id=%s
+              AND requester_item_id=%s
+        """,
+            (body.provider_id, requester_id, body.requester_item_id),
+        ).fetchone()
+
+    if not grant_row:
+        raise HTTPException(status_code=404, detail="grant_not_found")
+
+    provider_item_id, kfrags_blob = grant_row
+    kfrag_bytes_list = msgpack.unpackb(kfrags_blob, raw=False)
+    kfrags: List[KeyFrag] = [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
+
+    with get_conn() as conn:
+        bundle_row = conn.execute("""
+            SELECT capsule, ciphertext, provider_public_key, provider_verifying_key
+            FROM crypto_bundle
+            WHERE user_id=%s AND item_id=%s
+        """,
+            (body.provider_id, provider_item_id),
+        ).fetchone()
+
+    if not bundle_row:
+        raise HTTPException(status_code=404, detail="item_not_found")
+
+    capsule_b, ciphertext_b, spk_b, svk_b = bundle_row
+    capsule       = Capsule.from_bytes(capsule_b)
+    ciphertext    = ciphertext_b
+    delegating_pk = PublicKey.from_compressed_bytes(spk_b)
+    verifying_pk  = PublicKey.from_compressed_bytes(svk_b)
+
+    verified_kfrags = [
+        kf.verify(
+            delegating_pk=delegating_pk,
+            receiving_pk=requester_pk,
+            verifying_pk=verifying_pk,
+        )
+        for kf in kfrags
+    ]
+    cfrags = [reencrypt(capsule=capsule, kfrag=vkf) for vkf in verified_kfrags]
+
+    return {
+        "capsule_b64": b64e(bytes(capsule)),
+        "ciphertext_b64": b64e(ciphertext),
+        "cfrags_b64": [b64e(bytes(c)) for c in cfrags],
+    }
+
+# =================== Application ===================
 
 if "__main__" == __name__:
     init_db()

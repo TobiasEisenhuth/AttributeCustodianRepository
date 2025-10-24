@@ -1,4 +1,4 @@
-from typing import List, Annotated
+from typing import List, Annotated, Dict, Any, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, StringConstraints
@@ -15,29 +15,42 @@ class UpsertItemRequest(BaseModel):
     item_id: str
     capsule_b64: str
     ciphertext_b64: str
-    sender_public_key_b64: str
-    sender_verifying_key_b64: str
+    provider_public_key_b64: str
+    provider_verifying_key_b64: str
 
 class EraseItemRequest(BaseModel):
     item_id: str
 
 class GrantAccessRequest(BaseModel):
-    receiver_id: UUID
-    sender_item_id: str
-    receiver_item_id: str
+    requester_id: UUID
+    provider_item_id: str
+    requester_item_id: str
     kfrags_b64: List[str]
 
 class RevokeAccessRequest(BaseModel):
-    receiver_id: UUID
-    sender_item_id: str
+    requester_id: UUID
+    provider_item_id: str
 
 class RequestItemRequest(BaseModel):
-    sender_id: UUID
-    receiver_item_id: str
-    receiver_public_key_b64: str
+    provider_id: UUID
+    requester_item_id: str
+    requester_public_key_b64: str
 
 class SaveToVaultRequest(BaseModel):
     blob_b64: Annotated[StrictStr, StringConstraints(min_length=1)]
 
 class LoadFromVaultRequest(BaseModel):
     pass
+
+class PushSolicitationRequest(BaseModel):
+    provider_id: UUID
+    request_id: Optional[UUID] = None
+    payload: Dict[str, Any]
+
+
+class PullSolicitationRequest(BaseModel):
+    pass
+
+
+class AckSolicitationRequest(BaseModel):
+    request_id: UUID

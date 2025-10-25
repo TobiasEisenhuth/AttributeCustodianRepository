@@ -2,38 +2,158 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Login</title>
+  <title>Welcome</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="icon" href="/app/favicon.ico">
   <link rel="stylesheet" href="/app/style.css">
+  <style>
+    .row { display:flex; gap:.5rem; align-items:center; }
+    .buttons { display:flex; gap:.5rem; margin-top:.75rem; }
+    .error { color:#b00; min-height:1.25rem; }
+    /* optional autofill highlight hook (works in Chromium) */
+    @keyframes onAutofill { from {} to {} }
+    input:-webkit-autofill { animation-name: onAutofill; }
+  </style>
 </head>
 <body class="center">
   <div class="card">
     <h1>Welcome</h1>
 
-    <section>
-      <h2>Log in</h2>
-      <form id="login-form">
-        <label>Email <input type="email" name="email" required /></label>
-        <label>Password <input type="password" name="password" required minlength="10" /></label>
-        <button type="submit">Log in</button>
-      </form>
-      <p id="login-error" class="error"></p>
-    </section>
+    <form id="auth-form" autocomplete="on">
+      <div class="row">
+        <label style="flex:1">
+          Email
+          <input id="email" name="email" type="email" required autocomplete="username" />
+        </label>
+      </div>
 
-    <hr>
+      <div class="row" style="margin-top:.5rem">
+        <label style="flex:1">
+          Password
+          <!-- default to current-password; we flip to new-password if user clicks Register -->
+          <input id="password" name="password" type="password" required minlength="10" autocomplete="current-password" />
+        </label>
+      </div>
 
-    <section>
-      <h2>Register</h2>
-      <form id="register-form">
-        <label>Email <input type="email" name="email" required /></label>
-        <label>Password <input type="password" name="password" required minlength="15" /></label>
-        <button type="submit">Create account</button>
-      </form>
-      <p id="register-error" class="error"></p>
-    </section>
+      <div class="buttons">
+        <button id="btn-login" type="button">Log in</button>
+        <button id="btn-register" type="button">Create account</button>
+      </div>
+      <p id="auth-error" class="error"></p>
+    </form>
   </div>
 
-  <script src="/app/auth.js"></script>
+  <script>
+    // ---------- minimal local store (client-only) ----------
+    const STORE_KEY = "crs:user-store:v1";
+
+    function createEmptyStore(ownerEmail) {
+      const now = new Date().toISOString();
+      return {
+        version: 1,
+        created_at: now,
+        updated_at: now,
+        owner: { email: ownerEmail },
+        // future sections the app will use:
+        kms: {},                 // cryptographic material placeholders
+        orgs: {},                // user_id -> org name
+        grants: { provided: {}, received: {} }, // sharing state
+        items: {}                // your decrypted/cache items later
+      };
+    }
+
+    function ensureLocalStoreOnRegister(ownerEmail) {
+      try {
+        if (!localStorage.getItem(STORE_KEY)) {
+          const empty = createEmptyStore(ownerEmail);
+          localStorage.setItem(STORE_KEY, JSON.stringify(empty));
+        }
+      } catch (_) {
+        // ignore (private mode / storage disabled). We'll handle later in-app.
+      }
+    }
+
+    // ---------- helpers ----------
+    const form = document.getElementById("auth-form");
+    const email = document.getElementById("email");
+    const password = document.getElementById("password");
+    const err = document.getElementById("auth-error");
+    const btnLogin = document.getElementById("btn-login");
+    const btnRegister = document.getElementById("btn-register");
+
+    async function postJSON(url, data) {
+      const res = await fetch(url, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        let msg = "Request failed";
+        try { msg = (await res.json()).detail || msg; } catch {}
+        throw new Error(msg);
+      }
+      return res.json();
+    }
+
+    function dataFromForm() {
+      return { email: email.value.trim(), password: password.value };
+    }
+
+    function setBusy(isBusy) {
+      btnLogin.disabled = btnRegister.disabled = isBusy;
+    }
+
+    // Heuristic: if autofilled, we bias toward login
+    function maybePrefillMode() {
+      if (email.value && password.value) btnLogin.dataset.prefilled = "1";
+    }
+    window.addEventListener("pageshow", () => setTimeout(maybePrefillMode, 0));
+    document.addEventListener("animationstart", (e) => {
+      if (e.animationName === "onAutofill") setTimeout(maybePrefillMode, 0);
+    });
+
+    // ---------- actions ----------
+    async function doLogin() {
+      err.textContent = "";
+      setBusy(true);
+      try {
+        password.setAttribute("autocomplete", "current-password");
+        await postJSON("/auth/login", dataFromForm());
+        location.replace("/"); // middleware will send us to the dashboard
+      } catch (e) {
+        err.textContent = e.message;
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function doRegister() {
+      err.textContent = "";
+      setBusy(true);
+      try {
+        password.setAttribute("autocomplete", "new-password");
+        await postJSON("/auth/register", dataFromForm());
+        // Create the initial empty user store locally BEFORE we leave the page
+        ensureLocalStoreOnRegister(email.value.trim());
+        location.replace("/"); // middleware -> dashboard
+      } catch (e) {
+        err.textContent = e.message;
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    btnLogin.addEventListener("click", (e) => { e.preventDefault(); doLogin(); });
+    btnRegister.addEventListener("click", (e) => { e.preventDefault(); doRegister(); });
+
+    // Enter = Login
+    form.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !(e.ctrlKey || e.metaKey || e.shiftKey || e.altKey)) {
+        e.preventDefault();
+        doLogin();
+      }
+    });
+  </script>
 </body>
 </html>

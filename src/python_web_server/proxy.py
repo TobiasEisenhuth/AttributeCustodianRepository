@@ -89,6 +89,7 @@ def init_db():
                 expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '5 minutes')
             );
         """)
+        conn.execute("CREATE INDEX IF NOT EXISTS by_expires_at ON sessions (expires_at);")
         # user's encrypted store
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vault (
@@ -255,6 +256,14 @@ def delete_session(req: Request) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM sessions WHERE token=%s", (token,))
 
+SESSION_JANITOR_SECONDS = int(os.getenv("SESSION_JANITOR_SECONDS", "60"))
+
+def cleanup_expired_sessions() -> int:
+    """Delete expired sessions. Returns number of rows deleted."""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM sessions WHERE expires_at <= NOW()")
+        return cur.rowcount
+
 # =================== PRE DB HELPERS ===================
 
 def fetch_crypto_bundle(user_id: UUID, item_id: str):
@@ -293,7 +302,22 @@ def fetch_granted_kfrags(provider_id: UUID, requester_id: UUID, requester_item_i
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await anyio.to_thread.run_sync(init_db)
-    yield
+
+    async def _session_janitor():
+        while True:
+            try:
+                await anyio.sleep(SESSION_JANITOR_SECONDS)
+                deleted = await anyio.to_thread.run_sync(cleanup_expired_sessions)
+                if deleted:
+                    print(f"[Proxy] Session janitor pruned {deleted} expired session(s).")
+            except Exception as e:
+                print(f"[Proxy] Session janitor error: {e!r}")
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(_session_janitor)
+        yield
+        tg.cancel_scope.cancel()
+
 
 app = FastAPI(title="CRS Proxy API", lifespan=lifespan)
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["app.localhost"])

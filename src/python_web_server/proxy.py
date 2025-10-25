@@ -1,4 +1,5 @@
 # language utils
+from base64 import b64encode as b64e, b64decode as b64d
 from typing import List, Optional, Dict, Any
 from pydantic import EmailStr
 from uuid import UUID
@@ -41,12 +42,11 @@ from argon2.low_level import Type as Argon2Type
 from argon2.exceptions import VerifyMismatchError, InvalidHash
 
 from common import (
-    b64d, b64e,
-    LoginRequest,
+    LoginRequest, Password,
     UpsertItemRequest, EraseItemRequest,
     GrantAccessRequest, RevokeAccessRequest,
     RequestItemRequest,
-    SaveToVaultRequest, LoadFromVaultRequest,
+    SaveToVaultRequest,
     PushSolicitationRequest, PullSolicitationBundleRequest, AckSolicitationBundleRequest
 )
 
@@ -72,7 +72,6 @@ def get_conn():
 
 def init_db():
     with get_conn() as conn:
-        conn.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
         conn.execute("CREATE EXTENSION IF NOT EXISTS citext;")
         # users
         conn.execute("""
@@ -94,7 +93,8 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vault (
                 user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
-                blob BYTEA NOT NULL
+                encrypted_localstore BYTEA NOT NULL,
+                vault_salt BYTEA NOT NULL
             );
         """)
         # crypto_bundle
@@ -177,7 +177,7 @@ def clear_session_cookie(resp: Response, req: Request) -> None:
 
 # =================== AUTH DB HELPERS ===================
 
-def create_user(email: LoginRequest.email, password: LoginRequest.password) -> UUID:
+def create_user(email: EmailStr, password: Password) -> UUID:
     pw_hash = ph.hash(password)
     with get_conn() as conn:
         if conn.execute("SELECT 1 FROM users WHERE email=%s", (email,)).fetchone():
@@ -199,6 +199,13 @@ def create_session(user_id: UUID, req: Request) -> str:
             VALUES (%s, %s, %s)
         """, (token, user_id, expires_at))
     return token
+
+def refresh_session_expiry(token: str) -> None:
+    if not token:
+        return
+    new_exp = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
+    with get_conn() as conn:
+        conn.execute("UPDATE sessions SET expires_at=%s WHERE token=%s", (new_exp, token))
 
 def get_user_by_email(email: EmailStr) -> Optional[dict]:
     with get_conn() as conn:
@@ -328,6 +335,8 @@ async def gatekeeper(request: Request, call_next):
         if not logged_in:
             return JSONResponse({"error": "not_authenticated"}, status_code=401)
         request.state.user_id = user_id
+        token = (request.cookies or {}).get("__Host-session")
+        refresh_session_expiry(token)
         return await call_next(request)
 
     # default to login page or dashboard depending on session or nah
@@ -399,53 +408,58 @@ def auth_logout(req: Request):
     clear_session_cookie(resp, req)
     return resp
 
-@app.get("/auth/session")
-def auth_session(req: Request):
-    user = get_session_user_by_request(req)
-    if not user:
-        raise HTTPException(status_code=401, detail="No active session")
-    return {
-        "user": {
-            "email": user["email"]
-        }
-    }
-
 # ------------------- user vaults ---------------------
+
+MAX_VAULT_BYTES = int(os.getenv("MAX_VAULT_BYTES", str(10 * 1024 * 1024)))  # 10 MiB default
 
 @app.put("/api/save_to_vault")
 def api_save_to_vault(request: Request, body: SaveToVaultRequest):
     user_id = request.state.user_id
     try:
-        blob = b64d(body.blob_b64)
+        encrypted_localstore = b64d(body.encrypted_localstore_b64)
+        vault_salt = b64d(body.vault_salt_b64)
     except Exception:
-        raise HTTPException(status_code=400, detail="bad_blob_b64")
+        raise HTTPException(status_code=400, detail="bad_base64")
+
+    if len(vault_salt) < 16:
+        raise HTTPException(status_code=400, detail="vault_salt_too_short")
+
+    if len(encrypted_localstore) > MAX_VAULT_BYTES:
+        return JSONResponse(
+            {"error": "payload_too_large", "max_bytes": MAX_VAULT_BYTES},
+            status_code=413,
+        )
 
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO vault (user_id, blob)
-            VALUES (%s, %s)
+            INSERT INTO vault (user_id, encrypted_localstore, vault_salt)
+            VALUES (%s, %s, %s)
             ON CONFLICT (user_id) DO UPDATE SET
-                blob = EXCLUDED.blob
+                encrypted_localstore = EXCLUDED.encrypted_localstore,
+                vault_salt = EXCLUDED.vault_salt
             """,
-            (user_id, blob),
+            (user_id, encrypted_localstore, vault_salt),
         )
     return _ok()
 
 @app.get("/api/load_from_vault")
-def api_load_from_vault(request: Request, body: LoadFromVaultRequest):
+def api_load_from_vault(request: Request):
     user_id = request.state.user_id
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT blob FROM vault WHERE user_id=%s",
+            "SELECT encrypted_localstore, vault_salt FROM vault WHERE user_id=%s",
             (user_id,),
         ).fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail="vault_not_found")
 
-    (blob,) = row
-    return {"blob_b64": b64e(blob)}
+    encrypted_localstore, vault_salt = row
+    return {
+        "encrypted_localstore_b64": b64e(encrypted_localstore),
+        "vault_salt_b64": b64e(vault_salt)
+    }
 
 # ------------------- post office ---------------------
 

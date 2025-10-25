@@ -37,20 +37,16 @@ class RequestItemRequest(BaseModel):
     requester_public_key_b64: str
 
 class SaveToVaultRequest(BaseModel):
-    blob_b64: Annotated[StrictStr, StringConstraints(min_length=1)]
-
-class LoadFromVaultRequest(BaseModel):
-    pass
+    encrypted_localstore_b64: str
+    vault_salt_b64: str
 
 class PushSolicitationRequest(BaseModel):
     provider_id: UUID
     request_id: Optional[UUID] = None
     payload: Dict[str, Any]
 
-
 class PullSolicitationBundleRequest(BaseModel):
     pass
-
 
 class AckSolicitationBundleRequest(BaseModel):
     request_id: UUID

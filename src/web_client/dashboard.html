@@ -21,16 +21,6 @@
       return res.json();
     }
 
-    // Load session + greet, or bounce to login if not authenticated
-    (async () => {
-      try {
-        const s = await getJSON("/auth/session");
-        document.getElementById("hello").textContent = `Hello ${s.user.email}!`;
-      } catch {
-        location.href = "/app/login.html";
-      }
-    })();
-
     // Log out
     document.getElementById("logout").addEventListener("click", async () => {
       const btn = document.getElementById("logout");

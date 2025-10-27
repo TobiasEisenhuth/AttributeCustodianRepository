@@ -10,13 +10,13 @@
     .row { display:flex; gap:.5rem; align-items:center; }
     .buttons { display:flex; gap:.5rem; margin-top:.75rem; }
     .error { color:#b00; min-height:1.25rem; }
-    /* optional autofill highlight hook (works in Chromium) */
+    .busy { opacity:.6; pointer-events:none; }
     @keyframes onAutofill { from {} to {} }
     input:-webkit-autofill { animation-name: onAutofill; }
   </style>
 </head>
 <body class="center">
-  <div class="card">
+  <div class="card" id="card">
     <h1>Welcome</h1>
 
     <form id="auth-form" autocomplete="on">
@@ -30,8 +30,7 @@
       <div class="row" style="margin-top:.5rem">
         <label style="flex:1">
           Password
-          <!-- default to current-password; we flip to new-password if user clicks Register -->
-          <input id="password" name="password" type="password" required minlength="10" autocomplete="current-password" />
+          <input id="password" name="password" type="password" required minlength="15" autocomplete="current-password" />
         </label>
       </div>
 
@@ -39,12 +38,13 @@
         <button id="btn-login" type="button">Log in</button>
         <button id="btn-register" type="button">Create account</button>
       </div>
-      <p id="auth-error" class="error"></p>
+      <p id="auth-error" class="error" role="alert"></p>
     </form>
   </div>
 
-  <script>
-    // ---------- minimal local store (client-only) ----------
+  <script type="module">
+    import { CRSClient } from "/app/crs-sdk.js";
+
     const STORE_KEY = "crs:user-store:v1";
 
     function createEmptyStore(ownerEmail) {
@@ -54,11 +54,10 @@
         created_at: now,
         updated_at: now,
         owner: { email: ownerEmail },
-        // future sections the app will use:
-        kms: {},                 // cryptographic material placeholders
-        orgs: {},                // user_id -> org name
-        grants: { provided: {}, received: {} }, // sharing state
-        items: {}                // your decrypted/cache items later
+        kms: {},
+        orgs: {},
+        grants: { provided: {}, received: {} },
+        items: {}
       };
     }
 
@@ -69,11 +68,12 @@
           localStorage.setItem(STORE_KEY, JSON.stringify(empty));
         }
       } catch (_) {
-        // ignore (private mode / storage disabled). We'll handle later in-app.
+        // ignore (private mode / storage disabled)
       }
     }
 
-    // ---------- helpers ----------
+    const api = new CRSClient();
+    const card = document.getElementById("card");
     const form = document.getElementById("auth-form");
     const email = document.getElementById("email");
     const password = document.getElementById("password");
@@ -81,30 +81,20 @@
     const btnLogin = document.getElementById("btn-login");
     const btnRegister = document.getElementById("btn-register");
 
-    async function postJSON(url, data) {
-      const res = await fetch(url, {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (!res.ok) {
-        let msg = "Request failed";
-        try { msg = (await res.json()).detail || msg; } catch {}
-        throw new Error(msg);
-      }
-      return res.json();
-    }
-
     function dataFromForm() {
       return { email: email.value.trim(), password: password.value };
     }
 
     function setBusy(isBusy) {
       btnLogin.disabled = btnRegister.disabled = isBusy;
+      card.classList.toggle("busy", isBusy);
+      card.setAttribute("aria-busy", String(isBusy));
     }
 
-    // Heuristic: if autofilled, we bias toward login
+    function showError(message) {
+      err.textContent = message || "";
+    }
+
     function maybePrefillMode() {
       if (email.value && password.value) btnLogin.dataset.prefilled = "1";
     }
@@ -113,32 +103,34 @@
       if (e.animationName === "onAutofill") setTimeout(maybePrefillMode, 0);
     });
 
-    // ---------- actions ----------
     async function doLogin() {
-      err.textContent = "";
+      showError("");
       setBusy(true);
       try {
         password.setAttribute("autocomplete", "current-password");
-        await postJSON("/auth/login", dataFromForm());
-        location.replace("/"); // middleware will send us to the dashboard
+        const { email: em, password: pw } = dataFromForm();
+        await api.login(em, pw);
+        location.replace("/");
       } catch (e) {
-        err.textContent = e.message;
+        showError(e?.data?.detail || e?.message || "Login failed");
       } finally {
         setBusy(false);
       }
     }
 
     async function doRegister() {
-      err.textContent = "";
+      showError("");
       setBusy(true);
       try {
         password.setAttribute("autocomplete", "new-password");
-        await postJSON("/auth/register", dataFromForm());
+        const { email: em, password: pw } = dataFromForm();
+        await api.register(em, pw);
         // Create the initial empty user store locally BEFORE we leave the page
-        ensureLocalStoreOnRegister(email.value.trim());
+        ensureLocalStoreOnRegister(em);
         location.replace("/"); // middleware -> dashboard
       } catch (e) {
-        err.textContent = e.message;
+        // 409 is common here (email already registered)
+        showError(e?.data?.detail || e?.message || "Registration failed");
       } finally {
         setBusy(false);
       }
@@ -147,7 +139,6 @@
     btnLogin.addEventListener("click", (e) => { e.preventDefault(); doLogin(); });
     btnRegister.addEventListener("click", (e) => { e.preventDefault(); doRegister(); });
 
-    // Enter = Login
     form.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !(e.ctrlKey || e.metaKey || e.shiftKey || e.altKey)) {
         e.preventDefault();

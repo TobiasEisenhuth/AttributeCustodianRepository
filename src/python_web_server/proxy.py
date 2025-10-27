@@ -128,9 +128,9 @@ def init_db():
         # solicitations
         conn.execute("""
             CREATE TABLE IF NOT EXISTS solicitations (
-                request_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 requester_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                provider_id  UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                provider_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 payload JSONB NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
@@ -339,8 +339,8 @@ DASHBOARD_PAGE = "/app/dashboard.html"
 PRE_LOGIN_PATHS = {
     LOGIN_PAGE,
     "/app/style.css",
-    "/app/auth.js",
     "/app/favicon.ico",
+    "/app/crs-sdk.js",
 }
 
 @app.middleware("http")

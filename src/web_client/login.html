@@ -45,33 +45,6 @@
   <script type="module">
     import { CRSClient } from "/app/crs-sdk.js";
 
-    const STORE_KEY = "crs:user-store:v1";
-
-    function createEmptyStore(ownerEmail) {
-      const now = new Date().toISOString();
-      return {
-        version: 1,
-        created_at: now,
-        updated_at: now,
-        owner: { email: ownerEmail },
-        kms: {},
-        orgs: {},
-        grants: { provided: {}, received: {} },
-        items: {}
-      };
-    }
-
-    function ensureLocalStoreOnRegister(ownerEmail) {
-      try {
-        if (!localStorage.getItem(STORE_KEY)) {
-          const empty = createEmptyStore(ownerEmail);
-          localStorage.setItem(STORE_KEY, JSON.stringify(empty));
-        }
-      } catch (_) {
-        // ignore (private mode / storage disabled)
-      }
-    }
-
     const api = new CRSClient();
     const card = document.getElementById("card");
     const form = document.getElementById("auth-form");
@@ -110,7 +83,7 @@
         password.setAttribute("autocomplete", "current-password");
         const { email: em, password: pw } = dataFromForm();
         await api.login(em, pw);
-        location.replace("/");
+        location.replace("/"); // middleware sends to dashboard
       } catch (e) {
         showError(e?.data?.detail || e?.message || "Login failed");
       } finally {
@@ -125,11 +98,8 @@
         password.setAttribute("autocomplete", "new-password");
         const { email: em, password: pw } = dataFromForm();
         await api.register(em, pw);
-        // Create the initial empty user store locally BEFORE we leave the page
-        ensureLocalStoreOnRegister(em);
         location.replace("/"); // middleware -> dashboard
       } catch (e) {
-        // 409 is common here (email already registered)
         showError(e?.data?.detail || e?.message || "Registration failed");
       } finally {
         setBusy(false);
@@ -139,6 +109,7 @@
     btnLogin.addEventListener("click", (e) => { e.preventDefault(); doLogin(); });
     btnRegister.addEventListener("click", (e) => { e.preventDefault(); doRegister(); });
 
+    // Enter = Login
     form.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !(e.ctrlKey || e.metaKey || e.shiftKey || e.altKey)) {
         e.preventDefault();

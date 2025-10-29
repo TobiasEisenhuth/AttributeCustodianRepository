@@ -173,7 +173,13 @@ def set_session_cookie(resp: Response, req: Request, token: str) -> None:
     )
 
 def clear_session_cookie(resp: Response, req: Request) -> None:
-    resp.delete_cookie("__Host-session", path="/")
+    resp.delete_cookie(
+        key="__Host-session",
+        httponly=True,
+        samesite="strict",
+        secure=True,
+        path="/",
+    )
 
 # =================== AUTH DB HELPERS ===================
 

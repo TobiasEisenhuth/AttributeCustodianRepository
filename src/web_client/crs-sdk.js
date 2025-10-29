@@ -7,9 +7,10 @@ export class CRSClient {
     this.base = base;
   }
 
-  async _fetch(path, { method = "POST", body } = {}) {
+  async _fetch(path, { method = "POST", body, signal } = {}) {
     const res = await fetch(this.base + path, {
       method,
+      signal,
       credentials: "include", // send __Host-session cookie
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
@@ -27,78 +28,57 @@ export class CRSClient {
   }
 
   // ---------- Auth ----------
-  register(email, password) {
-    return this._fetch("/auth/register", { body: { email, password } });
+  register(email, password, opts = {}) {
+    return this._fetch("/auth/register", { body: { email, password }, ...opts });
   }
-  login(email, password) {
-    return this._fetch("/auth/login", { body: { email, password } });
+  login(email, password, opts = {}) {
+    return this._fetch("/auth/login", { body: { email, password }, ...opts });
   }
-  logout() {
-    return this._fetch("/auth/logout");
+  logout(opts = {}) {
+    return this._fetch("/auth/logout", opts);
   }
 
-  // ---------- Vault ----------
-  /**
-   * @param {string} encrypted_localstore_b64
-   * @param {string} vault_salt_b64 (>=16 bytes when decoded)
-   */
-  saveToVault(encrypted_localstore_b64, vault_salt_b64) {
+  // ---------- Vault (no vault_salt anymore) ----------
+  saveToVault(encrypted_localstore_b64, opts = {}) {
     return this._fetch("/api/save_to_vault", {
       method: "PUT",
-      body: { encrypted_localstore_b64, vault_salt_b64 },
+      body: { encrypted_localstore_b64 },
+      ...opts,
     });
   }
-  loadFromVault() {
-    return this._fetch("/api/load_from_vault", { method: "GET" });
+  loadFromVault(opts = {}) {
+    return this._fetch("/api/load_from_vault", { method: "GET", ...opts });
   }
 
   // ---------- Post Office (Solicitations) ----------
-  /**
-   * @param {string} provider_id UUID
-   * @param {{rows: Array<{field_description:string, secret_id:string, value_example_format:string, requester_public_key_b64:string, default_field?:string, request_order?:number}>}} payload
-   */
-  pushSolicitation(provider_id, payload) {
-    return this._fetch("/api/push_solicitation", { body: { provider_id, payload } });
+  pushSolicitation(provider_id, payload, opts = {}) {
+    return this._fetch("/api/push_solicitation", { body: { provider_id, payload }, ...opts });
   }
-  pullSolicitationBundle() {
+  pullSolicitationBundle(opts = {}) {
     // server expects a POST with an (empty) JSON body
-    return this._fetch("/api/pull_solicitation_bundle", { body: {} });
+    return this._fetch("/api/pull_solicitation_bundle", { body: {}, ...opts });
   }
-  /**
-   * @param {string} requester_id
-   * @param {string} max_created_at ISO-8601
-   * @param {string} max_request_id UUID
-   */
-  ackSolicitationBundle({ requester_id, max_created_at, max_request_id }) {
+  ackSolicitationBundle({ requester_id, max_created_at, max_request_id }, opts = {}) {
     return this._fetch("/api/ack_solicitation_bundle", {
       body: { requester_id, max_created_at, max_request_id },
+      ...opts,
     });
   }
 
   // ---------- CRS (PRE) ----------
-  /**
-   * @param {{item_id:string, capsule_b64:string, ciphertext_b64:string, provider_public_key_b64:string, provider_verifying_key_b64:string}} b
-   */
-  upsertItem(b) {
-    return this._fetch("/api/upsert_item", { body: b });
+  upsertItem(b, opts = {}) {
+    return this._fetch("/api/upsert_item", { body: b, ...opts });
   }
-  eraseItem(item_id) {
-    return this._fetch("/api/erase_item", { body: { item_id } });
+  eraseItem(item_id, opts = {}) {
+    return this._fetch("/api/erase_item", { body: { item_id }, ...opts });
   }
-  /**
-   * @param {{requester_id:string, provider_item_id:string, requester_item_id:string, kfrags_b64:string[]}} b
-   */
-  grantAccess(b) {
-    return this._fetch("/api/grant_access", { body: b });
+  grantAccess(b, opts = {}) {
+    return this._fetch("/api/grant_access", { body: b, ...opts });
   }
-  revokeAccess({ requester_id, provider_item_id }) {
-    return this._fetch("/api/revoke_access", { body: { requester_id, provider_item_id } });
+  revokeAccess({ requester_id, provider_item_id }, opts = {}) {
+    return this._fetch("/api/revoke_access", { body: { requester_id, provider_item_id }, ...opts });
   }
-  /**
-   * @param {{provider_id:string, requester_item_id:string, requester_public_key_b64:string}} b
-   */
-  requestItem(b) {
-    return this._fetch("/api/request_item", { body: b });
+  requestItem(b, opts = {}) {
+    return this._fetch("/api/request_item", { body: b, ...opts });
   }
 }
-

@@ -2,34 +2,65 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Dashboard</title>
+  <title>CRS — Dashboard</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="icon" href="/app/favicon.ico">
   <link rel="stylesheet" href="/app/style.css">
+  <style>
+    .muted { color:#666; }
+    .ok { color:#0a5; }
+    .warn { color:#b60; }
+  </style>
 </head>
 <body class="center">
   <div class="card">
     <h1>Dashboard</h1>
-    <p id="hello">Checking session…</p>
-    <button id="logout">Log out</button>
+    <p id="status" class="muted">Checking session…</p>
+    <div style="display:flex; gap:.5rem; margin-top:.75rem;">
+      <button id="logout">Log out</button>
+      <button id="clear-passkey" title="Forget the in-tab vault key">Clear passkey</button>
+    </div>
   </div>
 
-  <script>
-    async function getJSON(url, opts = {}) {
-      const res = await fetch(url, { credentials: "include", ...opts });
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
+  <script type="module">
+    import { CRSClient } from "/app/crs-sdk.js";
+    const api = new CRSClient();
+
+    const statusEl = document.getElementById("status");
+    const btnLogout = document.getElementById("logout");
+    const btnClear = document.getElementById("clear-passkey");
+
+    function hasPasskey() {
+      try { return !!sessionStorage.getItem("crs:passkey"); } catch { return false; }
+    }
+    function clearPasskey() {
+      try {
+        sessionStorage.removeItem("crs:passkey");
+        sessionStorage.removeItem("crs:email");
+      } catch {}
     }
 
-    // Log out
-    document.getElementById("logout").addEventListener("click", async () => {
-      const btn = document.getElementById("logout");
-      btn.disabled = true;
+    function updateStatus() {
+      const ok = hasPasskey();
+      statusEl.textContent = ok
+        ? "Passkey loaded for this tab."
+        : "Passkey not present in this tab. Some actions may require re-login.";
+      statusEl.className = ok ? "ok" : "warn";
+    }
+
+    updateStatus();
+
+    // Clear passkey only (keep session)
+    btnClear.addEventListener("click", () => { clearPasskey(); updateStatus(); });
+
+    // Log out: clear passkey first, then server session, then redirect
+    btnLogout.addEventListener("click", async () => {
+      btnLogout.disabled = true;
       try {
-        await fetch("/auth/logout", { method: "POST", credentials: "include" });
-      } finally {
-        location.href = "/app/login.html";
-      }
+        clearPasskey();
+        await api.logout();
+      } catch {}
+      location.href = "/app/login.html";
     });
   </script>
 </body>

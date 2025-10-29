@@ -94,8 +94,7 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vault (
                 user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
-                encrypted_localstore BYTEA NOT NULL,
-                vault_salt BYTEA NOT NULL
+                encrypted_localstore BYTEA NOT NULL
             );
         """)
         # crypto_bundle
@@ -441,12 +440,8 @@ def api_save_to_vault(request: Request, body: SaveToVaultRequest):
     user_id = request.state.user_id
     try:
         encrypted_localstore = b64d(body.encrypted_localstore_b64)
-        vault_salt = b64d(body.vault_salt_b64)
     except Exception:
         raise HTTPException(status_code=400, detail="bad_base64")
-
-    if len(vault_salt) < 16:
-        raise HTTPException(status_code=400, detail="vault_salt_too_short")
 
     if len(encrypted_localstore) > MAX_VAULT_BYTES:
         return JSONResponse(
@@ -457,13 +452,12 @@ def api_save_to_vault(request: Request, body: SaveToVaultRequest):
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO vault (user_id, encrypted_localstore, vault_salt)
-            VALUES (%s, %s, %s)
+            INSERT INTO vault (user_id, encrypted_localstore)
+            VALUES (%s, %s)
             ON CONFLICT (user_id) DO UPDATE SET
-                encrypted_localstore = EXCLUDED.encrypted_localstore,
-                vault_salt = EXCLUDED.vault_salt
+                encrypted_localstore = EXCLUDED.encrypted_localstore
             """,
-            (user_id, encrypted_localstore, vault_salt),
+            (user_id, encrypted_localstore),
         )
     return _ok()
 
@@ -472,18 +466,15 @@ def api_load_from_vault(request: Request):
     user_id = request.state.user_id
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT encrypted_localstore, vault_salt FROM vault WHERE user_id=%s",
+            "SELECT encrypted_localstore FROM vault WHERE user_id=%s",
             (user_id,),
         ).fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail="vault_not_found")
 
-    encrypted_localstore, vault_salt = row
-    return {
-        "encrypted_localstore_b64": b64e(encrypted_localstore),
-        "vault_salt_b64": b64e(vault_salt)
-    }
+    (encrypted_localstore,) = row
+    return { "encrypted_localstore_b64": b64e(encrypted_localstore).decode("ascii") }
 
 # ------------------- post office ---------------------
 

@@ -2,118 +2,320 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Welcome</title>
+  <title>CRS — Sign in / Register</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="icon" href="/app/favicon.ico">
   <link rel="stylesheet" href="/app/style.css">
   <style>
     .row { display:flex; gap:.5rem; align-items:center; }
-    .buttons { display:flex; gap:.5rem; margin-top:.75rem; }
+    .buttons { display:flex; gap:.5rem; margin-top:.75rem; flex-wrap:wrap; }
+    .buttons.right { justify-content:flex-end; }
     .error { color:#b00; min-height:1.25rem; }
-    .busy { opacity:.6; pointer-events:none; }
-    @keyframes onAutofill { from {} to {} }
-    input:-webkit-autofill { animation-name: onAutofill; }
+    .ok { color:#0a5; min-height:1.25rem; }
+    .muted { color:#666; font-size:.9rem; }
+    .hint { font-size:.9rem; color:#444; }
+    .hidden { display:none; }
+    label > span { display:block; font-size:.85rem; color:#333; margin-bottom:.25rem; }
+    input[type="password"] { letter-spacing:0.05em; }
+
+    /* Busy overlay + spinner */
+    .overlay {
+      position: absolute; inset: 0; display:none;
+      background: rgba(255,255,255,0.65);
+      backdrop-filter: blur(1px);
+      align-items:center; justify-content:center; flex-direction:column; gap:.5rem;
+    }
+    .overlay.show { display:flex; }
+    .spinner {
+      width: 28px; height: 28px; border-radius: 50%;
+      border: 3px solid #999; border-top-color: transparent;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body class="center">
-  <div class="card" id="card">
+  <div class="card" id="card" aria-live="polite" style="position:relative;">
     <h1>Welcome</h1>
 
-    <form id="auth-form" autocomplete="on">
-      <div class="row">
-        <label style="flex:1">
-          Email
-          <input id="email" name="email" type="email" required autocomplete="username" />
-        </label>
-      </div>
+    <!-- Landing choice -->
+    <div id="chooser" class="buttons" style="justify-content:center; margin-top:1rem;">
+      <button id="choose-login"  type="button">Login</button>
+      <button id="choose-register" type="button">Register</button>
+    </div>
 
+    <!-- Login form -->
+    <form id="login-form" class="hidden" autocomplete="on">
       <div class="row" style="margin-top:.5rem">
         <label style="flex:1">
-          Password
-          <input id="password" name="password" type="password" required minlength="15" autocomplete="current-password" />
+          <span>Email</span>
+          <input id="login-email" name="email" type="email" required autocomplete="username" />
         </label>
       </div>
+      <div class="row" style="margin-top:.5rem">
+        <label style="flex:1">
+          <span>Password</span>
+          <input id="login-password" name="password" type="password" required minlength="15" autocomplete="current-password" />
+        </label>
+        <label class="inline" title="Show password" style="display:flex; align-items:center; gap:.5rem;">
+          <input id="login-showpw" type="checkbox" />
+          <span class="muted">Show</span>
+        </label>
+      </div>
+      <div class="row" style="margin-top:.5rem">
+        <label style="flex:1">
+          <span>Salt file (.json)</span>
+          <input id="login-saltfile" name="saltfile" type="file" accept=".json,application/json" required />
+        </label>
+      </div>
+      <div class="buttons right">
+        <button id="btn-login" type="button">Login</button>
+      </div>
+      <p id="login-error" class="error" role="alert"></p>
+      <p id="login-ok" class="ok" role="status"></p>
+    </form>
 
-      <div class="buttons">
-        <button id="btn-login" type="button">Log in</button>
+    <!-- Register form -->
+    <form id="register-form" class="hidden" autocomplete="on">
+      <div class="row" style="margin-top:.5rem">
+        <label style="flex:1">
+          <span>Email</span>
+          <input id="reg-email" name="email" type="email" required autocomplete="username" />
+        </label>
+      </div>
+      <div class="row" style="margin-top:.5rem">
+        <label style="flex:1">
+          <span>Password</span>
+          <input id="reg-password" name="password" type="password" required minlength="15" autocomplete="new-password" />
+        </label>
+        <label class="inline" title="Show password" style="display:flex; align-items:center; gap:.5rem;">
+          <input id="reg-showpw" type="checkbox" />
+          <span class="muted">Show</span>
+        </label>
+      </div>
+      <p class="hint" style="margin-top:.5rem;">
+        On registration we’ll create a <strong>device salt file</strong> (your second factor).<br>
+        We will only download it <em>after</em> the server confirms registration. The <code>email</code> inside the file is optional and may be removed.
+      </p>
+      <div class="buttons right">
         <button id="btn-register" type="button">Create account</button>
       </div>
-      <p id="auth-error" class="error" role="alert"></p>
+      <p id="reg-error" class="error" role="alert"></p>
+      <p id="reg-ok" class="ok" role="status"></p>
     </form>
+
+    <!-- Busy overlay -->
+    <div id="overlay" class="overlay" aria-hidden="true">
+      <div class="spinner" role="status" aria-label="Working…"></div>
+      <div class="muted">Contacting server…</div>
+    </div>
   </div>
 
   <script type="module">
     import { CRSClient } from "/app/crs-sdk.js";
-
     const api = new CRSClient();
+
+    // Elements
     const card = document.getElementById("card");
-    const form = document.getElementById("auth-form");
-    const email = document.getElementById("email");
-    const password = document.getElementById("password");
-    const err = document.getElementById("auth-error");
+    const overlay = document.getElementById("overlay");
+    const chooser = document.getElementById("chooser");
+    const chooseLogin = document.getElementById("choose-login");
+    const chooseRegister = document.getElementById("choose-register");
+
+    const loginForm = document.getElementById("login-form");
+    const loginEmail = document.getElementById("login-email");
+    const loginPassword = document.getElementById("login-password");
+    const loginShowpw = document.getElementById("login-showpw");
+    const loginSaltfile = document.getElementById("login-saltfile");
     const btnLogin = document.getElementById("btn-login");
+    const loginErr = document.getElementById("login-error");
+    const loginOk = document.getElementById("login-ok");
+
+    const regForm = document.getElementById("register-form");
+    const regEmail = document.getElementById("reg-email");
+    const regPassword = document.getElementById("reg-password");
+    const regShowpw = document.getElementById("reg-showpw");
     const btnRegister = document.getElementById("btn-register");
+    const regErr = document.getElementById("reg-error");
+    const regOk = document.getElementById("reg-ok");
 
-    function dataFromForm() {
-      return { email: email.value.trim(), password: password.value };
+    const enc = new TextEncoder();
+
+    function show(el, on) { el.classList.toggle("hidden", !on); }
+    function setBusy(b, text = "Contacting server…") {
+      [chooseLogin, chooseRegister, btnLogin, btnRegister].forEach(el => { if (el) el.disabled = b; });
+      overlay.classList.toggle("show", b);
+      overlay.querySelector(".muted").textContent = text;
+    }
+    function error(el, msg) { el.textContent = msg || ""; }
+    function okay(el, msg) { el.textContent = msg || ""; }
+
+    // Landing choice actions
+    chooseLogin.addEventListener("click", () => { show(chooser,false); show(loginForm,true); show(regForm,false); loginEmail.focus(); });
+    chooseRegister.addEventListener("click", () => { show(chooser,false); show(loginForm,false); show(regForm,true); regEmail.focus(); });
+
+    // Show/Hide passwords
+    loginShowpw.addEventListener("change", () => { loginPassword.type = loginShowpw.checked ? "text" : "password"; });
+    regShowpw.addEventListener("change",   () => { regPassword.type   = regShowpw.checked   ? "text" : "password"; });
+
+    // ---- Encoding helpers ----
+    function u8(x){ return new Uint8Array(x); }
+    function bytesToBase64(bytes){ let s=""; for (const b of bytes) s+=String.fromCharCode(b); return btoa(s); }
+    function base64ToBytes(b64){ const s=atob(b64); const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; }
+    function toBase64Url(bytes){ return bytesToBase64(bytes).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
+
+    // ---- PBKDF2+HKDF derivation ----
+    async function pbkdf2Root(passwordStr, salt, iterations) {
+      const key = await crypto.subtle.importKey("raw", enc.encode(passwordStr), "PBKDF2", false, ["deriveBits"]);
+      const bits = await crypto.subtle.deriveBits({ name:"PBKDF2", salt, iterations, hash:"SHA-256" }, key, 256);
+      return new Uint8Array(bits);
+    }
+    async function hkdfExpand(rootBytes, infoStr, outLen) {
+      const hkdfKey = await crypto.subtle.importKey("raw", rootBytes, "HKDF", false, ["deriveBits"]);
+      const info = enc.encode(infoStr);
+      const salt = new Uint8Array(0);
+      const bits = await crypto.subtle.deriveBits({ name:"HKDF", hash:"SHA-256", salt, info }, hkdfKey, outLen*8);
+      return new Uint8Array(bits);
     }
 
-    function setBusy(isBusy) {
-      btnLogin.disabled = btnRegister.disabled = isBusy;
-      card.classList.toggle("busy", isBusy);
-      card.setAttribute("aria-busy", String(isBusy));
+    function makeSaltObject(emailStr){
+      const salt = new Uint8Array(16); crypto.getRandomValues(salt);
+      return {
+        v: 1,
+        kdf: "pbkdf2-sha256",
+        iterations: 600000,
+        salt_b64: bytesToBase64(salt),
+        email: (emailStr || ""), // optional; can be removed by user
+        note: "Keep this file safe. Required to derive your login material and vault key. The `email` field is optional and may be blank or removed without affecting derivation.",
+        salt,
+      };
+    }
+    function makeShortId(n=6){ const a=new Uint8Array(n); crypto.getRandomValues(a); return Array.from(a).map(b=>b.toString(16).padStart(2,"0")).join(""); }
+    function downloadSaltFile(obj) {
+      const { salt, ...disk } = obj; // exclude raw bytes from JSON
+      const blob = new Blob([JSON.stringify(disk, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `crs-salt-${makeShortId()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
     }
 
-    function showError(message) {
-      err.textContent = message || "";
+    async function deriveFromSaltObj(passwordStr, saltObj) {
+      const root = await pbkdf2Root(passwordStr, saltObj.salt, saltObj.iterations);
+      const auth = await hkdfExpand(root, "crs:auth", 16);
+      const vault = await hkdfExpand(root, "crs:vault", 32);
+      return { auth_material_b64url: toBase64Url(auth), vault_key_b64: bytesToBase64(vault) };
+    }
+    async function readSaltFile(file) {
+      if (!file) throw new Error("Please choose your salt file.");
+      const text = await file.text();
+      let o; try { o = JSON.parse(text); } catch { throw new Error("Salt file is not valid JSON."); }
+      if (o?.kdf !== "pbkdf2-sha256" || typeof o?.iterations !== "number" || !o?.salt_b64) {
+        throw new Error("Salt file is missing required fields.");
+      }
+      const salt = base64ToBytes(o.salt_b64);
+      if (salt.length < 16) throw new Error("Salt in file is too short.");
+      return { ...o, salt };
     }
 
-    function maybePrefillMode() {
-      if (email.value && password.value) btnLogin.dataset.prefilled = "1";
-    }
-    window.addEventListener("pageshow", () => setTimeout(maybePrefillMode, 0));
-    document.addEventListener("animationstart", (e) => {
-      if (e.animationName === "onAutofill") setTimeout(maybePrefillMode, 0);
-    });
-
+    // ---- Login flow ----
     async function doLogin() {
-      showError("");
+      error(loginErr,""); okay(loginOk,"");
       setBusy(true);
       try {
-        password.setAttribute("autocomplete", "current-password");
-        const { email: em, password: pw } = dataFromForm();
-        await api.login(em, pw);
-        location.replace("/"); // middleware sends to dashboard
+        const em = loginEmail.value.trim();
+        const pw = loginPassword.value;
+        if (!em) throw new Error("Email is required.");
+        if (!pw) throw new Error("Password is required.");
+        const file = loginSaltfile.files?.[0];
+        const saltObj = await readSaltFile(file);
+
+        const { auth_material_b64url, vault_key_b64 } = await deriveFromSaltObj(pw, saltObj);
+        await api.login(em, auth_material_b64url);
+
+        try { sessionStorage.setItem("crs:passkey", vault_key_b64); sessionStorage.setItem("crs:email", em); } catch {}
+        location.replace("/"); // middleware → dashboard
       } catch (e) {
-        showError(e?.data?.detail || e?.message || "Login failed");
+        error(loginErr, e?.data?.detail || e?.message || "Login failed");
       } finally {
         setBusy(false);
       }
+    }
+
+    // ---- Register flow (salt kept in memory; download only on success or timeout) ----
+    const REG_TIMEOUT_MS = 12000;
+    let inMemSalt = null; // per-attempt, discarded on 409 or after success/timeout resolution
+
+    function buildAbortable(ms) {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), ms);
+      return { signal: ac.signal, cancel: () => clearTimeout(t) };
     }
 
     async function doRegister() {
-      showError("");
-      setBusy(true);
+      error(regErr,""); okay(regOk,"");
+      setBusy(true, "Registering…");
+      let abortCtl = null;
       try {
-        password.setAttribute("autocomplete", "new-password");
-        const { email: em, password: pw } = dataFromForm();
-        await api.register(em, pw);
-        location.replace("/"); // middleware -> dashboard
+        const em = regEmail.value.trim();
+        const pw = regPassword.value;
+        if (!em) throw new Error("Email is required.");
+        if (!pw) throw new Error("Password is required.");
+
+        // (Re)generate in-memory salt for this email if not present
+        if (!inMemSalt || inMemSalt.email !== em) {
+          inMemSalt = makeSaltObject(em);
+        }
+        const { auth_material_b64url, vault_key_b64 } = await deriveFromSaltObj(pw, inMemSalt);
+
+        // Abortable request with timeout
+        abortCtl = buildAbortable(REG_TIMEOUT_MS);
+        try {
+          await api.register(em, auth_material_b64url, { signal: abortCtl.signal });
+        } catch (e) {
+          if (e.name === "AbortError") {
+            // TIMEOUT CASE: force-download salt; tell user state is unknown
+            downloadSaltFile(inMemSalt);
+            okay(regOk, "We couldn't confirm registration (network timeout). Save the salt file and try to log in. If login fails, try registering again and replace the old file.");
+            return;
+          }
+          // Non-timeout errors propagate below
+          throw e;
+        } finally {
+          abortCtl.cancel();
+        }
+
+        // SUCCESS: store key, download salt once, proceed
+        try { sessionStorage.setItem("crs:passkey", vault_key_b64); sessionStorage.setItem("crs:email", em); } catch {}
+        downloadSaltFile(inMemSalt);
+        location.replace("/"); // middleware → dashboard
       } catch (e) {
-        showError(e?.data?.detail || e?.message || "Registration failed");
+        if (e?.status === 409) {
+          // Email already registered: do NOT download salt; discard and switch to login
+          inMemSalt = null;
+          okay(regOk, "This email already has an account. Please log in.");
+          show(regForm,false); show(loginForm,true);
+          loginEmail.value = regEmail.value.trim();
+          loginPassword.focus();
+        } else {
+          error(regErr, e?.data?.detail || e?.message || "Registration failed");
+        }
       } finally {
         setBusy(false);
       }
     }
 
-    btnLogin.addEventListener("click", (e) => { e.preventDefault(); doLogin(); });
+    // Bind buttons
     btnRegister.addEventListener("click", (e) => { e.preventDefault(); doRegister(); });
+    btnLogin.addEventListener("click", (e) => { e.preventDefault(); doLogin(); });
 
-    // Enter = Login
-    form.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !(e.ctrlKey || e.metaKey || e.shiftKey || e.altKey)) {
-        e.preventDefault();
-        doLogin();
+    // Enter key submits whichever form is visible
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)) {
+        if (!loginForm.classList.contains("hidden")) { e.preventDefault(); doLogin(); }
+        else if (!regForm.classList.contains("hidden")) { e.preventDefault(); doRegister(); }
       }
     });
   </script>

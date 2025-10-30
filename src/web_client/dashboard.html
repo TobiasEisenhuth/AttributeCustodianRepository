@@ -10,58 +10,331 @@
     .muted { color:#666; }
     .ok { color:#0a5; }
     .warn { color:#b60; }
+    .err { color:#b00; }
+    .row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+    .spacer { flex:1; }
+    .chip { display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.85rem; border:1px solid #ddd; }
+    .chip.ok { border-color:#0a5; color:#0a5; }
+    .chip.warn { border-color:#b60; color:#b60; }
+    .chip.err { border-color:#b00; color:#b00; }
   </style>
 </head>
 <body class="center">
   <div class="card">
     <h1>Dashboard</h1>
-    <p id="status" class="muted">Checking session…</p>
-    <div style="display:flex; gap:.5rem; margin-top:.75rem;">
-      <button id="logout">Log out</button>
-      <button id="clear-passkey" title="Forget the in-tab vault key">Clear passkey</button>
+
+    <div class="row" style="margin-top:.25rem;">
+      <div id="email" class="muted"></div>
+      <div class="spacer"></div>
+      <div id="vault-state" class="chip muted">Loading…</div>
     </div>
+
+    <div class="row" style="margin-top:.5rem;">
+      <button id="save">Save now</button>
+      <button id="download" title="Download encrypted vault blob (backup)">Download backup</button>
+      <div class="spacer"></div>
+      <button id="clear-passkey" title="Forget the in-tab vault key">Clear passkey</button>
+      <button id="logout">Log out</button>
+    </div>
+
+    <p id="status" class="muted" style="margin-top:.5rem;">Initializing…</p>
   </div>
 
   <script type="module">
     import { CRSClient } from "/app/crs-sdk.js";
     const api = new CRSClient();
 
+    // ---------- Utilities ----------
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+
+    function bytesToBase64(bytes){ let s=""; for (const b of bytes) s+=String.fromCharCode(b); return btoa(s); }
+    function base64ToBytes(b64){ const s=atob(b64); const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; }
+    function concatBytes(a,b){ const out=new Uint8Array(a.length+b.length); out.set(a,0); out.set(b,a.length); return out; }
+    function nowIso(){ return new Date().toISOString(); }
+
+    // ---------- Elements ----------
     const statusEl = document.getElementById("status");
+    const stateChip = document.getElementById("vault-state");
+    const btnSave = document.getElementById("save");
+    const btnDownload = document.getElementById("download");
     const btnLogout = document.getElementById("logout");
     const btnClear = document.getElementById("clear-passkey");
+    const emailEl = document.getElementById("email");
 
-    function hasPasskey() {
-      try { return !!sessionStorage.getItem("crs:passkey"); } catch { return false; }
+    // ---------- Session prelims ----------
+    const email = (sessionStorage.getItem("crs:email") || "").trim();
+    const passkey_b64 = sessionStorage.getItem("crs:passkey");
+    emailEl.textContent = email ? `Signed in as ${email}` : "";
+    if (!passkey_b64) {
+      location.href = "/app/login.html";
+      throw new Error("No passkey in this tab.");
     }
-    function clearPasskey() {
+
+    // ---------- Local cache keys (per user) ----------
+    const CACHE_KEY = email ? `crs:vault_cache:${email}` : "crs:vault_cache";
+    const LAST_SAVED_KEY = email ? `crs:vault_last_saved:${email}` : "crs:vault_last_saved";
+
+    // ---------- Crypto: import key ----------
+    const aesKey = await crypto.subtle.importKey(
+      "raw",
+      base64ToBytes(passkey_b64),
+      { name: "AES-GCM" },
+      false,
+      ["encrypt", "decrypt"]
+    );
+
+    try { sessionStorage.removeItem("crs:passkey"); } catch {}
+
+    const store = {
+      version: 1,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+      private: {},
+      ephemeral: {},
+    };
+
+    let encryptedBlobB64 = "";
+    let lastSavedB64 = localStorage.getItem(LAST_SAVED_KEY) || "";
+    let dirty = false;
+    let saving = false;
+    let saveError = "";
+
+    // ---------- UI helpers ----------
+    function setStateChip(text, kind="muted") {
+      stateChip.textContent = text;
+      stateChip.className = `chip ${kind}`;
+    }
+    function setStatus(text, cls="muted"){
+      statusEl.textContent = text;
+      statusEl.className = cls;
+    }
+    function updateButtons() {
+      btnSave.disabled = saving || (!dirty && !saveError);
+      btnDownload.disabled = !encryptedBlobB64;
+    }
+
+    // ---------- Encrypt & cache ----------
+    async function encryptAndCachePrivate() {
+      // Only persist 'private' portion
+      const payload = JSON.stringify({
+        version: store.version,
+        created_at: store.created_at,
+        updated_at: nowIso(),
+        private: store.private,
+      });
+      store.updated_at = JSON.parse(payload).updated_at;
+
+      const iv = new Uint8Array(12); crypto.getRandomValues(iv);
+      const ctBuf = await crypto.subtle.encrypt(
+        { name:"AES-GCM", iv },
+        aesKey,
+        enc.encode(payload)
+      );
+      const ct = new Uint8Array(ctBuf); // includes tag appended
+      const blob = concatBytes(iv, ct);
+      encryptedBlobB64 = bytesToBase64(blob);
+
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          ts: Date.now(),
+          b64: encryptedBlobB64,
+          note: "AES-GCM: bytes = nonce(12) || ciphertext||tag(16); base64-encoded",
+          email, version: store.version,
+        }));
+      } catch {}
+      dirty = (encryptedBlobB64 !== lastSavedB64);
+      saveError = "";
+      updateUiState();
+    }
+
+    // ---------- Decrypt ----------
+    async function decryptBlobToStore(b64) {
+      const blob = base64ToBytes(b64);
+      if (blob.length < 12+16) throw new Error("Vault blob too short");
+      const iv = blob.slice(0,12);
+      const ct = blob.slice(12); // includes tag at end
+      const ptBuf = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, aesKey, ct);
+      const obj = JSON.parse(dec.decode(new Uint8Array(ptBuf)));
+
+      store.version = obj.version || 1;
+      store.created_at = obj.created_at || store.created_at;
+      store.updated_at = obj.updated_at || nowIso();
+      store.private = obj.private || {};
+    }
+
+    // ---------- Load vault (server → fallback cache → bootstrap) ----------
+    async function loadVault() {
+      setStateChip("Loading…");
+      setStatus("Loading vault…");
+      try {
+        const res = await api.loadFromVault();
+        const b64 = typeof res?.encrypted_localstore_b64 === "string"
+          ? res.encrypted_localstore_b64
+          : (Array.isArray(res?.encrypted_localstore_b64) ? atob(res.encrypted_localstore_b64) : null);
+        if (!b64) throw new Error("Bad vault payload");
+        await decryptBlobToStore(b64);
+        encryptedBlobB64 = b64;
+        lastSavedB64 = b64;
+        try { localStorage.setItem(LAST_SAVED_KEY, lastSavedB64); } catch {}
+        try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), b64, email, version: store.version })); } catch {}
+        dirty = false;
+        setStateChip("Synced", "ok");
+        setStatus("Vault loaded from server.", "ok");
+      } catch (e) {
+        if (e?.data?.detail === "vault_not_found" || /404/.test(String(e))) {
+          setStatus("No server vault found; starting with an empty store.", "warn");
+          await encryptAndCachePrivate();
+          setStateChip("Unsaved", "warn");
+        } else {
+          const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+          if (cached?.b64) {
+            try {
+              await decryptBlobToStore(cached.b64);
+              encryptedBlobB64 = cached.b64;
+              dirty = true;
+              setStateChip("Unsaved (from cache)", "warn");
+              setStatus("Loaded vault from local cache (server unavailable).", "warn");
+            } catch (e2) {
+              setStateChip("Error", "err");
+              setStatus("Could not decrypt cached vault. Wrong key or corrupted data.", "err");
+            }
+          } else {
+            setStateChip("Unsaved", "warn");
+            setStatus("Server unavailable and no cached vault. Starting empty.", "warn");
+            await encryptAndCachePrivate();
+          }
+        }
+      } finally {
+        updateButtons();
+      }
+    }
+
+    // ---------- Save to server with timeout ----------
+    async function saveToServer({ timeoutMs = 7000 } = {}) {
+      if (!encryptedBlobB64) await encryptAndCachePrivate();
+      saving = true; saveError = ""; updateUiState();
+
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), timeoutMs);
+
+      try {
+        await api.saveToVault(encryptedBlobB64, { signal: ac.signal });
+        lastSavedB64 = encryptedBlobB64;
+        try { localStorage.setItem(LAST_SAVED_KEY, lastSavedB64); } catch {}
+        dirty = false; saving = false; saveError = "";
+        setStateChip("Synced", "ok");
+        setStatus("Saved to server.", "ok");
+      } catch (e) {
+        saving = false;
+        if (e?.status === 413 || String(e?.data?.error).includes("payload_too_large")) {
+          saveError = "Vault too large for server. Download the encrypted backup.";
+          setStateChip("Too large", "err");
+          setStatus(saveError, "err");
+        } else if (e?.name === "AbortError") {
+          saveError = "Save timed out. Check your connection or try again.";
+          setStateChip("Timed out", "err");
+          setStatus(saveError, "err");
+        } else {
+          saveError = e?.data?.detail || e?.message || "Save failed.";
+          setStateChip("Error", "err");
+          setStatus(saveError, "err");
+        }
+        dirty = true;
+      } finally {
+        clearTimeout(t);
+        updateButtons();
+      }
+    }
+
+    function downloadEncryptedBackup() {
+      if (!encryptedBlobB64) return;
+      const blob = new Blob([encryptedBlobB64], { type: "text/plain" });
+      const a = document.createElement("a");
+      const ts = new Date().toISOString().replace(/[:.]/g,"-");
+      a.href = URL.createObjectURL(blob);
+      a.download = `crs-vault-encrypted-${ts}.b64.txt`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+    }
+
+    function updateUiState() {
+      if (saving) {
+        setStateChip("Saving…", "warn");
+      } else if (saveError) {
+        setStateChip("Error", "err");
+      } else if (dirty) {
+        setStateChip("Unsaved", "warn");
+      } else {
+        setStateChip("Synced", "ok");
+      }
+      updateButtons();
+    }
+
+    // ---------- Public hooks for your future SPA ----------
+    async function markDirty(mutator) {
+      if (typeof mutator === "function") {
+        await mutator(store.private);
+      }
+      await encryptAndCachePrivate();
+    }
+    window.CRSStore = { store, markDirty };
+
+    // ---------- Page lifecycle ----------
+    addEventListener("pagehide", async () => {
+      if (!dirty) return;
+      try {
+        // try a keepalive PUT directly (bypass SDK to set keepalive)
+        const res = await fetch("/api/save_to_vault", {
+          method: "PUT",
+          credentials: "include",
+          keepalive: true,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ encrypted_localstore_b64: encryptedBlobB64 }),
+        });
+        if (res.ok) {
+          lastSavedB64 = encryptedBlobB64;
+          try { localStorage.setItem(LAST_SAVED_KEY, lastSavedB64); } catch {}
+        }
+      } catch {}
+    });
+
+    // ---------- Buttons ----------
+    btnSave.addEventListener("click", async () => {
+      await encryptAndCachePrivate();
+      await saveToServer({ timeoutMs: 7000 });
+    });
+
+    btnDownload.addEventListener("click", downloadEncryptedBackup);
+
+    btnClear.addEventListener("click", () => {
       try {
         sessionStorage.removeItem("crs:passkey");
         sessionStorage.removeItem("crs:email");
       } catch {}
-    }
+      setStatus("Passkey cleared for this tab.", "warn");
+    });
 
-    function updateStatus() {
-      const ok = hasPasskey();
-      statusEl.textContent = ok
-        ? "Passkey loaded for this tab."
-        : "Passkey not present in this tab. Some actions may require re-login.";
-      statusEl.className = ok ? "ok" : "warn";
-    }
-
-    updateStatus();
-
-    // Clear passkey only (keep session)
-    btnClear.addEventListener("click", () => { clearPasskey(); updateStatus(); });
-
-    // Log out: clear passkey first, then server session, then redirect
     btnLogout.addEventListener("click", async () => {
       btnLogout.disabled = true;
       try {
-        clearPasskey();
-        await api.logout();
-      } catch {}
-      location.href = "/app/login.html";
+        if (dirty) {
+          await saveToServer({ timeoutMs: 7000 });
+          if (dirty) downloadEncryptedBackup();
+        }
+      } catch {
+        if (dirty) downloadEncryptedBackup();
+      } finally {
+        try {
+          await api.logout();
+        } catch {}
+        location.href = "/app/login.html";
+      }
     });
+
+    // ---------- Init ----------
+    await loadVault();
   </script>
 </body>
 </html>

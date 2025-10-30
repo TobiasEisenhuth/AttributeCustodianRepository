@@ -18,7 +18,10 @@ export class CRSClient {
     let data = null;
     try { data = await res.json(); } catch {}
     if (!res.ok) {
-      const msg = data?.detail || data?.error || `HTTP ${res.status}`;
+      let msg = data?.detail || data?.error || `HTTP ${res.status}`;
+      if (Array.isArray(data?.detail)) {
+        msg = data.detail.map(d => d?.msg || JSON.stringify(d)).join(" | ");
+      }
       const err = new Error(msg);
       err.status = res.status;
       err.data = data;

@@ -439,7 +439,7 @@ def auth_logout(req: Request):
 
 # ------------------- user vaults ---------------------
 
-MAX_VAULT_BYTES = int(os.getenv("MAX_VAULT_BYTES", str(10 * 1024 * 1024)))  # 10 MiB default
+MAX_VAULT_BYTES = int(os.getenv("MAX_VAULT_BYTES", str(3 * 1024 * 1024)))  # 3 MiB default
 
 @app.put("/api/save_to_vault")
 def api_save_to_vault(request: Request, body: SaveToVaultRequest):
@@ -479,7 +479,7 @@ def api_load_from_vault(request: Request):
     if not row:
         raise HTTPException(status_code=404, detail="vault_not_found")
 
-    (encrypted_localstore,) = row
+    encrypted_localstore = row[0]
     return { "encrypted_localstore_b64": b64e(encrypted_localstore).decode("ascii") }
 
 # ------------------- post office ---------------------

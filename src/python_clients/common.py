@@ -38,7 +38,6 @@ class RequestItemRequest(BaseModel):
 
 class SaveToVaultRequest(BaseModel):
     encrypted_localstore_b64: str
-    vault_salt_b64: str
 
 class PushSolicitationRequest(BaseModel):
     provider_id: UUID

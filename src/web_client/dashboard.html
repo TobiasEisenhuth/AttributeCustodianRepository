@@ -142,7 +142,7 @@
     );
     try { sessionStorage.removeItem("crs:passkey"); } catch {}
 
-    // ---------- Encrypted vault baseline (never auto-persisted here) ----------
+    // ---------- Encrypted vault baseline ----------
     const stateChip = document.getElementById("vault-state");
     function setStateChip(text, kind="muted") {
       stateChip.textContent = text;
@@ -153,7 +153,6 @@
     const CACHE_KEY = `crs:vault_cache${emailKey}`;
     const LAST_SAVED_KEY = `crs:vault_last_saved${emailKey}`;
 
-    // The in-memory working store; persisted payload includes ONLY "private"
     const store = {
       version: 1,
       created_at: nowIso(),
@@ -162,29 +161,23 @@
         provider: { secrets: [], groups: {}, synonyms: {} },
         requester: { requests: [], keypairs: {}, history: [] },
       },
-      // ephemeral is reconstructed on each load and NEVER persisted
-      ephemeral: {
-        ui: {},
-      }
+      ephemeral: { ui: {} }
     };
 
     function ensureVaultShape(obj) {
       if (!obj || typeof obj !== "object") throw new Error("Vault missing root object");
       if (obj.version != null && obj.version !== 1) throw new Error("Unsupported vault version");
       if (!obj.private || typeof obj.private !== "object") obj.private = {};
-      // Provider
       if (!obj.private.provider || typeof obj.private.provider !== "object") obj.private.provider = {};
       const pv = obj.private.provider;
       if (!Array.isArray(pv.secrets)) pv.secrets = [];
       if (!pv.groups || typeof pv.groups !== "object") pv.groups = {};
       if (!pv.synonyms || typeof pv.synonyms !== "object") pv.synonyms = {};
-      // Requester
       if (!obj.private.requester || typeof obj.private.requester !== "object") obj.private.requester = {};
       const rq = obj.private.requester;
       if (!Array.isArray(rq.requests)) rq.requests = [];
       if (!rq.keypairs || typeof rq.keypairs !== "object") rq.keypairs = {};
       if (!Array.isArray(rq.history)) rq.history = [];
-      // Optional meta
       if (!obj.meta || typeof obj.meta !== "object") obj.meta = { schema: "crs/v1", owner: email || "" };
       return obj;
     }
@@ -235,16 +228,12 @@
       const ptBuf = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, aesKey, ct);
       const obj = JSON.parse(dec.decode(new Uint8Array(ptBuf)));
 
-      // validate & normalize (create-as-needed) — event = load
       ensureVaultShape(obj);
-
       store.version    = obj.version ?? 1;
       store.created_at = obj.created_at || store.created_at;
       store.updated_at = obj.updated_at || nowIso();
       store.private    = obj.private;
-
-      // Rebuild ephemeral fresh
-      store.ephemeral = { ui: {} };
+      store.ephemeral  = { ui: {} };
     }
 
     async function loadVault() {
@@ -276,7 +265,6 @@
             setStatus("Could not decrypt cached vault. Wrong key or corrupted data.", "err");
           }
         } else {
-          // Shouldn’t happen because registration creates the vault; fall back to a clean baseline.
           setStatus("No server vault. Starting with an empty local store.", "warn");
           ensureVaultShape(store);
           await encryptAndCachePrivate();
@@ -322,15 +310,10 @@
     }
 
     function updateUiState() {
-      if (saving) {
-        setStateChip("Saving…", "warn");
-      } else if (saveError) {
-        setStateChip("Error", "err");
-      } else if (dirty) {
-        setStateChip("Unsaved", "warn");
-      } else {
-        setStateChip("Synced", "ok");
-      }
+      if (saving) setStateChip("Saving…", "warn");
+      else if (saveError) setStateChip("Error", "err");
+      else if (dirty) setStateChip("Unsaved", "warn");
+      else setStateChip("Synced", "ok");
       updateButtons();
     }
 
@@ -354,9 +337,7 @@
     });
     document.getElementById("logout").addEventListener("click", async () => {
       document.getElementById("logout").disabled = true;
-      try {
-        if (dirty) { await saveToServer({ timeoutMs: 7000 }); }
-      } catch {}
+      try { if (dirty) await saveToServer({ timeoutMs: 7000 }); } catch {}
       try { await api.logout(); } catch {}
       location.href = "/app/login.html";
     });
@@ -395,10 +376,8 @@
 
     // ---------- ID helpers ----------
     function randBytes(n){ const a=new Uint8Array(n); crypto.getRandomValues(a); return a; }
-    function b64url(bytes){
-      return bytesToBase64(bytes).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-    }
-    function newSecretId(){ return b64url(randBytes(12)); } // ~16 chars
+    function b64url(bytes){ return bytesToBase64(bytes).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+    function newSecretId(){ return b64url(randBytes(12)); }
 
     // ============================================================
     // ===============  REQUESTER (minimal) =======================
@@ -412,7 +391,7 @@
     const rqSend      = document.getElementById("rq-send");
     const rqDraftBox  = document.getElementById("rq-draft");
 
-    let rqDraft = []; // not persisted until send
+    let rqDraft = [];
 
     function renderRqDraft() {
       rqDraftBox.innerHTML = "";
@@ -440,11 +419,10 @@
       const umbral = await loadUmbral();
       if (!umbral) { setStatus("Umbral not loaded.", "err"); return; }
 
-      // Generate per-requester keypair for this row
       const sk = umbral.SecretKey.random();
       const pk = sk.publicKey();
 
-      const secret_id = newSecretId(); // our requester-side id
+      const secret_id = newSecretId();
       rqDraft.push({
         provider_id,
         field_description,
@@ -453,7 +431,6 @@
         request_order,
         secret_id,
         requester_public_key_b64: bytesToBase64(pk.toCompressedBytes()),
-        // Keep the private key only in memory; persist after send
         __sk_be_b64: bytesToBase64(sk.toBEBytes()),
         __pk_b64: bytesToBase64(pk.toCompressedBytes()),
       });
@@ -476,7 +453,6 @@
       }
       setBusy(true);
       try {
-        // Build payload rows (strip private notes)
         const rows = rqDraft.map(r => ({
           field_description: r.field_description,
           secret_id: r.secret_id,
@@ -487,7 +463,6 @@
         }));
         await api.pushSolicitation(provider_id, { rows });
 
-        // Persist finalized rows into encrypted vault (requester section)
         const finalized = rqDraft.map(r => ({
           provider_id,
           secret_id: r.secret_id,
@@ -506,7 +481,6 @@
         await encryptAndCachePrivate();
         await saveToServer({ timeoutMs: 7000 });
 
-        // Clear draft
         rqDraft = [];
         renderRqDraft();
         setStatus("Solicitation sent and saved.", "ok");
@@ -520,18 +494,15 @@
     // ============================================================
     // ==================  PROVIDER (minimal)  ====================
     // ============================================================
-
-    // Left pane: inventory (decrypt using provider SKs in vault)
     const pvInventory = document.getElementById("pv-inventory");
 
     async function loadInventory() {
       pvInventory.textContent = "Loading…";
       try {
-        const res = await api.listMyItems(); // expects: [{item_id,capsule_b64,ciphertext_b64}, ...]
+        const res = await api.listMyItems();
         const items = res?.items || [];
         if (items.length === 0) { pvInventory.textContent = "(no secrets uploaded)"; return; }
 
-        // Map item_id -> local provider metadata
         const byId = Object.fromEntries((store.private.provider.secrets || []).map(s => [s.secret_id, s]));
         pvInventory.innerHTML = "";
         const umbral = await loadUmbral();
@@ -552,7 +523,6 @@
             }
           }
           row.textContent = `${meta?.secret_name || it.item_id} — ${valueStr}`;
-          // Make draggable source
           row.draggable = true;
           row.dataset.secretId = it.item_id;
           row.dataset.value = valueStr;
@@ -571,19 +541,17 @@
       }
     }
 
-    // Right pane: solicitation bundle → grid + mapping
     const pvMeta = document.getElementById("pv-req-meta");
     const pvGrid = document.getElementById("pv-req-grid");
     const pvGrantAll = document.getElementById("pv-grant-all");
     const pvSkip = document.getElementById("pv-skip-bundle");
-    const btnRefresh = document.getElementById("btn-refresh");
 
     let currentBundle = null;      // { requester_id, bundle: { requests[], ack_token } }
-    let currentRows = [];          // FLATTENED rows from the bundle (payload.rows)
+    let currentRows = [];          // flattened rows across the bundle
     let mapping = new Map();       // requester_secret_id -> provider_secret_id
     let skipped = new Set();       // requester_secret_id toggled off
     let inflightGrant = false;
-    let inflightBundleKey = null;  // prevents refetch during in-flight
+    let inflightBundleKey = null;
 
     function parseOrder(rc) {
       if (typeof rc === "number") return { r: rc, c: 0 };
@@ -592,11 +560,9 @@
     }
 
     function buildGrid(rows) {
-      // sort by row, then col
       const cells = rows.map(x => ({ ...x, rc: parseOrder(x.request_order) }))
                         .sort((a,b) => (a.rc.r - b.rc.r) || (a.rc.c - b.rc.c));
 
-      // group by row index
       const byRow = new Map();
       for (const r of cells) {
         if (!byRow.has(r.rc.r)) byRow.set(r.rc.r, []);
@@ -604,7 +570,6 @@
       }
 
       pvGrid.innerHTML = "";
-
       for (const entries of byRow.values()) {
         const rowEl = document.createElement("div");
         rowEl.className = "reqrow";
@@ -619,14 +584,12 @@
             <div class="small" data-fill></div>
           `;
 
-          // DnD target
           cell.addEventListener("dragover", e => e.preventDefault());
           cell.addEventListener("drop", e => {
             e.preventDefault();
             if (!currentBundle) return;
-            const data = e.dataTransfer.getData("text/plain");
             try {
-              const { secret_id: provSid, value } = JSON.parse(data);
+              const { secret_id: provSid, value } = JSON.parse(e.dataTransfer.getData("text/plain"));
               mapping.set(r.secret_id, provSid);
               skipped.delete(r.secret_id);
               cell.classList.add("filled");
@@ -636,7 +599,6 @@
             refreshGrantButton();
           });
 
-          // click to toggle skip
           cell.addEventListener("click", () => {
             const sid = r.secret_id;
             if (skipped.has(sid)) {
@@ -668,21 +630,20 @@
     }
 
     async function pullSolicitationsOnce() {
-      if (inflightBundleKey) return; // in-flight bundle being processed
+      if (inflightBundleKey) return;
       try {
         const res = await api.pullSolicitationBundle();
         if (!res?.has_bundle) {
           pvMeta.textContent = "No pending requests.";
           currentBundle = null; currentRows = [];
-          pvGrid.innerHTML = "";
-          mapping.clear(); skipped.clear();
+          pvGrid.innerHTML = ""; mapping.clear(); skipped.clear();
           refreshGrantButton();
           return;
         }
         currentBundle = res;
         inflightBundleKey = JSON.stringify(res.bundle.ack_token);
 
-        // *** FLATTEN all rows across requests ***
+        // Flatten all rows across requests
         const rawReqs = Array.isArray(res.bundle?.requests) ? res.bundle.requests : [];
         currentRows = rawReqs.flatMap(req => Array.isArray(req?.payload?.rows) ? req.payload.rows : []);
 
@@ -696,10 +657,9 @@
     }
 
     document.getElementById("btn-refresh").addEventListener("click", pullSolicitationsOnce);
-    setInterval(pullSolicitationsOnce, 60_000); // every minute
+    setInterval(pullSolicitationsOnce, 60_000);
 
     pvSkip.addEventListener("click", () => {
-      // Just clear the UI state for this bundle; do not ACK.
       currentBundle = null; inflightBundleKey = null; currentRows = [];
       pvGrid.innerHTML = ""; mapping.clear(); skipped.clear();
       pvMeta.textContent = "Bundle cleared (not acked).";
@@ -715,7 +675,7 @@
         (store.private.provider.secrets || []).map(s => [s.secret_id, s])
       );
 
-      const reqRows = currentRows;                       // use flattened rows
+      const reqRows = currentRows;
       const toGrant = reqRows.filter(r => mapping.has(r.secret_id));
       const toSkip  = reqRows.filter(r => skipped.has(r.secret_id));
 
@@ -742,10 +702,7 @@
 
           const kfrags = umbral.generateKFrags(
             delegating_sk, receiving_pk, signer,
-            1, /*threshold*/
-            1, /*shares*/
-            true, /*sign delegating key*/
-            true  /*sign receiving key*/
+            1, 1, true, true
           );
 
           const kfrags_b64 = kfrags.map(k => bytesToBase64(k.toBytes()));
@@ -760,14 +717,25 @@
         }
       }
 
-      // ACK if all intended grants succeeded (skipped items are fine)
       if (failures.length === 0) {
         try {
-          // *** include requester_id with the ack token ***
-          await api.ackSolicitationBundle({
+          const ackBody = {
             requester_id: currentBundle.requester_id,
-            ...currentBundle.bundle.ack_token
+            max_created_at: currentBundle.bundle.ack_token.max_created_at,
+            max_request_id: currentBundle.bundle.ack_token.max_request_id,
+          };
+          const r = await fetch("/api/ack_solicitation_bundle", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(ackBody),
           });
+          if (!r.ok) {
+            const data = await r.json().catch(() => ({}));
+            const err = new Error("ACK failed");
+            err.status = r.status; err.data = data; throw err;
+          }
+
           setStatus("All grants sent and bundle acked.", "ok");
           currentBundle = null; inflightBundleKey = null; currentRows = [];
           pvGrid.innerHTML = ""; mapping.clear(); skipped.clear();
@@ -798,8 +766,8 @@
 
     // ---------- Init ----------
     await loadVault();
-    await loadInventory();       // provider left pane
-    await pullSolicitationsOnce();// first pull after login
+    await loadInventory();
+    await pullSolicitationsOnce();
   </script>
 </body>
 </html>

@@ -1,8 +1,10 @@
 from typing import List, Annotated, Dict, Any, Optional
 from uuid import UUID
+from datetime import datetime, timezone
 
-from pydantic import BaseModel, EmailStr, StringConstraints
+from pydantic import BaseModel, EmailStr, StringConstraints, field_validator
 from pydantic.types import StrictStr
+from pydantic.config import ConfigDict
 
 MINIMAL_PASSWORD_LENGTH = 15
 Password = Annotated[StrictStr, StringConstraints(min_length=MINIMAL_PASSWORD_LENGTH, strip_whitespace=False)]
@@ -48,4 +50,22 @@ class PullSolicitationBundleRequest(BaseModel):
     pass
 
 class AckSolicitationBundleRequest(BaseModel):
-    request_id: UUID
+    requester_id: UUID
+    max_created_at: datetime
+    max_request_id: UUID
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("max_created_at", mode="before")
+    @classmethod
+    def _parse_dt(cls, v):
+        if isinstance(v, str) and v.endswith("Z"):
+            return v[:-1] + "+00:00"
+        return v
+
+    @field_validator("max_created_at")
+    @classmethod
+    def _ensure_tzaware(cls, v: datetime):
+        if v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v

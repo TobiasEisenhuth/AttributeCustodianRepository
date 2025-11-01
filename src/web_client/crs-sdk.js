@@ -7,16 +7,19 @@ export class CRSClient {
     this.base = base;
   }
 
-  async _fetch(path, { method = "POST", body, signal } = {}) {
+  async _fetch(path, opts = {}) {
+    const { method = "POST", body, ...rest } = opts;
     const res = await fetch(this.base + path, {
       method,
-      signal,
-      credentials: "include", // send __Host-session cookie
+      credentials: "include",
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
+      ...rest,
     });
+
     let data = null;
     try { data = await res.json(); } catch {}
+
     if (!res.ok) {
       let msg = data?.detail || data?.error || `HTTP ${res.status}`;
       if (Array.isArray(data?.detail)) {
@@ -31,57 +34,62 @@ export class CRSClient {
   }
 
   // ---------- Auth ----------
-  register(email, password, opts = {}) {
-    return this._fetch("/auth/register", { body: { email, password }, ...opts });
+  register(email, password, rest) {
+    return this._fetch("/auth/register", { body: { email, password }, ...(rest||{}) });
   }
-  login(email, password, opts = {}) {
-    return this._fetch("/auth/login", { body: { email, password }, ...opts });
+  login(email, password, rest) {
+    return this._fetch("/auth/login", { body: { email, password }, ...(rest||{}) });
   }
-  logout(opts = {}) {
-    return this._fetch("/auth/logout", opts);
+  logout(rest) {
+    return this._fetch("/auth/logout", { ...(rest||{}) });
   }
 
-  // ---------- Vault (no vault_salt anymore) ----------
-  saveToVault(encrypted_localstore_b64, opts = {}) {
+  // ---------- Vault ----------
+  saveToVault(encrypted_localstore_b64, rest) {
     return this._fetch("/api/save_to_vault", {
       method: "PUT",
       body: { encrypted_localstore_b64 },
-      ...opts,
+      ...(rest||{}),
     });
   }
-  loadFromVault(opts = {}) {
-    return this._fetch("/api/load_from_vault", { method: "GET", ...opts });
+  loadFromVault(rest) {
+    return this._fetch("/api/load_from_vault", { method: "GET", ...(rest||{}) });
+  }
+
+  // ---------- Inventory (provider) ----------
+  listMyItems(rest) {
+    return this._fetch("/api/list_my_items", { method: "GET", ...(rest||{}) });
   }
 
   // ---------- Post Office (Solicitations) ----------
-  pushSolicitation(provider_id, payload, opts = {}) {
-    return this._fetch("/api/push_solicitation", { body: { provider_id, payload }, ...opts });
+  pushSolicitation(provider_id, payload, rest) {
+    return this._fetch("/api/push_solicitation", { body: { provider_id, payload }, ...(rest||{}) });
   }
-  pullSolicitationBundle(opts = {}) {
-    // server expects a POST with an (empty) JSON body
-    return this._fetch("/api/pull_solicitation_bundle", { body: {}, ...opts });
+  pullSolicitationBundle(rest) {
+    // server expects POST with (empty) JSON body
+    return this._fetch("/api/pull_solicitation_bundle", { body: {}, ...(rest||{}) });
   }
-  ackSolicitationBundle({ requester_id, max_created_at, max_request_id }, opts = {}) {
+  ackSolicitationBundle({ requester_id, max_created_at, max_request_id }, rest) {
     return this._fetch("/api/ack_solicitation_bundle", {
       body: { requester_id, max_created_at, max_request_id },
-      ...opts,
+      ...(rest||{}),
     });
   }
 
   // ---------- CRS (PRE) ----------
-  upsertItem(b, opts = {}) {
-    return this._fetch("/api/upsert_item", { body: b, ...opts });
+  upsertItem(b, rest) {
+    return this._fetch("/api/upsert_item", { body: b, ...(rest||{}) });
   }
-  eraseItem(item_id, opts = {}) {
-    return this._fetch("/api/erase_item", { body: { item_id }, ...opts });
+  eraseItem(item_id, rest) {
+    return this._fetch("/api/erase_item", { body: { item_id }, ...(rest||{}) });
   }
-  grantAccess(b, opts = {}) {
-    return this._fetch("/api/grant_access", { body: b, ...opts });
+  grantAccess(b, rest) {
+    return this._fetch("/api/grant_access", { body: b, ...(rest||{}) });
   }
-  revokeAccess({ requester_id, provider_item_id }, opts = {}) {
-    return this._fetch("/api/revoke_access", { body: { requester_id, provider_item_id }, ...opts });
+  revokeAccess({ requester_id, provider_item_id }, rest) {
+    return this._fetch("/api/revoke_access", { body: { requester_id, provider_item_id }, ...(rest||{}) });
   }
-  requestItem(b, opts = {}) {
-    return this._fetch("/api/request_item", { body: b, ...opts });
+  requestItem(b, rest) {
+    return this._fetch("/api/request_item", { body: b, ...(rest||{}) });
   }
 }

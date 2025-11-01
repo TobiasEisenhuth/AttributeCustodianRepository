@@ -3,6 +3,7 @@ from base64 import b64encode as b64e, b64decode as b64d
 from typing import List, Optional, Dict, Any
 from pydantic import EmailStr
 from uuid import UUID
+import re
 
 # pre proxy core
 from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
@@ -495,10 +496,12 @@ def _validate_solicitation_payload(payload: Dict[str, Any]) -> None:
             v = r.get(k)
             if not isinstance(v, str) or not v:
                 raise HTTPException(status_code=400, detail=f"missing_{k}")
-        if "default_field" in r and not isinstance(r["default_field"], str):
+        if "default_field" in r and not isinstance(r["default_field"], (str, type(None))):
             raise HTTPException(status_code=400, detail="bad_default_field")
-        if "request_order" in r and not isinstance(r["request_order"], int):
-            raise HTTPException(status_code=400, detail="bad_request_order")
+        if "request_order" in r:
+            ro = r["request_order"]
+            if not ((isinstance(ro, str) and re.match(r"^\d+\.\d+$", ro))):
+                raise HTTPException(status_code=400, detail="bad_request_order")
         try:
             b64d(r["requester_public_key_b64"])
         except Exception:
@@ -778,6 +781,31 @@ def api_request_item(request: Request, body: RequestItemRequest):
         "ciphertext_b64": b64e(ciphertext),
         "cfrags_b64": [b64e(bytes(c)) for c in cfrags],
     }
+
+@app.get("/api/list_my_items")
+def api_list_my_items(request: Request):
+    user_id = request.state.user_id
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT item_id, capsule, ciphertext
+            FROM crypto_bundle
+            WHERE user_id=%s
+            ORDER BY item_id
+            """,
+            (user_id,),
+        ).fetchall()
+
+    items = [
+        {
+            "item_id": row[0],
+            "capsule_b64": b64e(row[1]).decode("ascii"),
+            "ciphertext_b64": b64e(row[2]).decode("ascii"),
+        }
+        for row in rows
+    ]
+    return {"items": items}
+
 
 # =================== Application ===================
 

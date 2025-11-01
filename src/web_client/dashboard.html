@@ -17,10 +17,24 @@
     .chip.ok { border-color:#0a5; color:#0a5; }
     .chip.warn { border-color:#b60; color:#b60; }
     .chip.err { border-color:#b00; color:#b00; }
+    .tabs { display:flex; gap:.5rem; margin-top:.75rem; }
+    .tabs button[aria-selected="true"] { background:#222; color:#fff; }
+    .two-col { display:grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items:start; }
+    .list { border:1px solid #ddd; border-radius:.5rem; padding:.5rem; max-height: 50vh; overflow:auto; }
+    .item { padding:.3rem .4rem; border-bottom:1px dashed #eee; }
+    .item:last-child { border-bottom:none; }
+    .reqgrid { display:grid; gap:.5rem; }
+    .reqcell { border:1px dashed #ccc; border-radius:.5rem; min-height:2.2rem; padding:.35rem .5rem; background:#fafafa; }
+    .reqcell.filled { border-style:solid; background:#fff; }
+    .reqcell.skipped { opacity:.5; text-decoration: line-through; }
+    .dragging { opacity:.6; }
+    .hidden { display:none !important; }
+    .busy { opacity:.6; pointer-events:none; }
+    .small { font-size:.85rem; }
   </style>
 </head>
 <body class="center">
-  <div class="card">
+  <div class="card" id="card">
     <h1>Dashboard</h1>
 
     <div class="row" style="margin-top:.25rem;">
@@ -38,6 +52,59 @@
     </div>
 
     <p id="status" class="muted" style="margin-top:.5rem;">Initializing…</p>
+
+    <div class="tabs">
+      <button id="tab-requester" aria-selected="true">Requester</button>
+      <button id="tab-provider">Provider</button>
+      <button id="btn-refresh" class="spacer small">Refresh solicitations</button>
+    </div>
+
+    <!-- REQUESTER VIEW -->
+    <section id="view-requester">
+      <h2>New solicitation</h2>
+      <div class="row">
+        <label>Provider ID (UUID)
+          <input id="rq-provider-id" class="small" placeholder="provider_id (UUID)" />
+        </label>
+        <label>Field description
+          <input id="rq-field-desc" class="small" placeholder="e.g. Street name" />
+        </label>
+        <label>Example format
+          <input id="rq-example" class="small" placeholder="e.g. Baker" />
+        </label>
+        <label>Order (row.col)
+          <input id="rq-order" class="small" placeholder="0.0" />
+        </label>
+        <button id="rq-add" title="Add row to this draft">Add row</button>
+        <button id="rq-clear" title="Discard draft">Discard</button>
+        <div class="spacer"></div>
+        <button id="rq-send" class="ok" title="Send solicitation and persist rows">Send solicitation</button>
+      </div>
+
+      <div class="list" id="rq-draft" style="margin-top:.5rem;">
+        <!-- draft rows render here -->
+      </div>
+    </section>
+
+    <!-- PROVIDER VIEW -->
+    <section id="view-provider" class="hidden">
+      <div class="two-col" style="margin-top:.5rem;">
+        <div>
+          <h2>Your secrets</h2>
+          <div id="pv-inventory" class="list small">Loading…</div>
+        </div>
+        <div>
+          <h2>Incoming request</h2>
+          <div class="row small">
+            <div id="pv-req-meta" class="muted">No bundle loaded.</div>
+            <div class="spacer"></div>
+            <button id="pv-grant-all" disabled>Grant all</button>
+            <button id="pv-skip-bundle" disabled>Skip</button>
+          </div>
+          <div id="pv-req-grid" class="reqgrid" style="margin-top:.5rem;"></div>
+        </div>
+      </div>
+    </section>
   </div>
 
   <script type="module">
@@ -47,35 +114,26 @@
     // ---------- Utilities ----------
     const enc = new TextEncoder();
     const dec = new TextDecoder();
+    const emailEl = document.getElementById("email");
+    const statusEl = document.getElementById("status");
+    const card = document.getElementById("card");
 
+    function setStatus(text, cls="muted"){ statusEl.textContent = text; statusEl.className = cls; }
+    function setBusy(flag){ card.classList.toggle("busy", !!flag); }
+
+    // Storage helpers
     function bytesToBase64(bytes){ let s=""; for (const b of bytes) s+=String.fromCharCode(b); return btoa(s); }
     function base64ToBytes(b64){ const s=atob(b64); const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; }
     function concatBytes(a,b){ const out=new Uint8Array(a.length+b.length); out.set(a,0); out.set(b,a.length); return out; }
     function nowIso(){ return new Date().toISOString(); }
 
-    // ---------- Elements ----------
-    const statusEl = document.getElementById("status");
-    const stateChip = document.getElementById("vault-state");
-    const btnSave = document.getElementById("save");
-    const btnDownload = document.getElementById("download");
-    const btnLogout = document.getElementById("logout");
-    const btnClear = document.getElementById("clear-passkey");
-    const emailEl = document.getElementById("email");
-
     // ---------- Session prelims ----------
     const email = (sessionStorage.getItem("crs:email") || "").trim();
-    const passkey_b64 = sessionStorage.getItem("crs:passkey");
     emailEl.textContent = email ? `Signed in as ${email}` : "";
-    if (!passkey_b64) {
-      location.href = "/app/login.html";
-      throw new Error("No passkey in this tab.");
-    }
+    const passkey_b64 = sessionStorage.getItem("crs:passkey");
+    if (!passkey_b64) { location.href = "/app/login.html"; throw new Error("No passkey in this tab."); }
 
-    // ---------- Local cache keys (per user) ----------
-    const CACHE_KEY = email ? `crs:vault_cache:${email}` : "crs:vault_cache";
-    const LAST_SAVED_KEY = email ? `crs:vault_last_saved:${email}` : "crs:vault_last_saved";
-
-    // ---------- Crypto: import key ----------
+    // ---------- Crypto: import key for vault (AES-GCM) ----------
     const aesKey = await crypto.subtle.importKey(
       "raw",
       base64ToBytes(passkey_b64),
@@ -83,40 +141,45 @@
       false,
       ["encrypt", "decrypt"]
     );
-
     try { sessionStorage.removeItem("crs:passkey"); } catch {}
+
+    // ---------- Encrypted vault skeleton ----------
+    const stateChip = document.getElementById("vault-state");
+    function setStateChip(text, kind="muted") {
+      stateChip.textContent = text;
+      stateChip.className = `chip ${kind}`;
+    }
+    const btnSave = document.getElementById("save");
+    const btnDownload = document.getElementById("download");
+    const btnLogout = document.getElementById("logout");
+    const btnClear = document.getElementById("clear-passkey");
+
+    const emailKey = email ? `:${email}` : "";
+    const CACHE_KEY = `crs:vault_cache${emailKey}`;
+    const LAST_SAVED_KEY = `crs:vault_last_saved${emailKey}`;
 
     const store = {
       version: 1,
       created_at: nowIso(),
       updated_at: nowIso(),
-      private: {},
-      ephemeral: {},
+      private: {
+        provider: { secrets: [] },   // your per-secret SK/signing SK etc. (no provider PK/VK persisted)
+        requester: { requests: [] }, // finalized rows only
+      },
+      ephemeral: {} // runtime only
     };
 
     let encryptedBlobB64 = "";
     let lastSavedB64 = localStorage.getItem(LAST_SAVED_KEY) || "";
-    let dirty = false;
-    let saving = false;
-    let saveError = "";
+    let dirty = false, saving = false, saveError = "";
 
-    // ---------- UI helpers ----------
-    function setStateChip(text, kind="muted") {
-      stateChip.textContent = text;
-      stateChip.className = `chip ${kind}`;
-    }
-    function setStatus(text, cls="muted"){
-      statusEl.textContent = text;
-      statusEl.className = cls;
-    }
     function updateButtons() {
-      btnSave.disabled = saving || (!dirty && !saveError);
-      btnDownload.disabled = !encryptedBlobB64;
+      document.getElementById("save").disabled = saving || (!dirty && !saveError);
+      document.getElementById("download").disabled = !encryptedBlobB64;
     }
 
-    // ---------- Encrypt & cache ----------
+    // ---------- Vault encrypt/decrypt ----------
     async function encryptAndCachePrivate() {
-      // Only persist 'private' portion
       const payload = JSON.stringify({
         version: store.version,
         created_at: store.created_at,
@@ -126,12 +189,8 @@
       store.updated_at = JSON.parse(payload).updated_at;
 
       const iv = new Uint8Array(12); crypto.getRandomValues(iv);
-      const ctBuf = await crypto.subtle.encrypt(
-        { name:"AES-GCM", iv },
-        aesKey,
-        enc.encode(payload)
-      );
-      const ct = new Uint8Array(ctBuf); // includes tag appended
+      const ctBuf = await crypto.subtle.encrypt({ name:"AES-GCM", iv }, aesKey, enc.encode(payload));
+      const ct = new Uint8Array(ctBuf);
       const blob = concatBytes(iv, ct);
       encryptedBlobB64 = bytesToBase64(blob);
 
@@ -148,31 +207,27 @@
       updateUiState();
     }
 
-    // ---------- Decrypt ----------
     async function decryptBlobToStore(b64) {
       const blob = base64ToBytes(b64);
       if (blob.length < 12+16) throw new Error("Vault blob too short");
       const iv = blob.slice(0,12);
-      const ct = blob.slice(12); // includes tag at end
+      const ct = blob.slice(12);
       const ptBuf = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, aesKey, ct);
       const obj = JSON.parse(dec.decode(new Uint8Array(ptBuf)));
 
       store.version = obj.version || 1;
       store.created_at = obj.created_at || store.created_at;
       store.updated_at = obj.updated_at || nowIso();
-      store.private = obj.private || {};
+      store.private = obj.private || store.private;
     }
 
-    // ---------- Load vault (server → fallback cache → bootstrap) ----------
     async function loadVault() {
       setStateChip("Loading…");
       setStatus("Loading vault…");
       try {
         const res = await api.loadFromVault();
-        const b64 = typeof res?.encrypted_localstore_b64 === "string"
-          ? res.encrypted_localstore_b64
-          : (Array.isArray(res?.encrypted_localstore_b64) ? atob(res.encrypted_localstore_b64) : null);
-        if (!b64) throw new Error("Bad vault payload");
+        const b64 = res?.encrypted_localstore_b64;
+        if (!b64 || typeof b64 !== "string") throw new Error("Bad vault payload");
         await decryptBlobToStore(b64);
         encryptedBlobB64 = b64;
         lastSavedB64 = b64;
@@ -182,35 +237,26 @@
         setStateChip("Synced", "ok");
         setStatus("Vault loaded from server.", "ok");
       } catch (e) {
-        if (e?.data?.detail === "vault_not_found" || /404/.test(String(e))) {
-          setStatus("No server vault found; starting with an empty store.", "warn");
-          await encryptAndCachePrivate();
-          setStateChip("Unsaved", "warn");
-        } else {
-          const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
-          if (cached?.b64) {
-            try {
-              await decryptBlobToStore(cached.b64);
-              encryptedBlobB64 = cached.b64;
-              dirty = true;
-              setStateChip("Unsaved (from cache)", "warn");
-              setStatus("Loaded vault from local cache (server unavailable).", "warn");
-            } catch (e2) {
-              setStateChip("Error", "err");
-              setStatus("Could not decrypt cached vault. Wrong key or corrupted data.", "err");
-            }
-          } else {
-            setStateChip("Unsaved", "warn");
-            setStatus("Server unavailable and no cached vault. Starting empty.", "warn");
-            await encryptAndCachePrivate();
+        const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+        if (cached?.b64) {
+          try {
+            await decryptBlobToStore(cached.b64);
+            encryptedBlobB64 = cached.b64;
+            dirty = true;
+            setStateChip("Unsaved (from cache)", "warn");
+            setStatus("Loaded vault from local cache (server unavailable).", "warn");
+          } catch {
+            setStateChip("Error", "err");
+            setStatus("Could not decrypt cached vault. Wrong key or corrupted data.", "err");
           }
+        } else {
+          setStateChip("Unsaved", "warn");
+          setStatus("No server vault. Starting empty.", "warn");
+          await encryptAndCachePrivate();
         }
-      } finally {
-        updateButtons();
-      }
+      } finally { updateButtons(); }
     }
 
-    // ---------- Save to server with timeout ----------
     async function saveToServer({ timeoutMs = 7000 } = {}) {
       if (!encryptedBlobB64) await encryptAndCachePrivate();
       saving = true; saveError = ""; updateUiState();
@@ -247,18 +293,6 @@
       }
     }
 
-    function downloadEncryptedBackup() {
-      if (!encryptedBlobB64) return;
-      const blob = new Blob([encryptedBlobB64], { type: "text/plain" });
-      const a = document.createElement("a");
-      const ts = new Date().toISOString().replace(/[:.]/g,"-");
-      a.href = URL.createObjectURL(blob);
-      a.download = `crs-vault-encrypted-${ts}.b64.txt`;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
-    }
-
     function updateUiState() {
       if (saving) {
         setStateChip("Saving…", "warn");
@@ -272,69 +306,452 @@
       updateButtons();
     }
 
-    // ---------- Public hooks for your future SPA ----------
-    async function markDirty(mutator) {
-      if (typeof mutator === "function") {
-        await mutator(store.private);
-      }
-      await encryptAndCachePrivate();
-    }
-    window.CRSStore = { store, markDirty };
+    // ---------- Buttons (vault) ----------
+    document.getElementById("save").addEventListener("click", async () => {
+      await encryptAndCachePrivate(); await saveToServer({ timeoutMs: 7000 });
+    });
+    document.getElementById("download").addEventListener("click", () => {
+      if (!encryptedBlobB64) return;
+      const blob = new Blob([encryptedBlobB64], { type: "text/plain" });
+      const a = document.createElement("a");
+      const ts = new Date().toISOString().replace(/[:.]/g,"-");
+      a.href = URL.createObjectURL(blob);
+      a.download = `crs-vault-encrypted-${ts}.b64.txt`;
+      document.body.appendChild(a); a.click();
+      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+    });
+    document.getElementById("clear-passkey").addEventListener("click", () => {
+      try { sessionStorage.removeItem("crs:passkey"); sessionStorage.removeItem("crs:email"); } catch {}
+      setStatus("Passkey cleared for this tab.", "warn");
+    });
+    document.getElementById("logout").addEventListener("click", async () => {
+      document.getElementById("logout").disabled = true;
+      try {
+        if (dirty) { await saveToServer({ timeoutMs: 7000 }); }
+      } catch {}
+      try { await api.logout(); } catch {}
+      location.href = "/app/login.html";
+    });
 
-    // ---------- Page lifecycle ----------
+    // ---------- Tabs ----------
+    const viewRequester = document.getElementById("view-requester");
+    const viewProvider = document.getElementById("view-provider");
+    const tabRequester = document.getElementById("tab-requester");
+    const tabProvider = document.getElementById("tab-provider");
+    function showView(which) {
+      tabRequester.setAttribute("aria-selected", String(which === "rq"));
+      tabProvider.setAttribute("aria-selected", String(which === "pv"));
+      viewRequester.classList.toggle("hidden", which !== "rq");
+      viewProvider.classList.toggle("hidden", which !== "pv");
+    }
+    tabRequester.addEventListener("click", () => showView("rq"));
+    tabProvider.addEventListener("click", () => showView("pv"));
+
+    // ---------- Umbral JS loader ----------
+    let U = null;
+    async function loadUmbral() {
+      if (U) return U;
+      try {
+        const mod = await import("/app/umbral/umbral_pre_wasm.js");
+
+        if (typeof mod.default === "function") {
+          await mod.default("/app/umbral/umbral_pre_wasm_bg.wasm");
+        }
+
+        U = mod;
+        return U;
+      } catch (e) {
+        console.error("Umbral import/init failed:", e);
+        setStatus("Umbral WASM not available; PRE actions disabled.", "warn");
+        return null;
+      }
+    }
+
+    // ---------- ID helpers ----------
+    function randBytes(n){ const a=new Uint8Array(n); crypto.getRandomValues(a); return a; }
+    function b64url(bytes){
+      return bytesToBase64(bytes).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+    }
+    function newSecretId(){ return b64url(randBytes(12)); } // ~16 chars (not user-facing)
+
+    // ============================================================
+    // ===============  REQUESTER (step 2 minimal) ================
+    // ============================================================
+    const rqProviderId = document.getElementById("rq-provider-id");
+    const rqFieldDesc = document.getElementById("rq-field-desc");
+    const rqExample   = document.getElementById("rq-example");
+    const rqOrder     = document.getElementById("rq-order");
+    const rqAdd       = document.getElementById("rq-add");
+    const rqClear     = document.getElementById("rq-clear");
+    const rqSend      = document.getElementById("rq-send");
+    const rqDraftBox  = document.getElementById("rq-draft");
+
+    let rqDraft = []; // not persisted until send
+
+    function renderRqDraft() {
+      rqDraftBox.innerHTML = "";
+      if (rqDraft.length === 0) {
+        rqDraftBox.textContent = "No draft rows yet.";
+        return;
+      }
+      for (const row of rqDraft) {
+        const div = document.createElement("div");
+        div.className = "item";
+        div.textContent = `[${row.request_order}] ${row.field_description} — e.g. “${row.value_example_format}”`;
+        rqDraftBox.appendChild(div);
+      }
+    }
+
+    rqAdd.addEventListener("click", async () => {
+      const provider_id = rqProviderId.value.trim();
+      const field_description = rqFieldDesc.value.trim();
+      const value_example_format = rqExample.value.trim();
+      const request_order = (rqOrder.value.trim() || "0.0");
+      if (!provider_id || !field_description) {
+        setStatus("Provider ID and Field description are required.", "err");
+        return;
+      }
+      const umbral = await loadUmbral();
+      if (!umbral) { setStatus("Umbral not loaded.", "err"); return; }
+
+      // Generate per-requester keypair for this row
+      const sk = umbral.SecretKey.random();
+      const pk = sk.publicKey();
+
+      const secret_id = newSecretId(); // our requester-side id
+      rqDraft.push({
+        provider_id,
+        field_description,
+        value_example_format,
+        default_field: null,
+        request_order,
+        secret_id,
+        requester_public_key_b64: bytesToBase64(pk.toCompressedBytes()),
+        // Keep the private key only in memory; persist after send
+        __sk_be_b64: bytesToBase64(sk.toBEBytes()),
+        __pk_b64: bytesToBase64(pk.toCompressedBytes()),
+      });
+      setStatus("Row added to draft.", "ok");
+      renderRqDraft();
+    });
+
+    rqClear.addEventListener("click", () => {
+      rqDraft = [];
+      renderRqDraft();
+      setStatus("Draft cleared.", "warn");
+    });
+
+    rqSend.addEventListener("click", async () => {
+      if (rqDraft.length === 0) { setStatus("Nothing to send.", "warn"); return; }
+      const provider_id = rqDraft[0].provider_id;
+      if (!rqDraft.every(r => r.provider_id === provider_id)) {
+        setStatus("All draft rows must target the same provider.", "err");
+        return;
+      }
+      setBusy(true);
+      try {
+        // Build payload rows (strip private notes)
+        const rows = rqDraft.map(r => ({
+          field_description: r.field_description,
+          secret_id: r.secret_id,
+          value_example_format: r.value_example_format,
+          requester_public_key_b64: r.requester_public_key_b64,
+          default_field: r.default_field,
+          request_order: r.request_order
+        }));
+        await api.pushSolicitation(provider_id, { rows });
+
+        // Persist finalized rows into encrypted vault (requester section)
+        const umbral = await loadUmbral();
+        if (!umbral) { throw new Error("Umbral not loaded."); }
+        const finalized = rqDraft.map(r => ({
+          provider_id,
+          secret_id: r.secret_id,
+          field_description: r.field_description,
+          default_field: r.default_field,
+          value_example_format: r.value_example_format,
+          request_order: r.request_order,
+          keys: {
+            secret_key_b64: r.__sk_be_b64,
+            public_key_b64: r.__pk_b64,
+          },
+          provider_public_key_b64: null,
+          provider_verifying_key_b64: null
+        }));
+        store.private.requester.requests.push(...finalized);
+        await encryptAndCachePrivate();
+        await saveToServer({ timeoutMs: 7000 });
+
+        // Clear draft
+        rqDraft = [];
+        renderRqDraft();
+        setStatus("Solicitation sent and saved.", "ok");
+      } catch (e) {
+        setStatus(e?.message || "Failed to send solicitation.", "err");
+      } finally {
+        setBusy(false);
+      }
+    });
+
+    // ============================================================
+    // ==================  PROVIDER (step 3)  =====================
+    // ============================================================
+
+    // Left pane: inventory (decrypt using provider SKs in vault)
+    const pvInventory = document.getElementById("pv-inventory");
+
+    async function loadInventory() {
+      pvInventory.textContent = "Loading…";
+      try {
+        const res = await api.listMyItems();
+        const items = res?.items || [];
+        if (items.length === 0) { pvInventory.textContent = "(no secrets uploaded)"; return; }
+
+        // Map item_id -> decrypted value (if key exists in vault)
+        const byId = Object.fromEntries(store.private.provider.secrets.map(s => [s.secret_id, s]));
+        pvInventory.innerHTML = "";
+        const umbral = await loadUmbral();
+        for (const it of items) {
+          const row = document.createElement("div");
+          row.className = "item small";
+          const meta = byId[it.item_id];
+          let valueStr = "(no key in vault or Umbral not available)";
+          if (umbral && meta?.keys?.secret_key_b64) {
+            try {
+              const sk = umbral.SecretKey.from_be_bytes(base64ToBytes(meta.keys.secret_key_b64));
+              const capsule = umbral.Capsule.fromBytes(base64ToBytes(it.capsule_b64));
+              const ciphertext = base64ToBytes(it.ciphertext_b64);
+              const plaintext = umbral.decryptOriginal(sk, capsule, ciphertext);
+              valueStr = new TextDecoder().decode(plaintext);
+            } catch (_e) {
+              valueStr = "(decrypt failed)";
+            }
+          }
+          row.textContent = `${meta?.secret_name || it.item_id} — ${valueStr}`;
+          // Make draggable source
+          row.draggable = true;
+          row.dataset.secretId = it.item_id;
+          row.dataset.value = valueStr;
+          row.addEventListener("dragstart", e => {
+            row.classList.add("dragging");
+            e.dataTransfer.setData("text/plain", JSON.stringify({
+              secret_id: it.item_id,
+              value: valueStr
+            }));
+          });
+          row.addEventListener("dragend", () => row.classList.remove("dragging"));
+          pvInventory.appendChild(row);
+        }
+      } catch (e) {
+        pvInventory.textContent = `Inventory error: ${e?.message || e}`;
+      }
+    }
+
+    // Right pane: solicitation bundle → grid + mapping
+    const pvMeta = document.getElementById("pv-req-meta");
+    const pvGrid = document.getElementById("pv-req-grid");
+    const pvGrantAll = document.getElementById("pv-grant-all");
+    const pvSkip = document.getElementById("pv-skip-bundle");
+    const btnRefresh = document.getElementById("btn-refresh");
+
+    let currentBundle = null;      // { requester_id, bundle: { requests[], ack_token } }
+    let mapping = new Map();       // requester_secret_id -> provider_secret_id
+    let skipped = new Set();       // requester_secret_id toggled off
+    let inflightGrant = false;
+    let inflightBundleKey = null;  // prevents refetch during in-flight
+
+    function parseOrder(rc) {
+      if (typeof rc === "number") return { r: rc, c: 0 };
+      const m = String(rc||"0.0").match(/^(\d+)\.(\d+)$/); 
+      return m ? { r: +m[1], c: +m[2] } : { r: 0, c: 0 };
+    }
+
+    function buildGrid(rows) {
+      // Normalize to sparse matrix, then compact render (no empty cells)
+      const cells = rows.map(x => ({ ...x, rc: parseOrder(x.request_order) }))
+                        .sort((a,b) => (a.rc.r - b.rc.r) || (a.rc.c - b.rc.c));
+      pvGrid.innerHTML = "";
+      for (const r of cells) {
+        const cell = document.createElement("div");
+        cell.className = "reqcell";
+        cell.dataset.reqSecretId = r.secret_id;
+        cell.innerHTML = `
+          <div class="small"><strong>${r.field_description}</strong> <span class="muted">(${r.request_order ?? "0.0"})</span></div>
+          <div class="small muted">e.g. ${r.value_example_format}</div>
+          <div class="small" data-fill></div>
+        `;
+        // Drop target
+        cell.addEventListener("dragover", e => e.preventDefault());
+        cell.addEventListener("drop", e => {
+          e.preventDefault();
+          if (!currentBundle) return;
+          const data = e.dataTransfer.getData("text/plain");
+          try {
+            const { secret_id: provSid, value } = JSON.parse(data);
+            mapping.set(r.secret_id, provSid);
+            skipped.delete(r.secret_id);
+            cell.classList.add("filled");
+            cell.classList.remove("skipped");
+            cell.querySelector("[data-fill]").textContent = value;
+          } catch {}
+          refreshGrantButton();
+        });
+        // Click to toggle skip
+        cell.addEventListener("click", () => {
+          const sid = r.secret_id;
+          if (skipped.has(sid)) {
+            skipped.delete(sid);
+            cell.classList.remove("skipped");
+          } else {
+            skipped.add(sid);
+            mapping.delete(sid);
+            cell.classList.remove("filled");
+            cell.classList.add("skipped");
+            cell.querySelector("[data-fill]").textContent = "";
+          }
+          refreshGrantButton();
+        });
+        pvGrid.appendChild(cell);
+      }
+    }
+
+    function refreshGrantButton() {
+      if (!currentBundle) { pvGrantAll.disabled = true; pvSkip.disabled = true; return; }
+      const reqIds = currentBundle.bundle.requests.map(r => r.payload.secret_id);
+      const actionable = reqIds.some(id => mapping.has(id) || skipped.has(id));
+      pvGrantAll.disabled = !actionable || inflightGrant;
+      pvSkip.disabled = inflightGrant;
+    }
+
+    async function pullSolicitationsOnce() {
+      if (inflightBundleKey) return; // in-flight bundle being processed
+      try {
+        const res = await api.pullSolicitationBundle();
+        if (!res?.has_bundle) {
+          pvMeta.textContent = "No pending requests.";
+          currentBundle = null;
+          pvGrid.innerHTML = "";
+          mapping.clear(); skipped.clear();
+          refreshGrantButton();
+          return;
+        }
+        currentBundle = res;
+        inflightBundleKey = JSON.stringify(res.bundle.ack_token);
+        const rows = res.bundle.requests.map(x => ({ ...x.payload }));
+        pvMeta.textContent = `Requester: ${res.requester_id} — ${rows.length} field(s)`;
+        mapping.clear(); skipped.clear();
+        buildGrid(rows);
+        refreshGrantButton();
+      } catch (e) {
+        setStatus(`Pull error: ${e?.message || e}`, "err");
+      }
+    }
+
+    btnRefresh.addEventListener("click", pullSolicitationsOnce);
+    setInterval(pullSolicitationsOnce, 60_000); // every minute
+
+    pvSkip.addEventListener("click", () => {
+      // Just clear the UI state for this bundle; do not ACK.
+      currentBundle = null; inflightBundleKey = null;
+      pvGrid.innerHTML = ""; mapping.clear(); skipped.clear();
+      pvMeta.textContent = "Bundle cleared (not acked).";
+      refreshGrantButton();
+    });
+
+    pvGrantAll.addEventListener("click", async () => {
+      if (!currentBundle) return;
+      const umbral = await loadUmbral();
+      if (!umbral) { setStatus("Umbral not loaded; cannot grant.", "err"); return; }
+
+      const providerSecretsById = Object.fromEntries(
+        (store.private.provider.secrets || []).map(s => [s.secret_id, s])
+      );
+
+      const reqRows = currentBundle.bundle.requests.map(r => r.payload);
+      const toGrant = reqRows.filter(r => mapping.has(r.secret_id));
+      const toSkip  = reqRows.filter(r => skipped.has(r.secret_id));
+
+      if (toGrant.length === 0 && toSkip.length === 0) {
+        setStatus("Nothing selected to grant/skip.", "warn");
+        return;
+      }
+
+      inflightGrant = true; setBusy(true); refreshGrantButton();
+
+      // Perform grants sequentially with small retries
+      const failures = [];
+      for (const r of toGrant) {
+        const provSid = mapping.get(r.secret_id);
+        const provEntry = providerSecretsById[provSid];
+        if (!provEntry?.keys?.secret_key_b64 || !provEntry?.keys?.signing_key_b64) {
+          failures.push({ r, error: "Missing provider secret/signing key in vault." });
+          continue;
+        }
+        try {
+          const delegating_sk = umbral.SecretKey.from_be_bytes(base64ToBytes(provEntry.keys.secret_key_b64));
+          const signer_sk     = umbral.SecretKey.from_be_bytes(base64ToBytes(provEntry.keys.signing_key_b64));
+          const signer        = new umbral.Signer(signer_sk);
+          const receiving_pk  = umbral.PublicKey.fromCompressedBytes(base64ToBytes(r.requester_public_key_b64));
+
+          const kfrags = umbral.generate_kfrags({
+            delegating_sk,
+            receiving_pk,
+            signer,
+            threshold: 1,
+            shares: 1,
+            sign_delegating_key: true,
+            sign_receiving_key:  true,
+          });
+
+          const kfrags_b64 = kfrags.map(k => bytesToBase64(k.toBytes()));
+          // grantAccess: provider -> requester
+          await api.grantAccess({
+            requester_id: currentBundle.requester_id,
+            provider_item_id: provSid,
+            requester_item_id: r.secret_id,
+            kfrags_b64,
+          });
+        } catch (e) {
+          failures.push({ r, error: e?.message || String(e) });
+        }
+      }
+
+      // ACK only if ALL grants intended succeeded
+      if (failures.length === 0) {
+        try {
+          await api.ackSolicitationBundle(currentBundle.bundle.ack_token);
+          setStatus("All grants sent and bundle acked.", "ok");
+          currentBundle = null; inflightBundleKey = null;
+          pvGrid.innerHTML = ""; mapping.clear(); skipped.clear();
+          pvMeta.textContent = "Bundle processed.";
+        } catch (e) {
+          setStatus("Grants succeeded but ACK failed. You can retry ACK with Refresh.", "warn");
+        }
+      } else {
+        setStatus(`Some grants failed (${failures.length}). Fix and retry.`, "err");
+      }
+
+      inflightGrant = false; setBusy(false); refreshGrantButton();
+    });
+
+    // ---------- Page lifecycle autosave on unload ----------
     addEventListener("pagehide", async () => {
       if (!dirty) return;
       try {
-        // try a keepalive PUT directly (bypass SDK to set keepalive)
-        const res = await fetch("/api/save_to_vault", {
+        await fetch("/api/save_to_vault", {
           method: "PUT",
           credentials: "include",
           keepalive: true,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ encrypted_localstore_b64: encryptedBlobB64 }),
         });
-        if (res.ok) {
-          lastSavedB64 = encryptedBlobB64;
-          try { localStorage.setItem(LAST_SAVED_KEY, lastSavedB64); } catch {}
-        }
       } catch {}
-    });
-
-    // ---------- Buttons ----------
-    btnSave.addEventListener("click", async () => {
-      await encryptAndCachePrivate();
-      await saveToServer({ timeoutMs: 7000 });
-    });
-
-    btnDownload.addEventListener("click", downloadEncryptedBackup);
-
-    btnClear.addEventListener("click", () => {
-      try {
-        sessionStorage.removeItem("crs:passkey");
-        sessionStorage.removeItem("crs:email");
-      } catch {}
-      setStatus("Passkey cleared for this tab.", "warn");
-    });
-
-    btnLogout.addEventListener("click", async () => {
-      btnLogout.disabled = true;
-      try {
-        if (dirty) {
-          await saveToServer({ timeoutMs: 7000 });
-          if (dirty) downloadEncryptedBackup();
-        }
-      } catch {
-        if (dirty) downloadEncryptedBackup();
-      } finally {
-        try {
-          await api.logout();
-        } catch {}
-        location.href = "/app/login.html";
-      }
     });
 
     // ---------- Init ----------
     await loadVault();
+    await loadInventory();       // provider left pane
+    await pullSolicitationsOnce();// first pull after login
   </script>
 </body>
 </html>

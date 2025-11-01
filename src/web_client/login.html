@@ -18,7 +18,6 @@
     label > span { display:block; font-size:.85rem; color:#333; margin-bottom:.25rem; }
     input[type="password"] { letter-spacing:0.05em; }
 
-    /* Busy overlay + spinner (during network) */
     .overlay {
       position: absolute; inset: 0; display:none;
       background: rgba(255,255,255,0.65);
@@ -34,7 +33,6 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Salt gate modal (after register success/timeout) */
     .gate {
       position: fixed; inset: 0; display:none;
       background: rgba(0,0,0,0.45);
@@ -61,7 +59,6 @@
   <div class="card" id="card" aria-live="polite" style="position:relative;">
     <h1>Welcome</h1>
 
-    <!-- Landing choice -->
     <div id="chooser" class="buttons" style="justify-content:center; margin-top:1rem;">
       <button id="choose-login"  type="button">Login</button>
       <button id="choose-register" type="button">Register</button>
@@ -134,13 +131,13 @@
       <p id="reg-ok" class="ok" role="status"></p>
     </form>
 
-    <!-- Busy overlay (during server calls) -->
+    <!-- Busy overlay -->
     <div id="overlay" class="overlay" aria-hidden="true">
       <div class="spinner" role="status" aria-label="Working…"></div>
       <div class="muted" id="overlay-text">Contacting server…</div>
     </div>
 
-    <!-- Salt Gate (post-register success or timeout) -->
+    <!-- Salt Gate -->
     <div id="salt-gate" class="gate" role="dialog" aria-modal="true" aria-labelledby="salt-gate-title" aria-describedby="salt-gate-desc">
       <div class="gate-card">
         <h2 id="salt-gate-title">Save your device salt file</h2>
@@ -206,11 +203,9 @@
 
     const enc = new TextEncoder();
 
-    // generic show/hide for forms/sections using "hidden"
+    // show/hide helpers
     function showHidden(el, on) { el.classList.toggle("hidden", !on); }
-    // gate uses "show" class instead
     function showGate(on) { saltGate.classList.toggle("show", !!on); }
-
     function setBusy(b, text = "Contacting server…") {
       [chooseLogin, chooseRegister, btnLogin, btnRegister, btnBackFromLogin, btnBackFromRegister].forEach(el => { if (el) el.disabled = b; });
       overlay.classList.toggle("show", b);
@@ -232,10 +227,10 @@
     btnBackFromRegister.addEventListener("click", toChooser);
 
     // Show/Hide passwords
-    document.getElementById("login-showpw").addEventListener("change", (e) => {
+    loginShowpw.addEventListener("change", (e) => {
       loginPassword.type = e.target.checked ? "text" : "password";
     });
-    document.getElementById("reg-showpw").addEventListener("change", (e) => {
+    regShowpw.addEventListener("change", (e) => {
       regPassword.type = e.target.checked ? "text" : "password";
     });
 
@@ -272,14 +267,11 @@
         salt,
       };
     }
-
     function buildDiskJson(saltObj){
       const { salt, ...disk } = saltObj;
       return JSON.stringify(disk, null, 2);
     }
-
     function suggestFilename(){ return `crs-salt-${makeShortId()}.json`; }
-
     function downloadText(filename, text){
       const blob = new Blob([text], { type: "application/json" });
       const a = document.createElement("a");
@@ -309,6 +301,31 @@
       return { ...o, salt };
     }
 
+    // ---- Initialize server vault on registration success ----
+    async function initVaultOnServer(vault_key_b64, email) {
+      const scaffold = {
+        version: 1,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        private: {
+          provider: { secrets: [], groups: {}, synonyms: {} },
+          requester: { requests: [], keypairs: {}, history: [] }
+        },
+        meta: { schema: "crs/v1", owner: email || "" }
+      };
+
+      const key = await crypto.subtle.importKey("raw", base64ToBytes(vault_key_b64), { name:"AES-GCM" }, false, ["encrypt"]);
+      const iv = new Uint8Array(12); crypto.getRandomValues(iv);
+      const pt = new TextEncoder().encode(JSON.stringify(scaffold));
+      const ctBuf = await crypto.subtle.encrypt({ name:"AES-GCM", iv }, key, pt);
+      const blob = new Uint8Array(iv.length + ctBuf.byteLength);
+      blob.set(iv, 0);
+      blob.set(new Uint8Array(ctBuf), iv.length);
+      const encrypted_localstore_b64 = bytesToBase64(blob);
+
+      await api.saveToVault(encrypted_localstore_b64);
+    }
+
     // ---- Salt Gate UI ----
     function openSaltGate({ mode, saltObj }) {
       const json = buildDiskJson(saltObj);
@@ -316,7 +333,6 @@
       saltJsonEl.value = json;
       saltFilenameEl.textContent = fname;
       saltConfirm.checked = false;
-      // which buttons to show
       btnContinue.classList.toggle("hidden", mode !== "success");
       btnGoLogin.classList.toggle("hidden", mode !== "timeout");
       saltNote.textContent = (mode === "timeout")
@@ -343,11 +359,12 @@
       showGate(true);
     }
 
-    // ---- Login flow ----
+    // ---- Session helpers ----
     function setSessionVaultKey(vault_key_b64, email) {
       try { sessionStorage.setItem("crs:passkey", vault_key_b64); sessionStorage.setItem("crs:email", email); } catch {}
     }
 
+    // ---- Login flow ----
     async function doLogin() {
       error(loginErr,""); okay(loginOk,"");
       setBusy(true);
@@ -371,7 +388,7 @@
       }
     }
 
-    // ---- Register flow (salt in memory; gate UI; no auto-download) ----
+    // ---- Register flow (vault is created here, once) ----
     const REG_TIMEOUT_MS = 12000;
     let inMemSalt = null;
 
@@ -391,19 +408,19 @@
         if (!em) throw new Error("Email is required.");
         if (!pw) throw new Error("Password is required.");
 
-        // Generate/reuse in-memory salt for this email in this attempt
+        // Create/retain in-memory salt for this attempt
         if (!inMemSalt || inMemSalt.email !== em) {
           inMemSalt = makeSaltObject(em);
         }
         const { auth_material_b64url, vault_key_b64 } = await deriveFromSaltObj(pw, inMemSalt);
 
-        // Abortable request with timeout
+        // Abortable register
         abortCtl = buildAbortable(REG_TIMEOUT_MS);
         try {
           await api.register(em, auth_material_b64url, { signal: abortCtl.signal });
         } catch (e) {
           if (e.name === "AbortError") {
-            // TIMEOUT: show the gate (state unknown), ask user to save salt, then go to Login
+            // TIMEOUT: show salt gate (state unknown). No vault creation attempt here.
             setBusy(false);
             openSaltGate({ mode: "timeout", saltObj: inMemSalt });
             return;
@@ -413,13 +430,21 @@
           abortCtl.cancel();
         }
 
-        // SUCCESS: keep key, show gate (no auto-download), then continue to dashboard
+        // Registration OK — create authoritative empty vault ONCE, server-side
+        try {
+          await initVaultOnServer(vault_key_b64, em);
+        } catch (e) {
+          // Not fatal for continuing, but inform the user at next screen (status on dashboard will say "Unsaved")
+          console.error("Initial vault save failed:", e);
+        }
+
+        // Keep session key for dashboard, then show salt gate to force download & confirmation
         setSessionVaultKey(vault_key_b64, em);
         setBusy(false);
         openSaltGate({ mode: "success", saltObj: inMemSalt });
       } catch (e) {
         if (e?.status === 409) {
-          // Email already registered: discard salt, switch to login, do nothing else
+          // Email already in use: discard salt, switch to login (no vault creation)
           inMemSalt = null;
           okay(regOk, "This email already has an account. Please log in.");
           showHidden(regForm,false); showHidden(loginForm,true);
@@ -429,18 +454,17 @@
           error(regErr, e?.data?.detail || e?.message || "Registration failed");
         }
       } finally {
-        // ensure overlay is not stuck
         setBusy(false);
       }
     }
 
     // Bind buttons
-    btnRegister.addEventListener("click", (e) => { e.preventDefault(); doRegister(); });
-    btnLogin.addEventListener("click", (e) => { e.preventDefault(); doLogin(); });
+    document.getElementById("btn-login").addEventListener("click", (e) => { e.preventDefault(); doLogin(); });
+    document.getElementById("btn-register").addEventListener("click", (e) => { e.preventDefault(); doRegister(); });
 
     // Enter key submits whichever form is visible (not inside salt gate)
     document.addEventListener("keydown", (e) => {
-      if (saltGate.classList.contains("show")) return; // prevent accidental submits under the gate
+      if (saltGate.classList.contains("show")) return;
       if (e.key === "Enter" && !(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)) {
         if (!loginForm.classList.contains("hidden")) { e.preventDefault(); doLogin(); }
         else if (!regForm.classList.contains("hidden")) { e.preventDefault(); doRegister(); }

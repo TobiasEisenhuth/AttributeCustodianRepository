@@ -31,6 +31,7 @@
     .hidden { display:none !important; }
     .busy { opacity:.6; pointer-events:none; }
     .small { font-size:.85rem; }
+    .reqrow { display:flex; gap:.5rem; flex-wrap:wrap; }
   </style>
 </head>
 <body class="center">
@@ -120,12 +121,10 @@
 
     function setStatus(text, cls="muted"){ statusEl.textContent = text; statusEl.className = cls; }
     function setBusy(flag){ card.classList.toggle("busy", !!flag); }
-
-    // Storage helpers
+    function nowIso(){ return new Date().toISOString(); }
     function bytesToBase64(bytes){ let s=""; for (const b of bytes) s+=String.fromCharCode(b); return btoa(s); }
     function base64ToBytes(b64){ const s=atob(b64); const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; }
     function concatBytes(a,b){ const out=new Uint8Array(a.length+b.length); out.set(a,0); out.set(b,a.length); return out; }
-    function nowIso(){ return new Date().toISOString(); }
 
     // ---------- Session prelims ----------
     const email = (sessionStorage.getItem("crs:email") || "").trim();
@@ -143,31 +142,52 @@
     );
     try { sessionStorage.removeItem("crs:passkey"); } catch {}
 
-    // ---------- Encrypted vault skeleton ----------
+    // ---------- Encrypted vault baseline (never auto-persisted here) ----------
     const stateChip = document.getElementById("vault-state");
     function setStateChip(text, kind="muted") {
       stateChip.textContent = text;
       stateChip.className = `chip ${kind}`;
     }
-    const btnSave = document.getElementById("save");
-    const btnDownload = document.getElementById("download");
-    const btnLogout = document.getElementById("logout");
-    const btnClear = document.getElementById("clear-passkey");
 
     const emailKey = email ? `:${email}` : "";
     const CACHE_KEY = `crs:vault_cache${emailKey}`;
     const LAST_SAVED_KEY = `crs:vault_last_saved${emailKey}`;
 
+    // The in-memory working store; persisted payload includes ONLY "private"
     const store = {
       version: 1,
       created_at: nowIso(),
       updated_at: nowIso(),
       private: {
-        provider: { secrets: [] },   // your per-secret SK/signing SK etc. (no provider PK/VK persisted)
-        requester: { requests: [] }, // finalized rows only
+        provider: { secrets: [], groups: {}, synonyms: {} },
+        requester: { requests: [], keypairs: {}, history: [] },
       },
-      ephemeral: {} // runtime only
+      // ephemeral is reconstructed on each load and NEVER persisted
+      ephemeral: {
+        ui: {},
+      }
     };
+
+    function ensureVaultShape(obj) {
+      if (!obj || typeof obj !== "object") throw new Error("Vault missing root object");
+      if (obj.version != null && obj.version !== 1) throw new Error("Unsupported vault version");
+      if (!obj.private || typeof obj.private !== "object") obj.private = {};
+      // Provider
+      if (!obj.private.provider || typeof obj.private.provider !== "object") obj.private.provider = {};
+      const pv = obj.private.provider;
+      if (!Array.isArray(pv.secrets)) pv.secrets = [];
+      if (!pv.groups || typeof pv.groups !== "object") pv.groups = {};
+      if (!pv.synonyms || typeof pv.synonyms !== "object") pv.synonyms = {};
+      // Requester
+      if (!obj.private.requester || typeof obj.private.requester !== "object") obj.private.requester = {};
+      const rq = obj.private.requester;
+      if (!Array.isArray(rq.requests)) rq.requests = [];
+      if (!rq.keypairs || typeof rq.keypairs !== "object") rq.keypairs = {};
+      if (!Array.isArray(rq.history)) rq.history = [];
+      // Optional meta
+      if (!obj.meta || typeof obj.meta !== "object") obj.meta = { schema: "crs/v1", owner: email || "" };
+      return obj;
+    }
 
     let encryptedBlobB64 = "";
     let lastSavedB64 = localStorage.getItem(LAST_SAVED_KEY) || "";
@@ -215,10 +235,16 @@
       const ptBuf = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, aesKey, ct);
       const obj = JSON.parse(dec.decode(new Uint8Array(ptBuf)));
 
-      store.version = obj.version || 1;
+      // validate & normalize (create-as-needed) — event = load
+      ensureVaultShape(obj);
+
+      store.version    = obj.version ?? 1;
       store.created_at = obj.created_at || store.created_at;
       store.updated_at = obj.updated_at || nowIso();
-      store.private = obj.private || store.private;
+      store.private    = obj.private;
+
+      // Rebuild ephemeral fresh
+      store.ephemeral = { ui: {} };
     }
 
     async function loadVault() {
@@ -250,9 +276,11 @@
             setStatus("Could not decrypt cached vault. Wrong key or corrupted data.", "err");
           }
         } else {
-          setStateChip("Unsaved", "warn");
-          setStatus("No server vault. Starting empty.", "warn");
+          // Shouldn’t happen because registration creates the vault; fall back to a clean baseline.
+          setStatus("No server vault. Starting with an empty local store.", "warn");
+          ensureVaultShape(store);
           await encryptAndCachePrivate();
+          setStateChip("Unsaved", "warn");
         }
       } finally { updateButtons(); }
     }
@@ -353,11 +381,9 @@
       if (U) return U;
       try {
         const mod = await import("/app/umbral/umbral_pre_wasm.js");
-
         if (typeof mod.default === "function") {
           await mod.default("/app/umbral/umbral_pre_wasm_bg.wasm");
         }
-
         U = mod;
         return U;
       } catch (e) {
@@ -372,10 +398,10 @@
     function b64url(bytes){
       return bytesToBase64(bytes).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
     }
-    function newSecretId(){ return b64url(randBytes(12)); } // ~16 chars (not user-facing)
+    function newSecretId(){ return b64url(randBytes(12)); } // ~16 chars
 
     // ============================================================
-    // ===============  REQUESTER (step 2 minimal) ================
+    // ===============  REQUESTER (minimal) =======================
     // ============================================================
     const rqProviderId = document.getElementById("rq-provider-id");
     const rqFieldDesc = document.getElementById("rq-field-desc");
@@ -462,8 +488,6 @@
         await api.pushSolicitation(provider_id, { rows });
 
         // Persist finalized rows into encrypted vault (requester section)
-        const umbral = await loadUmbral();
-        if (!umbral) { throw new Error("Umbral not loaded."); }
         const finalized = rqDraft.map(r => ({
           provider_id,
           secret_id: r.secret_id,
@@ -494,7 +518,7 @@
     });
 
     // ============================================================
-    // ==================  PROVIDER (step 3)  =====================
+    // ==================  PROVIDER (minimal)  ====================
     // ============================================================
 
     // Left pane: inventory (decrypt using provider SKs in vault)
@@ -503,12 +527,12 @@
     async function loadInventory() {
       pvInventory.textContent = "Loading…";
       try {
-        const res = await api.listMyItems();
+        const res = await api.listMyItems(); // expects: [{item_id,capsule_b64,ciphertext_b64}, ...]
         const items = res?.items || [];
         if (items.length === 0) { pvInventory.textContent = "(no secrets uploaded)"; return; }
 
-        // Map item_id -> decrypted value (if key exists in vault)
-        const byId = Object.fromEntries(store.private.provider.secrets.map(s => [s.secret_id, s]));
+        // Map item_id -> local provider metadata
+        const byId = Object.fromEntries((store.private.provider.secrets || []).map(s => [s.secret_id, s]));
         pvInventory.innerHTML = "";
         const umbral = await loadUmbral();
         for (const it of items) {
@@ -518,7 +542,7 @@
           let valueStr = "(no key in vault or Umbral not available)";
           if (umbral && meta?.keys?.secret_key_b64) {
             try {
-              const sk = umbral.SecretKey.from_be_bytes(base64ToBytes(meta.keys.secret_key_b64));
+              const sk = umbral.SecretKey.fromBEBytes(base64ToBytes(meta.keys.secret_key_b64));
               const capsule = umbral.Capsule.fromBytes(base64ToBytes(it.capsule_b64));
               const ciphertext = base64ToBytes(it.ciphertext_b64);
               const plaintext = umbral.decryptOriginal(sk, capsule, ciphertext);
@@ -555,6 +579,7 @@
     const btnRefresh = document.getElementById("btn-refresh");
 
     let currentBundle = null;      // { requester_id, bundle: { requests[], ack_token } }
+    let currentRows = [];          // FLATTENED rows from the bundle (payload.rows)
     let mapping = new Map();       // requester_secret_id -> provider_secret_id
     let skipped = new Set();       // requester_secret_id toggled off
     let inflightGrant = false;
@@ -562,62 +587,81 @@
 
     function parseOrder(rc) {
       if (typeof rc === "number") return { r: rc, c: 0 };
-      const m = String(rc||"0.0").match(/^(\d+)\.(\d+)$/); 
+      const m = String(rc || "0.0").match(/^(\d+)\.(\d+)$/);
       return m ? { r: +m[1], c: +m[2] } : { r: 0, c: 0 };
     }
 
     function buildGrid(rows) {
-      // Normalize to sparse matrix, then compact render (no empty cells)
+      // sort by row, then col
       const cells = rows.map(x => ({ ...x, rc: parseOrder(x.request_order) }))
                         .sort((a,b) => (a.rc.r - b.rc.r) || (a.rc.c - b.rc.c));
-      pvGrid.innerHTML = "";
+
+      // group by row index
+      const byRow = new Map();
       for (const r of cells) {
-        const cell = document.createElement("div");
-        cell.className = "reqcell";
-        cell.dataset.reqSecretId = r.secret_id;
-        cell.innerHTML = `
-          <div class="small"><strong>${r.field_description}</strong> <span class="muted">(${r.request_order ?? "0.0"})</span></div>
-          <div class="small muted">e.g. ${r.value_example_format}</div>
-          <div class="small" data-fill></div>
-        `;
-        // Drop target
-        cell.addEventListener("dragover", e => e.preventDefault());
-        cell.addEventListener("drop", e => {
-          e.preventDefault();
-          if (!currentBundle) return;
-          const data = e.dataTransfer.getData("text/plain");
-          try {
-            const { secret_id: provSid, value } = JSON.parse(data);
-            mapping.set(r.secret_id, provSid);
-            skipped.delete(r.secret_id);
-            cell.classList.add("filled");
-            cell.classList.remove("skipped");
-            cell.querySelector("[data-fill]").textContent = value;
-          } catch {}
-          refreshGrantButton();
-        });
-        // Click to toggle skip
-        cell.addEventListener("click", () => {
-          const sid = r.secret_id;
-          if (skipped.has(sid)) {
-            skipped.delete(sid);
-            cell.classList.remove("skipped");
-          } else {
-            skipped.add(sid);
-            mapping.delete(sid);
-            cell.classList.remove("filled");
-            cell.classList.add("skipped");
-            cell.querySelector("[data-fill]").textContent = "";
-          }
-          refreshGrantButton();
-        });
-        pvGrid.appendChild(cell);
+        if (!byRow.has(r.rc.r)) byRow.set(r.rc.r, []);
+        byRow.get(r.rc.r).push(r);
+      }
+
+      pvGrid.innerHTML = "";
+
+      for (const entries of byRow.values()) {
+        const rowEl = document.createElement("div");
+        rowEl.className = "reqrow";
+
+        for (const r of entries) {
+          const cell = document.createElement("div");
+          cell.className = "reqcell";
+          cell.dataset.reqSecretId = r.secret_id;
+          cell.innerHTML = `
+            <div class="small"><strong>${r.field_description}</strong> <span class="muted">(${r.request_order ?? "0.0"})</span></div>
+            <div class="small muted">e.g. ${r.value_example_format}</div>
+            <div class="small" data-fill></div>
+          `;
+
+          // DnD target
+          cell.addEventListener("dragover", e => e.preventDefault());
+          cell.addEventListener("drop", e => {
+            e.preventDefault();
+            if (!currentBundle) return;
+            const data = e.dataTransfer.getData("text/plain");
+            try {
+              const { secret_id: provSid, value } = JSON.parse(data);
+              mapping.set(r.secret_id, provSid);
+              skipped.delete(r.secret_id);
+              cell.classList.add("filled");
+              cell.classList.remove("skipped");
+              cell.querySelector("[data-fill]").textContent = value;
+            } catch {}
+            refreshGrantButton();
+          });
+
+          // click to toggle skip
+          cell.addEventListener("click", () => {
+            const sid = r.secret_id;
+            if (skipped.has(sid)) {
+              skipped.delete(sid);
+              cell.classList.remove("skipped");
+            } else {
+              skipped.add(sid);
+              mapping.delete(sid);
+              cell.classList.remove("filled");
+              cell.classList.add("skipped");
+              cell.querySelector("[data-fill]").textContent = "";
+            }
+            refreshGrantButton();
+          });
+
+          rowEl.appendChild(cell);
+        }
+
+        pvGrid.appendChild(rowEl);
       }
     }
 
     function refreshGrantButton() {
       if (!currentBundle) { pvGrantAll.disabled = true; pvSkip.disabled = true; return; }
-      const reqIds = currentBundle.bundle.requests.map(r => r.payload.secret_id);
+      const reqIds = currentRows.map(r => r.secret_id);
       const actionable = reqIds.some(id => mapping.has(id) || skipped.has(id));
       pvGrantAll.disabled = !actionable || inflightGrant;
       pvSkip.disabled = inflightGrant;
@@ -629,7 +673,7 @@
         const res = await api.pullSolicitationBundle();
         if (!res?.has_bundle) {
           pvMeta.textContent = "No pending requests.";
-          currentBundle = null;
+          currentBundle = null; currentRows = [];
           pvGrid.innerHTML = "";
           mapping.clear(); skipped.clear();
           refreshGrantButton();
@@ -637,22 +681,26 @@
         }
         currentBundle = res;
         inflightBundleKey = JSON.stringify(res.bundle.ack_token);
-        const rows = res.bundle.requests.map(x => ({ ...x.payload }));
-        pvMeta.textContent = `Requester: ${res.requester_id} — ${rows.length} field(s)`;
+
+        // *** FLATTEN all rows across requests ***
+        const rawReqs = Array.isArray(res.bundle?.requests) ? res.bundle.requests : [];
+        currentRows = rawReqs.flatMap(req => Array.isArray(req?.payload?.rows) ? req.payload.rows : []);
+
+        pvMeta.textContent = `Requester: ${res.requester_id} — ${currentRows.length} field(s)`;
         mapping.clear(); skipped.clear();
-        buildGrid(rows);
+        buildGrid(currentRows);
         refreshGrantButton();
       } catch (e) {
         setStatus(`Pull error: ${e?.message || e}`, "err");
       }
     }
 
-    btnRefresh.addEventListener("click", pullSolicitationsOnce);
+    document.getElementById("btn-refresh").addEventListener("click", pullSolicitationsOnce);
     setInterval(pullSolicitationsOnce, 60_000); // every minute
 
     pvSkip.addEventListener("click", () => {
       // Just clear the UI state for this bundle; do not ACK.
-      currentBundle = null; inflightBundleKey = null;
+      currentBundle = null; inflightBundleKey = null; currentRows = [];
       pvGrid.innerHTML = ""; mapping.clear(); skipped.clear();
       pvMeta.textContent = "Bundle cleared (not acked).";
       refreshGrantButton();
@@ -667,7 +715,7 @@
         (store.private.provider.secrets || []).map(s => [s.secret_id, s])
       );
 
-      const reqRows = currentBundle.bundle.requests.map(r => r.payload);
+      const reqRows = currentRows;                       // use flattened rows
       const toGrant = reqRows.filter(r => mapping.has(r.secret_id));
       const toSkip  = reqRows.filter(r => skipped.has(r.secret_id));
 
@@ -678,7 +726,6 @@
 
       inflightGrant = true; setBusy(true); refreshGrantButton();
 
-      // Perform grants sequentially with small retries
       const failures = [];
       for (const r of toGrant) {
         const provSid = mapping.get(r.secret_id);
@@ -688,23 +735,20 @@
           continue;
         }
         try {
-          const delegating_sk = umbral.SecretKey.from_be_bytes(base64ToBytes(provEntry.keys.secret_key_b64));
-          const signer_sk     = umbral.SecretKey.from_be_bytes(base64ToBytes(provEntry.keys.signing_key_b64));
+          const delegating_sk = umbral.SecretKey.fromBEBytes(base64ToBytes(provEntry.keys.secret_key_b64));
+          const signer_sk     = umbral.SecretKey.fromBEBytes(base64ToBytes(provEntry.keys.signing_key_b64));
           const signer        = new umbral.Signer(signer_sk);
           const receiving_pk  = umbral.PublicKey.fromCompressedBytes(base64ToBytes(r.requester_public_key_b64));
 
-          const kfrags = umbral.generate_kfrags({
-            delegating_sk,
-            receiving_pk,
-            signer,
-            threshold: 1,
-            shares: 1,
-            sign_delegating_key: true,
-            sign_receiving_key:  true,
-          });
+          const kfrags = umbral.generateKFrags(
+            delegating_sk, receiving_pk, signer,
+            1, /*threshold*/
+            1, /*shares*/
+            true, /*sign delegating key*/
+            true  /*sign receiving key*/
+          );
 
           const kfrags_b64 = kfrags.map(k => bytesToBase64(k.toBytes()));
-          // grantAccess: provider -> requester
           await api.grantAccess({
             requester_id: currentBundle.requester_id,
             provider_item_id: provSid,
@@ -716,12 +760,16 @@
         }
       }
 
-      // ACK only if ALL grants intended succeeded
+      // ACK if all intended grants succeeded (skipped items are fine)
       if (failures.length === 0) {
         try {
-          await api.ackSolicitationBundle(currentBundle.bundle.ack_token);
+          // *** include requester_id with the ack token ***
+          await api.ackSolicitationBundle({
+            requester_id: currentBundle.requester_id,
+            ...currentBundle.bundle.ack_token
+          });
           setStatus("All grants sent and bundle acked.", "ok");
-          currentBundle = null; inflightBundleKey = null;
+          currentBundle = null; inflightBundleKey = null; currentRows = [];
           pvGrid.innerHTML = ""; mapping.clear(); skipped.clear();
           pvMeta.textContent = "Bundle processed.";
         } catch (e) {

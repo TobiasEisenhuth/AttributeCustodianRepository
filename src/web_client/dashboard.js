@@ -1,33 +1,37 @@
-// JS without inline handlers.
-// - Requests panel: "Add row" appends blank row (as before)
-// - Personal panel: "Add row" opens the New Item dialog
-// - Personal panel: left ("Field") inputs are read-only by default; require right-click to edit
+// In-memory only; no storage.
+// Personal table: read-only by default; editable ONLY with Ctrl + left click.
+// Simple left click = focus/caret, no border. Right click = no caret, no border, exit edit mode.
+// Requests table unchanged.
 
 (function () {
   /* ---------------- Utilities ---------------- */
-
   function createRow(panelEl) {
     const isRequests = panelEl?.dataset.panel === 'requests';
 
     const tr = document.createElement('tr');
 
+    // First column
     const td1 = document.createElement('td');
     const input1 = document.createElement('input');
     input1.type = 'text';
     input1.placeholder = isRequests ? 'Request' : 'Field';
     input1.autocomplete = 'off';
     if (!isRequests) {
-      // Personal panel: protect Field cell by default
-      input1.readOnly = true;
-      input1.classList.add('protected-field');
+      input1.readOnly = true;  // personal: RO by default
+      input1.tabIndex = 0;     // allow caret/selection
     }
     td1.appendChild(input1);
 
+    // Second column
     const td2 = document.createElement('td');
     const input2 = document.createElement('input');
     input2.type = 'text';
     input2.placeholder = isRequests ? 'Details' : 'Value';
     input2.autocomplete = 'off';
+    if (!isRequests) {
+      input2.readOnly = true;  // personal: RO by default
+      input2.tabIndex = 0;
+    }
     td2.appendChild(input2);
 
     tr.appendChild(td1);
@@ -48,80 +52,52 @@
     const row = createRow(panelEl);
     tbody.appendChild(row);
 
-    // Focus second cell by default (since first may be read-only)
-    const focusTarget = row.querySelector('td:nth-child(2) input[type="text"]') || row.querySelector('input[type="text"]');
-    if (focusTarget) focusTarget.focus();
+    if (panelEl.dataset.panel === 'personal') {
+      const val = row.querySelector('td:nth-child(2) input[type="text"]');
+      if (val) val.focus(); // caret ok, still read-only
+    }
 
     updateRequestsCount(panelEl);
   }
 
-  /* ---------------- Modal: New Item ---------------- */
-
-  const overlay = document.getElementById('new-item-dialog');
-  const confirmBtn = overlay.querySelector('[data-action="confirm-dialog"]');
-  const cancelBtn  = overlay.querySelector('[data-action="cancel-dialog"]');
+  /* ---------------- New Item Modal (Personal -> Add row) ---------------- */
+  const newItemOverlay = document.getElementById('new-item-dialog');
+  const newItemConfirm = newItemOverlay.querySelector('[data-action="confirm-dialog"]');
+  const newItemCancel  = newItemOverlay.querySelector('[data-action="cancel-dialog"]');
 
   function openNewItemDialog() {
-    // Clear inputs
-    overlay.querySelectorAll('input[type="text"]').forEach((inp, idx) => {
-      inp.value = '';
-    });
-    confirmBtn.disabled = true;
-    overlay.classList.add('open');
-    // Focus first input
-    const first = overlay.querySelector('input[data-field="Item Name"]');
+    newItemOverlay.querySelectorAll('input[type="text"]').forEach((inp) => { inp.value = ''; });
+    newItemConfirm.disabled = true;
+    newItemOverlay.classList.add('open');
+    const first = newItemOverlay.querySelector('input[data-field="Item Name"]');
     if (first) first.focus();
   }
-
-  function closeNewItemDialog() {
-    overlay.classList.remove('open');
+  function closeNewItemDialog() { newItemOverlay.classList.remove('open'); }
+  function validateNewItemDialog() {
+    const name  = newItemOverlay.querySelector('input[data-field="Item Name"]').value.trim();
+    const value = newItemOverlay.querySelector('input[data-field="Value"]').value.trim();
+    newItemConfirm.disabled = !(name && value);
   }
-
-  function validateDialog() {
-    const name  = overlay.querySelector('input[data-field="Item Name"]').value.trim();
-    const value = overlay.querySelector('input[data-field="Value"]').value.trim();
-    confirmBtn.disabled = !(name && value);
-  }
-
-  overlay.addEventListener('input', (e) => {
-    if (e.target.matches('.modal-table input[type="text"]')) validateDialog();
+  newItemOverlay.addEventListener('input', (e) => {
+    if (e.target.matches('.modal-table input[type="text"]')) validateNewItemDialog();
   });
-
-  cancelBtn.addEventListener('click', closeNewItemDialog);
-
-  // Close on ESC or clicking outside the modal
+  newItemCancel.addEventListener('click', closeNewItemDialog);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && overlay.classList.contains('open')) {
-      closeNewItemDialog();
-    }
+    if (e.key === 'Escape' && newItemOverlay.classList.contains('open')) closeNewItemDialog();
   });
-  overlay.addEventListener('mousedown', (e) => {
-    if (e.target === overlay) closeNewItemDialog();
+  newItemOverlay.addEventListener('mousedown', (e) => {
+    if (e.target === newItemOverlay) closeNewItemDialog();
   });
+  newItemConfirm.addEventListener('click', () => {
+    if (newItemConfirm.disabled) return;
 
-  confirmBtn.addEventListener('click', () => {
-    if (confirmBtn.disabled) return;
-
-    // Build JSON array of table content: [ [label, value], ... ]
-    const rows = overlay.querySelectorAll('.modal-table tbody tr');
+    const rows = newItemOverlay.querySelectorAll('.modal-table tbody tr');
     const content = Array.from(rows).map((row) => {
       const label = row.querySelector('th')?.textContent?.trim() || '';
       const value = row.querySelector('input')?.value?.trim() || '';
       return [label, value];
     });
 
-    // Store in sessionStorage
-    try {
-      sessionStorage.setItem('newItem', JSON.stringify(content));
-      const key = 'newItems';
-      const arr = JSON.parse(sessionStorage.getItem(key) || '[]');
-      arr.push(content);
-      sessionStorage.setItem(key, JSON.stringify(arr));
-    } catch (err) {
-      // Swallow storage errors silently for now
-    }
-
-    // Insert into the PERSONAL table: left = Item Name, right = Value
     const name  = content[0]?.[1] || '';
     const value = content[1]?.[1] || '';
 
@@ -130,19 +106,73 @@
     if (tbody) {
       const row = createRow(personalPanel);
       const inputs = row.querySelectorAll('input[type="text"]');
-      if (inputs[0]) inputs[0].value = name;   // Field (read-only, protected)
-      if (inputs[1]) inputs[1].value = value;  // Value
+      if (inputs[0]) inputs[0].value = name;
+      if (inputs[1]) inputs[1].value = value;
       tbody.appendChild(row);
-      // Focus the Value cell
       if (inputs[1]) inputs[1].focus();
     }
 
     closeNewItemDialog();
   });
 
-  /* ---------------- Event wiring ---------------- */
+  /* ----------- Ctrl + Left-click editing (PERSONAL ONLY) ----------- */
+  (function setupCtrlClickEditing() {
+    const personalPanel = document.querySelector('.panel[data-panel="personal"]');
+    if (!personalPanel) return;
 
-  // "Add row" buttons (requests adds directly; personal opens dialog)
+    const tbody = personalPanel.querySelector('tbody');
+
+    // Handle mouse down first to set editability BEFORE focus/caret is placed.
+    personalPanel.addEventListener('mousedown', (e) => {
+      // Support clicks anywhere in the cell (td) or directly on the input
+      const cell = e.target.closest('td');
+      if (!cell) return;
+      const input = cell.querySelector('input[type="text"]');
+      if (!input || !tbody.contains(input)) return;
+
+      // Right-click: prevent caret & exit edit mode
+      if (e.button === 2) {
+        e.preventDefault();                 // avoid focusing/caret on right click
+        input.readOnly = true;
+        input.classList.remove('editing');  // no border
+        return;
+      }
+
+      // Ctrl + left-click: enter edit mode (show border)
+      if (e.button === 0 && e.ctrlKey) {
+        input.readOnly = false;
+        input.classList.add('editing');
+        // allow default so caret lands correctly
+        return;
+      }
+
+      // Plain left-click: stay read-only, no border
+      if (e.button === 0 && !e.ctrlKey) {
+        input.readOnly = true;
+        input.classList.remove('editing');
+        // allow default (caret & selection OK)
+        return;
+      }
+    });
+
+    // Exit edit mode on Enter/Escape -> blur
+    personalPanel.addEventListener('keydown', (e) => {
+      const input = e.target;
+      if (!(input instanceof HTMLInputElement)) return;
+      if (e.key === 'Enter' || e.key === 'Escape') input.blur();
+    });
+
+    // On blur: lock and remove edit border
+    personalPanel.addEventListener('blur', (e) => {
+      const input = e.target;
+      if (!(input instanceof HTMLInputElement)) return;
+      if (!tbody.contains(input)) return;
+      input.readOnly = true;
+      input.classList.remove('editing');
+    }, true);
+  })();
+
+  /* ---------------- Event wiring ---------------- */
   document.addEventListener('click', function (e) {
     const btn = e.target.closest('[data-action="add-row"]');
     if (!btn) return;
@@ -152,59 +182,12 @@
     if (panelEl.dataset.panel === 'personal') {
       openNewItemDialog();
     } else {
-      addRowForPanel(panelEl); // requests: same direct-add behavior
+      addRowForPanel(panelEl);
     }
   });
 
-  // Initialize counts on load
+  // Initialize requests count on load
   document.addEventListener('DOMContentLoaded', function () {
     document.querySelectorAll('.panel').forEach(updateRequestsCount);
   });
-
-  /* ----------- Protected left cell behavior (PERSONAL ONLY) ----------- */
-  (function setupProtectedFieldEditing() {
-    const personalPanel = document.querySelector('.panel[data-panel="personal"]');
-    if (!personalPanel) return;
-
-    // Left-click: focus but keep readOnly
-    personalPanel.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return; // left only
-      const input = e.target.closest('td:first-child input[type="text"]');
-      if (!input) return;
-      input.focus(); // focus/“select”
-      // keep readOnly; user must right-click next
-      e.preventDefault();
-    });
-
-    // Right-click (context menu): if focused, temporarily allow editing
-    personalPanel.addEventListener('contextmenu', (e) => {
-      const input = e.target.closest('td:first-child input[type="text"]');
-      if (!input) return;
-      e.preventDefault(); // use right-click to toggle edit
-
-      if (document.activeElement !== input) return; // must have left-clicked first
-
-      // Temporarily enable editing
-      input.readOnly = false;
-      input.classList.add('editing-field');
-      input.select();
-
-      // Finish editing on blur or Enter/Escape
-      const onKey = (ev) => {
-        if (ev.key === 'Enter' || ev.key === 'Escape') {
-          ev.preventDefault();
-          input.blur();
-        }
-      };
-      const onBlur = () => {
-        input.readOnly = true;
-        input.classList.remove('editing-field');
-        input.removeEventListener('keydown', onKey);
-        input.removeEventListener('blur', onBlur);
-      };
-
-      input.addEventListener('keydown', onKey);
-      input.addEventListener('blur', onBlur);
-    });
-  })();
 })();

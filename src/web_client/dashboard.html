@@ -12,9 +12,7 @@
     <!-- Left: Navigation -->
     <aside class="column nav-col">
       <h2 class="column-title">Navigation</h2>
-      <div class="column-content">
-        <!-- Space reserved for nav buttons/links -->
-      </div>
+      <div class="column-content"></div>
     </aside>
 
     <!-- Middle: Personal Data -->
@@ -30,7 +28,7 @@
               </tr>
             </thead>
             <tbody>
-              <!-- starts empty; rows added via JS -->
+              <!-- rows added via JS -->
             </tbody>
           </table>
         </div>
@@ -53,7 +51,7 @@
               </tr>
             </thead>
             <tbody>
-              <!-- starts empty; rows added via JS -->
+              <!-- rows added via JS -->
             </tbody>
           </table>
         </div>
@@ -64,7 +62,7 @@
     </section>
   </div>
 
-  <!-- New Item Modal -->
+  <!-- New Item Modal (for Add row in Personal) -->
   <div id="new-item-dialog" class="modal-overlay" aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="newItemTitle">
       <h3 id="newItemTitle" class="modal-title">New Item</h3>
@@ -93,6 +91,7 @@
             </tr>
           </tbody>
         </table>
+        <p class="modal-hint">Fill Item Name and Value. Press Esc to cancel.</p>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn" data-action="cancel-dialog">Cancel</button>

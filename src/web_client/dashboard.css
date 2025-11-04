@@ -1,66 +1,189 @@
-/* Basic, minimal styling—standard HTML/CSS only */
+/* Basic, minimal styling */
 *,
 *::before,
-*::after {
-  box-sizing: border-box;
-}
+*::after { box-sizing: border-box; }
 
-html, body {
-  height: 100%;
-}
+html, body { height: 100%; }
 
 body {
   margin: 0;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
   line-height: 1.4;
-  overflow: hidden; /* prevent page scroll; columns handle their own scrolling */
+  overflow: hidden;     /* columns/table areas handle their own scrolling */
+  padding-block: 5vh;   /* 5% top/bottom of viewport height */
+  background: #fff;     /* white background */
 }
 
-/* 3-column layout:
-   - Left column ~10–15% (clamped), no special visuals
-   - Two right columns split the remaining space equally
-*/
+/* 3 columns: left (10–15%), two equal panels */
 .dashboard {
   display: grid;
   grid-template-columns: clamp(10%, 12%, 15%) 1fr 1fr;
-  height: 100vh;  /* fit vertically */
-  width: 100vw;   /* fit horizontally */
+  height: calc(100vh - 10vh);  /* fit within padded area */
+  width: 100vw;
 }
 
-/* Each column uses a fixed header and a scrollable content area */
 .column {
   display: flex;
   flex-direction: column;
-  min-width: 0; /* allow content to shrink to avoid horizontal overflow */
+  min-width: 0;
+  min-height: 0;
 }
 
-/* Simple titles; no fancy visuals */
 .column-title {
   margin: 0;
   padding: 12px;
   font-size: 1rem;
   font-weight: 600;
-  /* Keep titles visually separate without being fancy */
   border-bottom: 1px solid #e9e9e9;
 }
 
-/* Scrollable area per column */
 .column-content {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
-  overflow-y: auto;   /* independent vertical scroll for each main column */
-  overflow-x: hidden; /* avoid horizontal scrollbars by default */
-  padding: 8px;       /* can be adjusted later or removed */
+  overflow: hidden; /* scrolling is handled in .table-scroll */
+  padding: 8px;
 }
 
-/* Optional subtle separators between columns (kept minimal) */
-.nav-col {
-  border-right: 1px solid #f0f0f0;
-}
-.panel + .panel {
-  border-left: 1px solid #f0f0f0;
+.table-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;   /* independent vertical scroll per panel */
+  overflow-x: hidden;
 }
 
-/* Tables/lists added later should naturally fill the space.
-   Add any additional padding/margins when wiring up buttons.
-*/
+.panel-footer {
+  padding-top: 8px;
+  border-top: 1px solid #f0f0f0;
+  background: #fff;
+}
 
+.nav-col { border-right: 1px solid #f0f0f0; }
+.panel + .panel { border-left: 1px solid #f0f0f0; }
+
+/* Buttons */
+.add-row-btn,
+.btn {
+  display: inline-block;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid #ddd;
+  background: #fff;
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+}
+.add-row-btn:focus,
+.btn:focus { outline: 2px solid rgba(0, 122, 255, 0.25); }
+.btn.primary { border-color: #999; }
+
+/* Two-column editable tables */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.data-table thead th {
+  text-align: left;
+  font-weight: 600;
+  padding: 8px;
+  border-bottom: 1px solid #e9e9e9;
+  position: sticky; /* stays visible while the table scrolls */
+  top: 0;
+  background: #fff;
+  z-index: 1;
+}
+
+/* Remove the divider between rows (both main columns) */
+.data-table tbody td {
+  padding: 6px 8px;
+  vertical-align: middle;
+  border-bottom: none;   /* <= divider removed */
+}
+
+/* Inputs fill the cell; square corners */
+.data-table input[type="text"] {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 0;         /* square corners */
+  font: inherit;
+  background: #fff;
+}
+
+/* Left column ("Field") inputs in main tables: no border (already white bg) */
+.panel[data-panel] .data-table tbody tr td:first-child input[type="text"] {
+  border: none;
+  border-radius: 0;
+  background: #fff;
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.35);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-overlay.open { display: flex; }
+
+.modal {
+  background: #fff;
+  width: min(560px, 92vw);
+  max-height: 90vh;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-title {
+  margin: 0;
+  padding: 14px 16px;
+  border-bottom: 1px solid #eee;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.modal-body {
+  padding: 12px 16px;
+  overflow: auto;
+}
+
+.modal-footer {
+  padding: 12px 16px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  border-top: 1px solid #eee;
+}
+
+/* Modal table: left column text only (no border) */
+.modal-table tbody th {
+  text-align: left;
+  font-weight: 600;
+  padding: 6px 8px;
+  border: none;  /* no border for left column */
+  width: 45%;
+}
+.modal-table tbody td {
+  padding: 6px 8px;
+}
+.modal-table input[type="text"] {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 0;
+  background: #fff;
+}
+
+/* Optional visual when a protected Field cell is "armed"/focused */
+.protected-field:focus {
+  outline: 2px dashed rgba(0, 122, 255, 0.35);
+}
+.editing-field {
+  outline: 2px solid rgba(0, 122, 255, 0.4);
+}

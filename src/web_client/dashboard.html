@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dashboard</title>
   <link rel="stylesheet" href="dashboard.css" />
+  <script src="dashboard.js" defer></script>
 </head>
 <body>
   <div class="dashboard">
@@ -17,27 +18,87 @@
     </aside>
 
     <!-- Middle: Personal Data -->
-    <section class="column panel">
+    <section class="column panel" data-panel="personal">
       <h2 class="column-title">Personal Data | place.holder@email.com</h2>
       <div class="column-content">
-        <!-- Place a one/two-column table or list here -->
-        <!-- Example placeholder:
-        <ul>
-          <li>Item A</li>
-          <li>Item B</li>
-          ...
-        </ul>
-        -->
+        <div class="table-scroll">
+          <table class="data-table" aria-label="Personal data table">
+            <thead>
+              <tr>
+                <th scope="col">Field</th>
+                <th scope="col">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- starts empty; rows added via JS -->
+            </tbody>
+          </table>
+        </div>
+        <div class="panel-footer">
+          <button type="button" class="add-row-btn" data-action="add-row">Add row</button>
+        </div>
       </div>
     </section>
 
     <!-- Right: Requests -->
-    <section class="column panel">
-      <h2 class="column-title">Request | (count)</h2>
+    <section class="column panel" data-panel="requests">
+      <h2 class="column-title">Request | <span class="count" aria-live="polite">0</span></h2>
       <div class="column-content">
-        <!-- Place a one/two-column table or list here -->
+        <div class="table-scroll">
+          <table class="data-table" aria-label="Requests table">
+            <thead>
+              <tr>
+                <th scope="col">Request</th>
+                <th scope="col">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- starts empty; rows added via JS -->
+            </tbody>
+          </table>
+        </div>
+        <div class="panel-footer">
+          <button type="button" class="add-row-btn" data-action="add-row">Add row</button>
+        </div>
       </div>
     </section>
+  </div>
+
+  <!-- New Item Modal -->
+  <div id="new-item-dialog" class="modal-overlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="newItemTitle">
+      <h3 id="newItemTitle" class="modal-title">New Item</h3>
+      <div class="modal-body">
+        <table class="data-table modal-table" aria-label="New item form">
+          <tbody>
+            <tr>
+              <th scope="row">Item Name</th>
+              <td><input type="text" data-field="Item Name" placeholder="" autocomplete="off" /></td>
+            </tr>
+            <tr>
+              <th scope="row">Value</th>
+              <td><input type="text" data-field="Value" placeholder="" autocomplete="off" /></td>
+            </tr>
+            <tr>
+              <th scope="row">Default Field</th>
+              <td><input type="text" data-field="Default Field" placeholder="None" autocomplete="off" /></td>
+            </tr>
+            <tr>
+              <th scope="row">Synonym Group</th>
+              <td><input type="text" data-field="Synonym Group" placeholder="None" autocomplete="off" /></td>
+            </tr>
+            <tr>
+              <th scope="row">Group</th>
+              <td><input type="text" data-field="Group" placeholder="None" autocomplete="off" /></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn" data-action="cancel-dialog">Cancel</button>
+        <button type="button" class="btn primary" data-action="confirm-dialog" disabled>Add</button>
+      </div>
+    </div>
   </div>
 </body>
 </html>

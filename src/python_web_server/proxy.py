@@ -492,7 +492,7 @@ def _validate_solicitation_payload(payload: Dict[str, Any]) -> None:
     for r in rows:
         if not isinstance(r, dict):
             raise HTTPException(status_code=400, detail="invalid_row_type")
-        for k in ("field_description", "secret_id", "value_example_format", "requester_public_key_b64"):
+        for k in ("item_name", "secret_id", "value_example", "requester_public_key_b64"):
             v = r.get(k)
             if not isinstance(v, str) or not v:
                 raise HTTPException(status_code=400, detail=f"missing_{k}")

@@ -32,6 +32,17 @@
     .busy { opacity:.6; pointer-events:none; }
     .small { font-size:.85rem; }
     .reqrow { display:flex; gap:.5rem; flex-wrap:wrap; }
+
+    /* lightweight modal */
+    .modal { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
+    .modal.hidden { display:none !important; }
+    .modal .backdrop { position:absolute; inset:0; background:rgba(0,0,0,.25); }
+    .modal .sheet { position:relative; background:#fff; border:1px solid #ddd; border-radius:.75rem; padding:1rem; width:min(520px, 92vw); box-shadow:0 10px 24px rgba(0,0,0,.15); }
+    .modal h3 { margin:.25rem 0 .75rem; }
+    .modal label { display:block; font-size:.9rem; margin:.5rem 0 .25rem; }
+    .modal input { width:100%; }
+    .btn-primary { background:#1f6feb; color:#fff; border:none; padding:.45rem .75rem; border-radius:.5rem; }
+    .btn-ghost { background:#f5f5f5; color:#111; border:1px solid #ddd; padding:.45rem .75rem; border-radius:.5rem; }
   </style>
 </head>
 <body class="center">
@@ -60,7 +71,7 @@
       <button id="btn-refresh" class="spacer small">Refresh solicitations</button>
     </div>
 
-    <!-- REQUESTER VIEW -->
+    <!-- REQUESTER VIEW (unchanged) -->
     <section id="view-requester">
       <h2>New solicitation</h2>
       <div class="row">
@@ -93,6 +104,9 @@
         <div>
           <h2>Your secrets</h2>
           <div id="pv-inventory" class="list small">Loading…</div>
+          <div class="row" style="margin-top:.5rem;">
+            <button id="pv-add-item" class="btn-primary">Add Item</button>
+          </div>
         </div>
         <div>
           <h2>Incoming request</h2>
@@ -106,6 +120,26 @@
         </div>
       </div>
     </section>
+  </div>
+
+  <!-- Modal: Add Item -->
+  <div id="add-item-modal" class="modal hidden" aria-hidden="true">
+    <div class="backdrop"></div>
+    <div class="sheet">
+      <h3>New Item</h3>
+      <label>Item Name (display)</label>
+      <input id="mi-display" placeholder="e.g. Shoe Size" />
+      <label>Value</label>
+      <input id="mi-value" placeholder="e.g. 45" />
+      <div class="row" style="margin-top: .75rem;">
+        <div class="spacer"></div>
+        <button id="mi-cancel" class="btn-ghost">Cancel</button>
+        <button id="mi-add" class="btn-primary">Add</button>
+      </div>
+      <p id="mi-hint" class="muted small" style="margin-top:.5rem;">
+        The internal <em>item_id</em> will be derived from the display name (lowercase, spaces → underscores).
+      </p>
+    </div>
   </div>
 
   <script type="module">
@@ -126,11 +160,27 @@
     function base64ToBytes(b64){ const s=atob(b64); const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; }
     function concatBytes(a,b){ const out=new Uint8Array(a.length+b.length); out.set(a,0); out.set(b,a.length); return out; }
 
+    function normalizeDisplay(s) {
+      return (s || "").trim().replace(/\s+/g, " ");
+    }
+    function toItemId(display) {
+      return normalizeDisplay(display)
+        .toLowerCase()
+        .replace(/\s+/g, "_")
+        .replace(/[^a-z0-9_]/g, "")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    }
+
     // ---------- Session prelims ----------
     const email = (sessionStorage.getItem("crs:email") || "").trim();
     emailEl.textContent = email ? `Signed in as ${email}` : "";
     const passkey_b64 = sessionStorage.getItem("crs:passkey");
-    if (!passkey_b64) { location.href = "/app/login.html"; throw new Error("No passkey in this tab."); }
+    if (!passkey_b64) {
+      try { await api.logout(); } catch {}
+      location.replace("/app/login.html");
+      throw new Error("No passkey in this tab.");
+    }
 
     // ---------- Crypto: import key for vault (AES-GCM) ----------
     const aesKey = await crypto.subtle.importKey(
@@ -140,7 +190,7 @@
       false,
       ["encrypt", "decrypt"]
     );
-    try { sessionStorage.removeItem("crs:passkey"); } catch {}
+    // Keep the passkey in sessionStorage for the life of this tab
 
     // ---------- Encrypted vault baseline ----------
     const stateChip = document.getElementById("vault-state");
@@ -748,6 +798,91 @@
       }
 
       inflightGrant = false; setBusy(false); refreshGrantButton();
+    });
+
+    // ---------- Add Item (Provider) ----------
+    const addItemBtn = document.getElementById("pv-add-item");
+    const addModal = document.getElementById("add-item-modal");
+    const miDisplay = document.getElementById("mi-display");
+    const miValue = document.getElementById("mi-value");
+    const miCancel = document.getElementById("mi-cancel");
+    const miAdd = document.getElementById("mi-add");
+
+    function openAddModal() {
+      miDisplay.value = "";
+      miValue.value = "";
+      addModal.classList.remove("hidden");
+      addModal.setAttribute("aria-hidden", "false");
+      setTimeout(() => miDisplay.focus(), 0);
+    }
+    function closeAddModal() {
+      addModal.classList.add("hidden");
+      addModal.setAttribute("aria-hidden", "true");
+    }
+    addItemBtn.addEventListener("click", openAddModal);
+    addModal.querySelector(".backdrop").addEventListener("click", closeAddModal);
+    miCancel.addEventListener("click", closeAddModal);
+
+    miAdd.addEventListener("click", async () => {
+      const display = normalizeDisplay(miDisplay.value);
+      const valueStr = String(miValue.value ?? "");
+      const item_id = toItemId(display);
+
+      if (!display || !item_id) { setStatus("Please provide an item name.", "err"); return; }
+      if (!valueStr) { setStatus("Please provide a value.", "err"); return; }
+
+      const umbral = await loadUmbral();
+      if (!umbral) { setStatus("Umbral not loaded; cannot add item.", "err"); return; }
+
+      setBusy(true);
+      try {
+        // generate keys (delegating + signing)
+        const delegating_sk = umbral.SecretKey.random();
+        const delegating_pk = delegating_sk.publicKey();
+        const signing_sk = umbral.SecretKey.random();
+        const verifying_pk = signing_sk.publicKey();
+
+        // encrypt the value for the provider (original ciphertext)
+        const ptBytes = enc.encode(valueStr);
+        const { capsule, ciphertext } = umbral.encryptOriginal(delegating_pk, ptBytes);
+
+        // send to server
+        await api.upsertItem({
+          item_id,
+          capsule_b64: bytesToBase64(capsule.toBytes()),
+          ciphertext_b64: bytesToBase64(ciphertext),
+          provider_public_key_b64: bytesToBase64(delegating_pk.toCompressedBytes()),
+          provider_verifying_key_b64: bytesToBase64(verifying_pk.toCompressedBytes()),
+        });
+
+        // persist keys + metadata in vault
+        const newEntry = {
+          secret_id: item_id,
+          secret_name: display,
+          keys: {
+            secret_key_b64: bytesToBase64(delegating_sk.toBEBytes()),
+            signing_key_b64: bytesToBase64(signing_sk.toBEBytes()),
+          },
+          created_at: nowIso(),
+          updated_at: nowIso(),
+        };
+
+        const arr = store.private.provider.secrets || (store.private.provider.secrets = []);
+        const idx = arr.findIndex(s => s.secret_id === item_id);
+        if (idx === -1) arr.push(newEntry);
+        else arr[idx] = { ...arr[idx], ...newEntry, updated_at: nowIso() };
+
+        await encryptAndCachePrivate();
+        await saveToServer({ timeoutMs: 7000 });
+
+        setStatus(`Item "${display}" saved.`, "ok");
+        closeAddModal();
+        await loadInventory(); // show it right away
+      } catch (e) {
+        setStatus(e?.message || "Failed to add item.", "err");
+      } finally {
+        setBusy(false);
+      }
     });
 
     // ---------- Page lifecycle autosave on unload ----------

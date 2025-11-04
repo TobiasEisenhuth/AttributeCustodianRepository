@@ -11,6 +11,7 @@ body {
   overflow: hidden;
   padding-block: 5vh;
   background: #fff;
+  cursor: default; /* default arrow everywhere unless explicitly editable */
 }
 
 /* 3 columns: left (10–15%), two equal panels */
@@ -71,10 +72,12 @@ body {
   background: #fff;
 }
 
-/* PERSONAL PANEL — default: no borders on Field & Value, no focus outline */
+/* -------- Personal panel: read-mode/edit-mode + visuals -------- */
+
+/* Default: no borders on Field & Value, no focus outline in personal panel */
 .panel[data-panel="personal"] tbody input[type="text"] {
-  border: none !important;      /* borderless by default */
-  outline: none !important;     /* no outline on normal focus */
+  border: none !important;
+  outline: none !important;
   background: #fff;
 }
 
@@ -83,7 +86,32 @@ body {
   border: 1px solid #999 !important;
 }
 
-/* Modal (New Item) */
+/* Read-mode/edit-mode wrapper + copy-friendly text */
+.panel[data-panel="personal"] tbody .cell { position: relative; }
+.panel[data-panel="personal"] tbody .cell.read-mode input[type="text"] { display: none; }
+.panel[data-panel="personal"] tbody .cell.edit-mode .ro-text { display: none; }
+
+.panel[data-panel="personal"] tbody .ro-text {
+  display: block;
+  min-height: 1.5em;    /* keeps a line even when empty */
+  white-space: pre-wrap;
+  user-select: text;     /* allow highlight + copy */
+  cursor: default;       /* no I-beam by default */
+}
+
+/* When Ctrl is held, hint with caret over the read-mode text layer */
+.ctrl-down .panel[data-panel="personal"] tbody .ro-text { cursor: text; }
+
+/* -------- Cursor logic (global & inputs) -------- */
+
+/* Caret for editable inputs; no caret for readonly inputs */
+input[type="text"]:not([readonly]) { cursor: text; }
+input[type="text"][readonly] { cursor: default; }
+
+/* Also allow caret on readonly personal inputs when Ctrl is held (edge cases) */
+.ctrl-down .panel[data-panel="personal"] tbody input[type="text"][readonly] { cursor: text; }
+
+/* -------- Modal (New Item) -------- */
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.35);
   display: none; align-items: center; justify-content: center; z-index: 1000;

@@ -1,0 +1,66 @@
+/* Basic, minimal styling—standard HTML/CSS only */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  line-height: 1.4;
+  overflow: hidden; /* prevent page scroll; columns handle their own scrolling */
+}
+
+/* 3-column layout:
+   - Left column ~10–15% (clamped), no special visuals
+   - Two right columns split the remaining space equally
+*/
+.dashboard {
+  display: grid;
+  grid-template-columns: clamp(10%, 12%, 15%) 1fr 1fr;
+  height: 100vh;  /* fit vertically */
+  width: 100vw;   /* fit horizontally */
+}
+
+/* Each column uses a fixed header and a scrollable content area */
+.column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0; /* allow content to shrink to avoid horizontal overflow */
+}
+
+/* Simple titles; no fancy visuals */
+.column-title {
+  margin: 0;
+  padding: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+  /* Keep titles visually separate without being fancy */
+  border-bottom: 1px solid #e9e9e9;
+}
+
+/* Scrollable area per column */
+.column-content {
+  flex: 1 1 auto;
+  overflow-y: auto;   /* independent vertical scroll for each main column */
+  overflow-x: hidden; /* avoid horizontal scrollbars by default */
+  padding: 8px;       /* can be adjusted later or removed */
+}
+
+/* Optional subtle separators between columns (kept minimal) */
+.nav-col {
+  border-right: 1px solid #f0f0f0;
+}
+.panel + .panel {
+  border-left: 1px solid #f0f0f0;
+}
+
+/* Tables/lists added later should naturally fill the space.
+   Add any additional padding/margins when wiring up buttons.
+*/
+

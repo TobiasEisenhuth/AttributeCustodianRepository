@@ -41,46 +41,42 @@ function generateItemId(existingIds) {
 }
 
 /* ---------- DOM helpers (matches your table structure) ---------- */
-function makePersonalCell(initialValue, placeholder) {
-  const wrapper = document.createElement("div");
-  wrapper.className = "cell read-mode";
+export function makePersonalCell(initialValue, placeholder) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'cell read-mode';
 
-  const ro = document.createElement("span");
-  ro.className = "ro-text";
-  ro.textContent = initialValue || "";
+  const ro = document.createElement('span');
+  ro.className = 'ro-text';
 
-  const input = document.createElement("input");
-  input.type = "text";
-  input.placeholder = placeholder || "";
-  input.autocomplete = "off";
-  input.readOnly = true;   // read-mode by default
+  const text = initialValue ?? '';
+  ro.textContent = text;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = placeholder || '';
+  input.autocomplete = 'off';
+  input.readOnly = true; // read-mode by default
   input.tabIndex = 0;
+  input.value = text;
 
   wrapper.appendChild(ro);
   wrapper.appendChild(input);
   return { wrapper, ro, input };
 }
 
-function appendRowToPersonal(itemName, value) {
+export function appendRowToPersonal(itemName, value, itemId) {
   const panel = document.querySelector('.panel[data-panel="personal"]');
   const tbody = panel?.querySelector("tbody");
   if (!tbody) return;
 
   const tr = document.createElement("tr");
+  if (itemId) tr.dataset.itemId = itemId;
 
-  // Field / Item Name
   const td1 = document.createElement("td");
-  {
-    const { wrapper } = makePersonalCell(itemName, "Field");
-    td1.appendChild(wrapper);
-  }
+  { const { wrapper } = makePersonalCell(itemName, "Field"); td1.appendChild(wrapper); }
 
-  // Value (plaintext lives in DOM only)
   const td2 = document.createElement("td");
-  {
-    const { wrapper } = makePersonalCell(value, "Value");
-    td2.appendChild(wrapper);
-  }
+  { const { wrapper } = makePersonalCell(value, "Value"); td2.appendChild(wrapper); }
 
   tr.appendChild(td1);
   tr.appendChild(td2);
@@ -191,7 +187,7 @@ export function wireAddItemWithUmbral({ api, vault, setStatus = () => {}, setSta
       setStatus(`Item "${itemName}" saved.`, "ok");
 
       // 6) Update UI with plaintext (DOM-only)
-      appendRowToPersonal(itemName, valueStr);
+      appendRowToPersonal(itemName, valueStr, item_id);
 
       // 7) Close modal
       dialog.classList.remove("open");

@@ -1,10 +1,18 @@
 import { CRSClient } from "/app/crs-sdk.js";
-import { initVault } from "/app/vault.js";          // from earlier step
-import { wireAddItemWithUmbral } from "/app/items-add.js";
+import { initVault } from "/app/vault.js";
+
+import {
+  wireAddItemWithUmbral,
+  appendRowToPersonal,
+  makePersonalCell,
+} from "/app/items-add.js";
+
 import { wireLogoutAndSync } from "/app/logout.js";
 import { loadUmbral } from "/app/umbral-loader.js";
 
-const dec = new TextDecoder();
+const enc = new TextEncoder();
+const dec = new TextDecoder("utf-8");
+
 function base64ToBytes(b64) {
   const s = atob(b64);
   const a = new Uint8Array(s.length);
@@ -12,22 +20,13 @@ function base64ToBytes(b64) {
   return a;
 }
 
-function appendPersonalRow(itemName, valueStr) {
-  const panel = document.querySelector('.panel[data-panel="personal"]');
-  const tbody = panel?.querySelector("tbody");
-  if (!tbody) return;
-
-  const tr = document.createElement("tr");
-
-  const td1 = document.createElement("td");
-  td1.appendChild(makePersonalCell(itemName || "", "Field").wrapper);
-
-  const td2 = document.createElement("td");
-  td2.appendChild(makePersonalCell(valueStr || "", "Value").wrapper);
-
-  tr.appendChild(td1);
-  tr.appendChild(td2);
-  tbody.appendChild(tr);
+function bytesToBase64(bytes) {
+  let s = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(s);
 }
 
 const api = new CRSClient();
@@ -150,7 +149,8 @@ async function hydrateAndRenderPersonal({ api, vault }) {
   for (const entry of localItems) {
     const name = entry?.item_name || entry?.item_id || "";
     const val  = s?.ephemeral?.personal?.valuesById?.[entry?.item_id] ?? "";
-    appendPersonalRow(name, val);
+    const itemId = entry?.item_id
+    appendRowToPersonal(name, val, itemId);
   }
 
   if (addBtn) addBtn.disabled = false;
@@ -233,28 +233,6 @@ window.addEventListener("beforeunload", clearAndMaybeLogout);
 
 /* =====================  EXISTING DASHBOARD UI LOGIC (unchanged)  ===================== */
 /*  The rest is your table/UX code. It runs in all tabs, but the overlay blocks non-owner tabs. */
-
-function makePersonalCell(initialValue, placeholder) {
-  // <div class="cell read-mode"><span class="ro-text"></span><input ...></div>
-  const wrapper = document.createElement('div');
-  wrapper.className = 'cell read-mode';
-
-  const ro = document.createElement('span');
-  ro.className = 'ro-text';
-  ro.textContent = initialValue || '';
-
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = placeholder || '';
-  input.autocomplete = 'off';
-  input.readOnly = true; // read-mode by default
-  input.tabIndex = 0;
-
-  wrapper.appendChild(ro);
-  wrapper.appendChild(input);
-
-  return { wrapper, ro, input };
-}
 
 function enterEditMode(wrapper, input) {
   input.readOnly = false;
@@ -394,8 +372,6 @@ newItemOverlay?.addEventListener('mousedown', (e) => {
       enterEditMode(wrapper, input);
       return;
     }
-
-    // Plain left click: read-mode text can be selected/copy; do nothing
   });
 
   // Exit edit mode on Enter/Escape -> blur
@@ -405,14 +381,114 @@ newItemOverlay?.addEventListener('mousedown', (e) => {
     if (e.key === 'Enter' || e.key === 'Escape') input.blur();
   });
 
-  // On blur: lock and remove edit border, sync text
-  personalPanel.addEventListener('blur', (e) => {
+  personalPanel.addEventListener('blur', async (e) => {
     const input = e.target;
     if (!(input instanceof HTMLInputElement)) return;
+
     const wrapper = input.closest('.cell');
     const ro = wrapper?.querySelector('.ro-text');
-    if (!wrapper || !ro || !tbody.contains(wrapper)) return;
+    const td = wrapper?.closest('td');
+    const tr = wrapper?.closest('tr');
+    if (!wrapper || !ro || !td || !tr) return;
+
+    // Capture old before we overwrite the ro-text
+    const oldVal = (ro.textContent || "").trim();
+
+    // Leave edit mode visually
     exitEditMode(wrapper, ro, input);
+
+    // Commit if actually changed
+    const newVal = (input.value || "").trim();
+    if (newVal === oldVal) return;
+
+    // Identify which column (0 = name, 1 = value)
+    const colIndex = Array.prototype.indexOf.call(td.parentElement.children, td);
+    const itemId = tr.dataset.itemId || null;
+
+    // Only the owner tab can persist
+    if (!IS_OWNER_TAB) return;
+
+    try {
+      if (colIndex === 0) {
+        // --- ITEM NAME EDIT -> update user store only ---
+        const store = vault.store || {};
+        const items = store?.private?.items || [];
+        const entry = items.find(it => it?.item_id === itemId);
+        if (!entry) throw new Error("Item not found in store");
+        if (!newVal) throw new Error("Item name cannot be empty");
+
+        entry.item_name = newVal;
+        entry.updated_at = new Date().toISOString();
+
+        // mirror to session + re-encrypt/cached (no server save here; logout will sync)
+        try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}
+        await vault.encryptAndCachePrivate();
+        vault.setDirty(true);
+        setStatus(`Name updated.`, "ok");
+        setStateChip("Unsaved", "warn");   // vault differs from lastSaved
+      } else if (colIndex === 1) {
+        // --- VALUE EDIT -> re-encrypt & upsert to service ---
+        if (!newVal) { 
+          // decide policy; here we reject empties like in "add"
+          setStatus("Value cannot be empty.", "err");
+          // revert UI
+          ro.textContent = oldVal; input.value = oldVal;
+          return;
+        }
+
+        const store = vault.store || {};
+        const items = store?.private?.items || [];
+        const entry = items.find(it => it?.item_id === itemId);
+        if (!entry?.keys?.secret_key_b64) throw new Error("Missing secret key for this item");
+
+        const umbral = await loadUmbral();
+        if (!umbral) throw new Error("Umbral not loaded");
+
+        // Re-encrypt with existing provider keys
+        const delegating_sk = umbral.SecretKey.fromBEBytes(base64ToBytes(entry.keys.secret_key_b64));
+        const delegating_pk = delegating_sk.publicKey();
+
+        // Signing/verifying key is optional in payload; include if present
+        let verifying_pk_b64 = null;
+        if (entry.keys.signing_key_b64) {
+          const signing_sk = umbral.SecretKey.fromBEBytes(base64ToBytes(entry.keys.signing_key_b64));
+          const signer = new umbral.Signer(signing_sk);
+          const verifying_pk = signer.verifyingKey();
+          verifying_pk_b64 = bytesToBase64(verifying_pk.toCompressedBytes());
+        }
+
+        const ptBytes = enc.encode(newVal);
+        const [capsule, ciphertext] = umbral.encrypt(delegating_pk, ptBytes);
+
+        const payload = {
+          item_id: itemId,
+          capsule_b64: bytesToBase64(capsule.toBytes()),
+          ciphertext_b64: bytesToBase64(ciphertext),
+          provider_public_key_b64: bytesToBase64(delegating_pk.toCompressedBytes()),
+        };
+        if (verifying_pk_b64) payload.provider_verifying_key_b64 = verifying_pk_b64;
+
+        setStateChip("Saving…", "warn");
+        setStatus("Updating encrypted value…");
+
+        await api.upsertItem(payload);
+
+        // Optionally bump local updated_at so vault shows activity; no plaintext stored
+        entry.updated_at = new Date().toISOString();
+        try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}
+        await vault.encryptAndCachePrivate();
+        vault.setDirty(true);
+
+        setStateChip("Synced", "ok");
+        setStatus("Item value updated.", "ok");
+      }
+    } catch (err) {
+      // revert UI on failure
+      ro.textContent = oldVal;
+      input.value = oldVal;
+      setStateChip("Error", "err");
+      setStatus(err?.message || "Failed to save edit.", "err");
+    }
   }, true);
 })();
 

@@ -50,6 +50,8 @@ body {
 .add-row-btn:focus, .btn:focus { outline: 2px solid rgba(0, 122, 255, 0.25); }
 .btn.primary { border-color: #999; }
 
+button:disabled { opacity: .6; pointer-events: none; }
+
 /* Tables */
 .data-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 

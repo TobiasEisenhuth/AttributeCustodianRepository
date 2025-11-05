@@ -419,7 +419,7 @@ newItemOverlay?.addEventListener('mousedown', (e) => {
 /* ---------------- Event wiring ---------------- */
 document.addEventListener('click', function (e) {
   const btn = e.target.closest('[data-action="add-row"]');
-  if (!btn) return;
+  if (!btn || btn.disabled) return;
   const panelEl = btn.closest('.panel');
   if (!panelEl) return;
 

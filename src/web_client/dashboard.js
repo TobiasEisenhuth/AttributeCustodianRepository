@@ -1,6 +1,7 @@
 import { CRSClient } from "/app/crs-sdk.js";
 import { initVault } from "/app/vault.js";          // from earlier step
 import { wireAddItemWithUmbral } from "/app/items-add.js";
+import { wireLogoutAndSync } from "/app/logout.js";
 
 const api = new CRSClient();
 
@@ -38,6 +39,7 @@ if (IS_OWNER_TAB) {
   vault.loadVault();
   // Wire the "Add" dialog to crypto+persist+UI
   wireAddItemWithUmbral({ api, vault, setStatus, setStateChip });
+  wireLogoutAndSync({ api, vault, setStatus, setStateChip });
 } else {
   // Non-owner tab: show your "already open" overlay (you already do this)
   const overlay = document.createElement('div');

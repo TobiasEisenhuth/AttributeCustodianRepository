@@ -1,24 +1,105 @@
 import { CRSClient } from "/app/crs-sdk.js";
+import { initVault } from "/app/vault.js";          // from earlier step
+import { wireAddItemWithUmbral } from "/app/items-add.js";
+
 const api = new CRSClient();
 
-// --- Clear storage + logout on tab/window close (best-effort) ---
-(() => {
-  const clearOnClose = () => {
-    try { sessionStorage.clear(); } catch (_) {}
-    try { api.logout({ keepalive: true}); } catch (_) {}
-    location.replace('/login.html');
-  };
-
-  // Fires on real unload (tab close, navigate away). Not when bfcache persists the page.
-  window.addEventListener('pagehide', (e) => {
-    if (!e.persisted) clearOnClose();
-  });
-
-  // Fallback
-  window.addEventListener('beforeunload', clearOnClose);
+/* === read+remove passkey/email ASAP (your existing code) === */
+const PASSKEY = (() => {
+  const k = sessionStorage.getItem("crs:passkey") || null;
+  if (k) sessionStorage.removeItem("crs:passkey");
+  return k;
 })();
+const EMAIL = (() => {
+  const e = sessionStorage.getItem("crs:email") || null;
+  if (e) sessionStorage.removeItem("crs:email");
+  return e;
+})();
+const IS_OWNER_TAB = !!PASSKEY;
 
-/* ---------------- Helpers ---------------- */
+/* === set the Personal title (optional) === */
+if (EMAIL) {
+  window.addEventListener("DOMContentLoaded", () => {
+    const title = document.querySelector('.panel[data-panel="personal"] .column-title');
+    if (title) title.textContent = `Personal Data | ${EMAIL}`;
+  }, { once: true });
+}
+
+/* === UI hooks you already use === */
+function setStateChip(text, tone) { /* no-op or update a chip */ }
+function setStatus(text, tone)     { /* no-op or status line */ }
+function updateButtons()           { /* enable/disable UI */ }
+
+/* === Initialize vault and load, only for owner tab === */
+let vault = null;
+if (IS_OWNER_TAB) {
+  vault = initVault({ api, passkey: PASSKEY, email: EMAIL, ui: { setStateChip, setStatus, updateButtons } });
+  // Immediately load the vault (fetch+decrypt into Session Storage)
+  vault.loadVault();
+  // Wire the "Add" dialog to crypto+persist+UI
+  wireAddItemWithUmbral({ api, vault, setStatus, setStateChip });
+} else {
+  // Non-owner tab: show your "already open" overlay (you already do this)
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay open';
+  overlay.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tabLockTitle">
+      <h3 id="tabLockTitle" class="modal-title">Already Open in Another Tab</h3>
+      <div class="modal-body"><p>You are already using a different tab. Close this tab and go back to the original tab.</p></div>
+    </div>`;
+  if (document.body) document.body.appendChild(overlay);
+  else window.addEventListener('DOMContentLoaded', () => document.body.appendChild(overlay), { once: true });
+}
+
+/* =====================  LAST-TAB LOGOUT (DO NOT LOG OUT OTHERS)  ===================== */
+
+// Cross-tab presence to know if we’re the last dashboard tab.
+const bc = ("BroadcastChannel" in window) ? new BroadcastChannel("crs:dashboard:presence") : null;
+const tabId = (crypto?.randomUUID?.()) || (Date.now().toString(36) + Math.random().toString(36).slice(2));
+const peers = new Set();
+
+if (bc) {
+  bc.onmessage = (e) => {
+    const msg = e?.data || {};
+    if (!msg || msg.id === tabId) return;
+    if (msg.t === "hello") {
+      peers.add(msg.id);
+      bc.postMessage({ t: "iam", id: tabId });
+    } else if (msg.t === "iam") {
+      peers.add(msg.id);
+    } else if (msg.t === "bye") {
+      peers.delete(msg.id);
+    }
+  };
+  // Announce presence
+  bc.postMessage({ t: "hello", id: tabId });
+}
+
+// Only when the **last** tab closes, clear storage + logout.
+// Non-last tabs do nothing, so they won’t kill the session of the owner tab.
+let didClose = false;
+function clearAndMaybeLogout() {
+  if (didClose) return;
+  didClose = true;
+
+  try { bc && bc.postMessage({ t: "bye", id: tabId }); } catch {}
+
+  // If BroadcastChannel unsupported, we can’t safely know last-tab. Be conservative: do nothing.
+  if (!bc) return;
+
+  // Last tab => clear + logout (keepalive)
+  if (peers.size === 0) {
+    try { sessionStorage.clear(); } catch {}
+    try { api.logout({ keepalive: true }); } catch {}
+  }
+}
+
+// Fire on real unloads (skip when BFCache persists the page)
+window.addEventListener("pagehide", (e) => { if (!e.persisted) clearAndMaybeLogout(); });
+window.addEventListener("beforeunload", clearAndMaybeLogout);
+
+/* =====================  EXISTING DASHBOARD UI LOGIC (unchanged)  ===================== */
+/*  The rest is your table/UX code. It runs in all tabs, but the overlay blocks non-owner tabs. */
 
 function makePersonalCell(initialValue, placeholder) {
   // <div class="cell read-mode"><span class="ro-text"></span><input ...></div>
@@ -47,12 +128,10 @@ function enterEditMode(wrapper, input) {
   input.classList.add('editing');
   wrapper.classList.remove('read-mode');
   wrapper.classList.add('edit-mode');
-  // Let the browser handle caret placement naturally
   setTimeout(() => { input.focus(); }, 0);
 }
 
 function exitEditMode(wrapper, ro, input) {
-  // Sync display text, lock input, remove border, show read-mode
   ro.textContent = input.value || '';
   input.readOnly = true;
   input.classList.remove('editing');
@@ -115,73 +194,35 @@ function addRowForPanel(panelEl) {
 /* ---------------- New Item Modal (Personal -> Add row) ---------------- */
 
 const newItemOverlay = document.getElementById('new-item-dialog');
-const newItemConfirm = newItemOverlay.querySelector('[data-action="confirm-dialog"]');
-const newItemCancel  = newItemOverlay.querySelector('[data-action="cancel-dialog"]');
+const newItemConfirm = newItemOverlay?.querySelector('[data-action="confirm-dialog"]');
+const newItemCancel  = newItemOverlay?.querySelector('[data-action="cancel-dialog"]');
 
 function openNewItemDialog() {
+  if (!newItemOverlay) return;
   newItemOverlay.querySelectorAll('input[type="text"]').forEach((inp) => { inp.value = ''; });
-  newItemConfirm.disabled = true;
+  if (newItemConfirm) newItemConfirm.disabled = true;
   newItemOverlay.classList.add('open');
   const first = newItemOverlay.querySelector('input[data-field="Item Name"]');
   if (first) first.focus();
 }
-function closeNewItemDialog() { newItemOverlay.classList.remove('open'); }
+function closeNewItemDialog() { newItemOverlay?.classList.remove('open'); }
 
 function validateNewItemDialog() {
+  if (!newItemOverlay || !newItemConfirm) return;
   const name  = newItemOverlay.querySelector('input[data-field="Item Name"]').value.trim();
   const value = newItemOverlay.querySelector('input[data-field="Value"]').value.trim();
   newItemConfirm.disabled = !(name && value);
 }
 
-newItemOverlay.addEventListener('input', (e) => {
+newItemOverlay?.addEventListener('input', (e) => {
   if (e.target.matches('.modal-table input[type="text"]')) validateNewItemDialog();
 });
-
-newItemCancel.addEventListener('click', closeNewItemDialog);
-
+newItemCancel?.addEventListener('click', closeNewItemDialog);
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && newItemOverlay.classList.contains('open')) closeNewItemDialog();
+  if (e.key === 'Escape' && newItemOverlay?.classList.contains('open')) closeNewItemDialog();
 });
-newItemOverlay.addEventListener('mousedown', (e) => {
+newItemOverlay?.addEventListener('mousedown', (e) => {
   if (e.target === newItemOverlay) closeNewItemDialog();
-});
-
-newItemConfirm.addEventListener('click', () => {
-  if (newItemConfirm.disabled) return;
-
-  const rows = newItemOverlay.querySelectorAll('.modal-table tbody tr');
-  const content = Array.from(rows).map((row) => {
-    const label = row.querySelector('th')?.textContent?.trim() || '';
-    const value = row.querySelector('input')?.value?.trim() || '';
-    return [label, value];
-  });
-
-  const name  = content[0]?.[1] || '';
-  const value = content[1]?.[1] || '';
-
-  const personalPanel = document.querySelector('.panel[data-panel="personal"]');
-  const tbody = personalPanel?.querySelector('tbody');
-  if (tbody) {
-    const row = createRow(personalPanel);
-    // Fill values and sync ro-text
-    const cells = row.querySelectorAll('td .cell');
-    const [fieldCell, valueCell] = cells;
-    if (fieldCell) {
-      const input = fieldCell.querySelector('input');
-      const ro = fieldCell.querySelector('.ro-text');
-      input.value = name;
-      ro.textContent = name;
-    }
-    if (valueCell) {
-      const input = valueCell.querySelector('input');
-      const ro = valueCell.querySelector('.ro-text');
-      input.value = value;
-      ro.textContent = value;
-    }
-    tbody.appendChild(row);
-  }
-
-  closeNewItemDialog();
 });
 
 /* ----------- Ctrl + Left-click editing (PERSONAL ONLY) ----------- */

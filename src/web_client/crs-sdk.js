@@ -8,13 +8,14 @@ export class CRSClient {
   }
 
   async _fetch(path, opts = {}) {
-    const { method = "POST", body, ...rest } = opts;
+    const { method = "POST", body, headers = {}, ...rest } = opts;
     const jsonHeader = body ? { "Content-Type": "application/json" } : null;
     const mergedHeaders = jsonHeader ? { ...jsonHeader, ...headers } : headers;
+
     const res = await fetch(this.base + path, {
       method,
-      headers: mergedHeaders,
       body: body ? JSON.stringify(body) : undefined,
+      headers: mergedHeaders,
       ...rest,
       credentials: "include",
     });

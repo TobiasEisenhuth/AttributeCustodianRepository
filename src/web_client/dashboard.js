@@ -9,6 +9,7 @@ import {
 
 import { wireLogoutAndSync } from "/app/logout.js";
 import { loadUmbral } from "/app/umbral-loader.js";
+import { initBuilder } from "/app/builder.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder("utf-8");
@@ -95,7 +96,7 @@ async function hydrateAndRenderPersonal({ api, vault }) {
 
   // Local store with keys
   const s = vault.store || {};
-  const localItems = Array.isArray(s?.private?.items) ? s.private.items : [];
+  const localItems = Array.isArray(s?.private?.provider?.items) ? s.private.provider.items : [];
 
   // Pull server inventory (encrypted blobs)
   let serverItems = [];
@@ -122,11 +123,10 @@ async function hydrateAndRenderPersonal({ api, vault }) {
     setStatus("Inventory synced.", "ok");
   }
 
-  // Build lookup and hydrate plaintext into ephemeral (not persisted)
   const byId = new Map(serverItems.map(x => [x.item_id, x]));
   s.ephemeral = s.ephemeral || {};
-  s.ephemeral.personal = s.ephemeral.personal || {};
-  const values = (s.ephemeral.personal.valuesById = {});
+  s.ephemeral.provider = s.ephemeral.provider || {};
+  const values = (s.ephemeral.provider.valuesById = {});
 
   for (const entry of localItems) {
     const id = entry?.item_id;
@@ -152,7 +152,7 @@ async function hydrateAndRenderPersonal({ api, vault }) {
   // Render Personal table using hydrated plaintext
   for (const entry of localItems) {
     const name = entry?.item_name || entry?.item_id || "";
-    const val  = s?.ephemeral?.personal?.valuesById?.[entry?.item_id] ?? "";
+    const val  = s?.ephemeral?.provider?.valuesById?.[entry?.item_id] ?? "";
     const itemId = entry?.item_id
     appendRowToPersonal(name, val, itemId);
   }
@@ -171,6 +171,7 @@ if (IS_OWNER_TAB) {
     } finally {
       // hook up the Add dialog last (so first click won’t race hydration)
       wireAddItemWithUmbral({ api, vault, setStatus, setStateChip });
+      initBuilder({ vault, loadUmbral, setStatus, setStateChip });
     }
   })();
   wireLogoutAndSync({ api, vault, setStatus, setStateChip });
@@ -416,7 +417,7 @@ newItemOverlay?.addEventListener('mousedown', (e) => {
       if (colIndex === 0) {
         // --- ITEM NAME EDIT -> update user store only ---
         const store = vault.store || {};
-        const items = store?.private?.items || [];
+        const items = store?.private?.provider?.items || [];
         const entry = items.find(it => it?.item_id === itemId);
         if (!entry) throw new Error("Item not found in store");
         if (!newVal) throw new Error("Item name cannot be empty");
@@ -441,7 +442,7 @@ newItemOverlay?.addEventListener('mousedown', (e) => {
         }
 
         const store = vault.store || {};
-        const items = store?.private?.items || [];
+        const items = store?.private?.provider?.items || [];
         const entry = items.find(it => it?.item_id === itemId);
         if (!entry?.keys?.secret_key_b64) throw new Error("Missing secret key for this item");
 

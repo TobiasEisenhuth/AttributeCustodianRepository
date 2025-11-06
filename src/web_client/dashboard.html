@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dashboard</title>
+  <script type="module" src="navigation.js"></script>
   <link rel="stylesheet" href="dashboard.css" />
   <script type="module" src="dashboard.js"></script>
 </head>
@@ -13,12 +14,16 @@
     <aside class="column nav-col">
       <h2 class="column-title">Navigation</h2>
       <div class="column-content">
+        <button type="button" class="btn nav-btn" data-action="nav-view" data-view="share" aria-current="page">Share Item</button>
+        <button type="button" class="btn nav-btn" data-action="nav-view" data-view="builder">Request Builder</button>
+
+        <hr class="muted" aria-hidden="true" />
+
         <button type="button" class="btn" data-action="logout">Log out</button>
       </div>
     </aside>
 
-    <!-- Middle: Personal Data -->
-    <section class="column panel" data-panel="personal">
+    <section class="column panel" data-view="share" data-slot="left" data-panel="personal">
       <h2 class="column-title">Personal Data | place.holder@email.com</h2>
       <div class="column-content">
         <div class="table-scroll">
@@ -40,8 +45,7 @@
       </div>
     </section>
 
-    <!-- Right: Requests -->
-    <section class="column panel" data-panel="requests">
+    <section class="column panel" data-view="share" data-slot="right" data-panel="requests">
       <h2 class="column-title">Request | <span class="count" aria-live="polite">0</span></h2>
       <div class="column-content">
         <div class="table-scroll">
@@ -62,9 +66,69 @@
         </div>
       </div>
     </section>
+
+    <section class="column panel" data-view="builder" data-slot="left" data-panel="builder-form" hidden inert>
+      <h2 class="column-title">Item builder | place.holder@email.com</h2>
+      <div class="column-content">
+        <div class="table-scroll">
+          <!-- Using the same table-based form pattern you use in the modal for consistency -->
+          <form class="builder-form" aria-labelledby="builderFormTitle">
+            <h3 id="builderFormTitle" class="visually-hidden">Item Builder Form</h3>
+            <table class="data-table" aria-label="Item builder form">
+              <tbody>
+                <tr>
+                  <th scope="row">Info String</th>
+                  <td><input type="text" data-field="Info String" autocomplete="off" /></td>
+                </tr>
+                <tr>
+                  <th scope="row">To</th>
+                  <td><input type="text" data-field="To" autocomplete="off" /></td>
+                </tr>
+                <tr>
+                  <th scope="row">Item Name</th>
+                  <td><input type="text" data-field="Item Name" autocomplete="off" /></td>
+                </tr>
+                <tr>
+                  <th scope="row">Example Value</th>
+                  <td><input type="text" data-field="Example Value" autocomplete="off" /></td>
+                </tr>
+                <tr>
+                  <th scope="row">Default Field</th>
+                  <td><input type="text" data-field="Default Field" autocomplete="off" /></td>
+                </tr>
+              </tbody>
+            </table>
+          </form>
+        </div>
+        <div class="panel-footer">
+          <button type="button" class="btn primary" data-action="builder-apply">Use input</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="column panel" data-view="builder" data-slot="right" data-panel="builder-items" hidden inert>
+      <h2 class="column-title">Compounded Items | <span class="count" aria-live="polite">0</span></h2>
+      <div class="column-content">
+        <div class="table-scroll">
+          <table class="data-table" aria-label="Compounded items list">
+            <thead>
+              <tr>
+                <th scope="col">Item</th>
+                <th scope="col">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- list added via JS -->
+            </tbody>
+          </table>
+        </div>
+        <div class="panel-footer">
+          <button type="button" class="btn" data-action="builder-commit" disabled>Confirm Items</button>
+        </div>
+      </div>
+    </section>
   </div>
 
-  <!-- New Item Modal (for Add row in Personal) -->
   <div id="new-item-dialog" class="modal-overlay" aria-hidden="true">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="newItemTitle">
       <h3 id="newItemTitle" class="modal-title">New Item</h3>

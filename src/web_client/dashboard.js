@@ -50,6 +50,10 @@ if (EMAIL) {
     const title = document.querySelector('.panel[data-panel="personal"] .column-title');
     if (title) title.textContent = `Personal Data | ${EMAIL}`;
   }, { once: true });
+    window.addEventListener("DOMContentLoaded", () => {
+    const title = document.querySelector('.panel[data-panel="builder-form"] .column-title');
+    if (title) title.textContent = `Item builder | ${EMAIL}`;
+  }, { once: true });
 }
 
 /* === UI hooks you already use === */

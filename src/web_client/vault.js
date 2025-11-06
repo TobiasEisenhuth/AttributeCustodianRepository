@@ -58,14 +58,13 @@ export function initVault({ api, passkey, email, ui = {} }) {
     } catch { return null; }
   }
 
-  /* ------------ shape (keep current infra: private.items) ------------ */
   function ensureVaultShape(obj) {
     const s = (obj && typeof obj === 'object') ? obj : {};
     if (typeof s.version !== 'number') s.version = 1;
     if (!s.created_at) s.created_at = nowIso();
     if (!s.updated_at) s.updated_at = s.created_at;
     if (!s.private || typeof s.private !== 'object') s.private = {};
-    if (!Array.isArray(s.private.items)) s.private.items = [];
+    if (!Array.isArray(s.private.provider.items)) s.private.provider.items = [];
     if (!s.meta || typeof s.meta !== 'object') s.meta = { schema: 'crs/v1', owner: email || '' };
     return s;
   }

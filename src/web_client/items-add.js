@@ -139,7 +139,7 @@ export function wireAddItemWithUmbral({ api, vault, setStatus = () => {}, setSta
 
       // 3) Build server payload
       const s = vault.store || {};
-      const items = s?.private?.items || [];
+      const items = s?.private?.provider?.items || []
       const existing = new Set(items.map(it => it?.item_id).filter(Boolean));
       const item_id = generateItemId(existing);
 
@@ -171,14 +171,14 @@ export function wireAddItemWithUmbral({ api, vault, setStatus = () => {}, setSta
       const shape = (obj) => {
         const root = vault.ensureVaultShape?.(obj) || (obj || {});
         root.private = root.private || {};
-        root.private.items = root.private.items || [];
+        root.private.provider.items = root.private.provider.items || [];
         return root;
       };
 
       const store = shape(vault.store || {});
-      const idx = store.private.items.findIndex(i => i.item_id === item_id);
-      if (idx === -1) store.private.items.push(entry);
-      else store.private.items[idx] = { ...store.private.items[idx], ...entry, updated_at: nowIso() };
+      const idx = store.private.provider.items.findIndex(i => i.item_id === item_id);
+      if (idx === -1) store.private.provider.items.push(entry);
+      else store.private.provider.items[idx] = { ...store.private.provider.items[idx], ...entry, updated_at: nowIso() };
 
       try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}
       await (vault.encryptAndCachePrivate?.());

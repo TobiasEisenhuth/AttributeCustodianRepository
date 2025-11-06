@@ -168,17 +168,15 @@ export function initBuilder({ vault, loadUmbral, setStatus, setStateChip }) {
 
     // Ensure store scaffolding (new layout)
     const s = vault.store || (vault.store = {});
-    const prvProviderItems = ensure(s, "private.provider.items", "array");   // moved for Personal (not used here, but kept consistent)
-    const prvRequesterItems = ensure(s, "private.requester.items", "array"); // where requester secret keys live
+    const prvProviderItems = ensure(s, "private.provider.items", "array");
+    const prvRequesterItems = ensure(s, "private.requester.items", "array");
 
-    const ephProviderValues = ensure(s, "ephemeral.provider.valuesById");    // moved from ephemeral.personal.valuesById
-    const outBound = ensure(s, "ephemeral.requester.outBound");              // single active draft
+    const ephProviderValues = ensure(s, "ephemeral.provider.valuesById");
+    const outBound = ensure(s, "ephemeral.requester.outBound");
     outBound.header = outBound.header || { info_string: "", recipient: "" };
     outBound.items  = Array.isArray(outBound.items) ? outBound.items : [];
 
-    // Generate unique item_id (collisions checked ONLY against private.requester.items)
     let item_id = newItemId();
-    // silly-small chance of collision; loop until free
     for (let i = 0; i < 5 && hasCollision({ vault }, item_id); i++) {
       item_id = newItemId();
     }

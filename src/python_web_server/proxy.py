@@ -199,12 +199,36 @@ def create_user(email: EmailStr, password: Password) -> UUID:
 
 def create_session(user_id: UUID, req: Request) -> str:
     token = secrets.token_urlsafe(32)
-    expires_at = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
+
     with get_conn() as conn:
-        conn.execute("""
-            INSERT INTO sessions (token, user_id, expires_at)
-            VALUES (%s, %s, %s)
-        """, (token, user_id, expires_at))
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM users WHERE user_id = %s FOR UPDATE", (user_id,))
+
+            cur.execute(
+                "DELETE FROM sessions WHERE user_id = %s AND expires_at <= now()",
+                (user_id,)
+            )
+
+
+            cur.execute(
+                "SELECT token FROM sessions WHERE user_id = %s LIMIT 1",
+                (user_id,)
+            )
+            row = cur.fetchone()
+            if row:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Another active session exists for this account."
+                )
+
+            cur.execute(
+                """
+                INSERT INTO sessions (user_id, token, expires_at)
+                VALUES (%s, %s, now() + interval '5 minutes')
+                """,
+                (user_id, token)
+            )
+
     return token
 
 def refresh_session_expiry(token: str) -> None:

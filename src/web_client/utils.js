@@ -54,6 +54,14 @@ function ensureVault(store) {
   store.ephemeral.provider.values ??= [];
 }
 
+// todo - use AJV?
+function checkStoreMinimalCorrectness(store) {
+  correct = false;
+
+
+  return correct;
+}
+
 function concatBytes(a, b) {
   const out = new Uint8Array(a.length + b.length);
   out.set(a, 0); out.set(b, a.length);
@@ -82,7 +90,7 @@ async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000,
   );
 }
 
-export async function encryptStoreToBlob(store, passkey = null) {
+export async function packStoreToEnvelope(store, passkey = null) {
   const payloadText = JSON.stringify(store);
   const payloadBytes = te.encode(payloadText);
 
@@ -118,7 +126,7 @@ export async function encryptStoreToBlob(store, passkey = null) {
   return bytesToBase64(envBytes);
 }
 
-export async function decryptBlobToStore(envelopeB64, passkey = null ) {
+export async function extractStoreFromEnvelope(envelopeB64, passkey = null ) {
   const envelope_bytes = base64ToBytes(envelopeB64);
   const envelope_utf_8 = dec.decode(envelope_bytes);
   const envelope = JSON.parse(envelope_utf_8);

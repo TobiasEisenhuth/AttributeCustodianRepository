@@ -1,7 +1,7 @@
 // /app/builder.js
 // Purpose: ONLY Request Builder business logic (no view toggling).
 // - Generates per-item Umbral keypair on "Use input"
-// - Persists secret keys in store.private.requester.items
+// - Persists secret keys in store.persistent.requester.items
 // - Maintains single outbound draft in store.ephemeral.requester.outBound
 // - Renders "Compounded Items" list and count
 // - Encrypts/saves private on each add
@@ -119,7 +119,7 @@ function renderList({ vault, tbody, countEl, commitBtn }) {
 
 // Collision check against private.requester.items only
 function hasCollision({ vault }, candidateId) {
-  const list = vault?.store?.private?.requester?.items;
+  const list = vault?.store?.persistent?.requester?.items;
   if (!Array.isArray(list)) return false;
   return list.some(e => e?.item_id === candidateId);
 }
@@ -131,7 +131,7 @@ async function persistPrivate({ vault }) {
   vault.setDirty(true);
 }
 
-export function initBuilder({ vault, loadUmbral, setStatus, setStateChip }) {
+export function wireUpRequestBuilder({ vault, loadUmbral, setStatus, setStateChip }) {
   const dom = getDomRefs();
   if (!dom.formPanel || !dom.itemsPanel) return; // builder view not present
 
@@ -171,7 +171,7 @@ export function initBuilder({ vault, loadUmbral, setStatus, setStateChip }) {
     const prvProviderItems = ensure(s, "private.provider.items", "array");
     const prvRequesterItems = ensure(s, "private.requester.items", "array");
 
-    const ephProviderValues = ensure(s, "ephemeral.provider.valuesById");
+    const ephProviderValues = ensure(s, "ephemeral.provider.values");
     const outBound = ensure(s, "ephemeral.requester.outBound");
     outBound.header = outBound.header || { info_string: "", recipient: "" };
     outBound.items  = Array.isArray(outBound.items) ? outBound.items : [];

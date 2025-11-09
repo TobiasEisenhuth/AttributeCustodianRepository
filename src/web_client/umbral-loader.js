@@ -1,4 +1,3 @@
-// /app/umbral-loader.js
 let U = null;
 
 /**

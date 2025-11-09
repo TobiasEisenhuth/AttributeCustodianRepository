@@ -1,50 +1,106 @@
-const LAST_SAVED_KEY = 'crs:last_saved_b64';
-const CACHE_KEY      = 'crs:vault_cache';
+import {
+  nowIso,
+  enc,
+  dec,
+  fail,
+  normalizeText,
+  generateItemId,
+  bytesToBase64,
+  base64ToBytes,
+} from "/app/utils.js";
+
+import { deriveArgon2id } from "./argon2id.js";
+import { decryptBlobToStore } from "./utils.js";
+
 const STORE_SS_KEY   = 'crs:store';
 
-// Set to true for encrypted vault blobs (AES-GCM with `passkey`), false for plaintext base64 JSON (debug)
-const USE_AES_GCM = false;
+// todo - true for production
+const USE_CRYPTO = false;
 
-/* ------------ small utils ------------ */
-function nowIso() { return new Date().toISOString(); }
-function b64ToBytes(b64) {
-  const s = atob(b64);
-  const a = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
-  return a;
-}
-function bytesToB64(bytes) {
-  let s = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(s);
-}
-function concatBytes(a, b) {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0); out.set(b, a.length);
-  return out;
-}
-
-/**
- * Initialize a vault controller.
- * @param {object} cfg
- * @param {object} cfg.api - CRSClient instance with loadFromVault()
- * @param {string|null} cfg.passkey - base64 raw AES key bytes (when USE_AES_GCM = true)
- * @param {string|null} cfg.email - optional, for cache metadata
- * @param {object} [cfg.ui] - UI hooks: setStateChip, setStatus, updateButtons
- */
-export function initVault({ api, passkey, email, ui = {} }) {
+export function initUserStore({ api, passkey, email, ui = {} }) {
   const setStateChip   = ui.setStateChip   || (() => {});
   const setStatus      = ui.setStatus      || (() => {});
-  const updateButtons  = ui.updateButtons  || (() => {});
 
-  // In-memory state (per tab)
-  let store = null;             // decrypted store object (also mirrored to Session Storage)
-  let encryptedBlobB64 = null;  // last loaded/generated blob
-  let lastSavedB64 = null;      // blob considered saved on server
-  let dirty = false;
+  let user_store = null;
+
+  setStateChip('Loading…');
+  setStatus('Loading from vault…');
+
+  try {
+      const envelope_b64 = api.loadFromVault();
+      user_store = decryptBlobToStore(envelope_b64, passkey);
+
+      const envelope_bytes = base64ToBytes(envelope_b64);
+      const envelope_utf_8 = dec.decode(envelope_bytes);
+      const envelope = JSON.parse(envelope_utf_8);
+
+      if (!envelope || envelope.v !== 1 || !envelope.ct_b64) {
+        throw new Error("Invalid vault envelope.");
+      }
+
+      if (envelope.enc === "none") {
+        const user_store_bytes = base64ToBytes(envelope.ct_b64);
+        const user_store_json = dec.decode(user_store_bytes);
+        user_store = JSON.parse(user_store_json);
+      }
+      
+      if (envelope.enc === "aes-256-gcm") {
+        
+      }
+
+        throw new Error(`Unsupported envelope enc: ${String(envelope.enc)}`);
+
+      if (!vault_b64 || typeof vault_b64 !== 'string') throw new Error('Bad vault payload');
+
+      const { kind } = ingestVault(vault_b64);
+      encryptedBlobB64 = b64;
+
+      // If server had plaintext but we’re in encrypted mode, force a re-save
+      if (USE_CRYPTO && kind === 'plain') {
+        lastSavedB64 = null;      // nothing "encrypted" saved yet
+        dirty = true;
+        setStateChip('Unsaved (will re-encrypt)', 'warn');
+        setStatus('Loaded legacy/plain vault; will re-encrypt on next save.', 'warn');
+      } else {
+        lastSavedB64 = b64;
+        dirty = false;
+        setStateChip('Synced', 'ok');
+        setStatus('Vault loaded from server.', 'ok');
+      }
+
+      try { localStorage.setItem(LAST_SAVED_KEY, lastSavedB64 || ''); } catch {}
+      try {
+        const s = store ?? readStoreFromSession();
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          ts: Date.now(), b64, email, version: s?.version ?? 1
+        }));
+      } catch {}
+    } catch (e) {
+      // Server unavailable or unreadable: try local cache
+      const cached = readEncryptedCache();
+      if (cached?.b64) {
+        try {
+          await decryptBlobToStore(cached.b64);
+          encryptedBlobB64 = cached.b64;
+          dirty = true; // local cache means we might be ahead of server
+          setStateChip('Unsaved (from cache)', 'warn');
+          setStatus('Loaded vault from local cache (server unavailable).', 'warn');
+        } catch {
+          setStateChip('Error', 'err');
+          setStatus('Could not decrypt cached vault. Wrong key or corrupted data.', 'err');
+        }
+      } else {
+        // First-time: start empty and create initial blob
+        setStatus('No server vault. Starting with an empty local store.', 'warn');
+        writeStoreToSession(ensureVaultShape({}));
+        const b64 = await encryptAndCachePrivate();
+        encryptedBlobB64 = b64;
+        dirty = true;
+        setStateChip('Unsaved', 'warn');
+      }
+    } finally {
+      updateButtons();
+    }
 
   /* ------------ session mirroring ------------ */
   function writeStoreToSession(obj) {
@@ -63,8 +119,8 @@ export function initVault({ api, passkey, email, ui = {} }) {
     if (typeof s.version !== 'number') s.version = 1;
     if (!s.created_at) s.created_at = nowIso();
     if (!s.updated_at) s.updated_at = s.created_at;
-    if (!s.private || typeof s.private !== 'object') s.private = {};
-    if (!Array.isArray(s.private.provider.items)) s.private.provider.items = [];
+    if (!s.persistent || typeof s.persistent !== 'object') s.persistent = {};
+    if (!Array.isArray(s.persistent.provider.items)) s.persistent.provider.items = [];
     if (!s.meta || typeof s.meta !== 'object') s.meta = { schema: 'crs/v1', owner: email || '' };
     return s;
   }
@@ -72,7 +128,7 @@ export function initVault({ api, passkey, email, ui = {} }) {
   /* ------------ AES key (only if encrypted mode) ------------ */
   let aesKeyPromise = null;
   function getAesKey() {
-    if (!USE_AES_GCM) return null;
+    if (!USE_CRYPTO) return null;
     if (!passkey) throw new Error('No passkey provided for AES-GCM mode.');
     if (!aesKeyPromise) {
       aesKeyPromise = crypto.subtle.importKey(
@@ -87,38 +143,7 @@ export function initVault({ api, passkey, email, ui = {} }) {
   }
 
   /* ------------ CRYPTO (dual) ------------ */
-  // Always *accept* both encodings on load:
-  //  1) Try AES-GCM (IV(12) || ciphertext+tag)
-  //  2) Fallback: plaintext base64(JSON-string)
-  // Returns { kind: 'aes' | 'plain' }
-  async function decryptBlobToStore(b64Blob) {
-    const bytes = b64ToBytes(b64Blob);
 
-    // 1) Attempt AES-GCM if it looks like it could be
-    if (bytes.length >= 12 + 16) {
-      try {
-        const key = await getAesKey(); // may throw if USE_AES_GCM and no passkey
-        if (key) {
-          const iv = bytes.slice(0, 12);
-          const ct = bytes.slice(12);
-          const ptBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
-          const obj = JSON.parse(new TextDecoder().decode(new Uint8Array(ptBuf)));
-          writeStoreToSession(ensureVaultShape(obj));
-          return { kind: 'aes' };
-        }
-      } catch { /* fall through to plaintext */ }
-    }
-
-    // 2) Plaintext base64(JSON)
-    try {
-      const json = atob(b64Blob);
-      const obj = JSON.parse(json);
-      writeStoreToSession(ensureVaultShape(obj));
-      return { kind: 'plain' };
-    } catch {
-      throw new Error('Decryption failed (not AES-GCM, not plaintext JSON).');
-    }
-  }
 
   // Save according to the build-time flag
   async function encryptStoreToBlob() {
@@ -127,13 +152,13 @@ export function initVault({ api, passkey, email, ui = {} }) {
       version: s.version ?? 1,
       created_at: s.created_at || nowIso(),
       updated_at: nowIso(),
-      private: s.private || {},
+      private: s.persistent || {},
       meta: s.meta || { schema: 'crs/v1', owner: email || '' },
     };
     // keep timestamps consistent in-memory
     writeStoreToSession(ensureVaultShape(payload));
 
-    if (!USE_AES_GCM) {
+    if (!USE_CRYPTO) {
       // Debug/plain mode: base64(JSON)
       return btoa(JSON.stringify(payload));
     }
@@ -184,7 +209,7 @@ export function initVault({ api, passkey, email, ui = {} }) {
       encryptedBlobB64 = b64;
 
       // If server had plaintext but we’re in encrypted mode, force a re-save
-      if (USE_AES_GCM && kind === 'plain') {
+      if (USE_CRYPTO && kind === 'plain') {
         lastSavedB64 = null;      // nothing "encrypted" saved yet
         dirty = true;
         setStateChip('Unsaved (will re-encrypt)', 'warn');
@@ -247,4 +272,92 @@ export function initVault({ api, passkey, email, ui = {} }) {
       if (encrypt) encryptStoreToBlob = encrypt;
     }
   };
+}
+
+async function hydrateAndRenderPersonal({ api, vault }) {
+  setStateChip("Loading…");
+  setStatus("Loading inventory…");
+
+  // Disable Add-row until hydrated
+  const addBtn = document.querySelector('.panel[data-panel="personal"] [data-action="add-row"]');
+  if (addBtn) addBtn.disabled = true;
+
+  // Ensure DOM exists
+  const panel = document.querySelector('.panel[data-panel="personal"]');
+  const tbody = panel?.querySelector("tbody");
+  if (tbody) tbody.innerHTML = "";
+
+  // Load Umbral
+  const umbral = await loadUmbral();
+  if (!umbral) {
+    setStateChip("Umbral missing", "err");
+    setStatus("Umbral WASM not available; cannot decrypt items.", "err");
+    if (addBtn) addBtn.disabled = false; // still allow adding new plaintext rows
+    return;
+  }
+
+  // Local store with keys
+  const s = vault.store || {};
+  const localItems = Array.isArray(s?.persistent?.provider?.items) ? s.persistent.provider.items : [];
+
+  // Pull server inventory (encrypted blobs)
+  let serverItems = [];
+  try {
+    const res = await api.listMyItems();
+    serverItems = Array.isArray(res?.items) ? res.items : [];
+  } catch (e) {
+    setStateChip("Error", "err");
+    setStatus(e?.message || "Failed to fetch items from server.", "err");
+    if (addBtn) addBtn.disabled = false;
+    return;
+  }
+
+  // Mismatch detection (count or ids differ)
+  const localIds  = new Set(localItems.map(i => i?.item_id).filter(Boolean));
+  const serverIds = new Set(serverItems.map(i => i?.item_id).filter(Boolean));
+  const sameCount = localIds.size === serverIds.size;
+  const sameIds   = sameCount && [...localIds].every(id => serverIds.has(id)) && [...serverIds].every(id => localIds.has(id));
+  if (!sameIds) {
+    setStateChip("Mismatch", "warn");
+    setStatus("Local vault and server inventory differ (IDs or count).", "warn");
+  } else {
+    setStateChip("Synced", "ok");
+    setStatus("Inventory synced.", "ok");
+  }
+
+  const byId = new Map(serverItems.map(x => [x.item_id, x]));
+  s.ephemeral = s.ephemeral || {};
+  s.ephemeral.provider = s.ephemeral.provider || {};
+  const values = (s.ephemeral.provider.values = {});
+
+  for (const entry of localItems) {
+    const id = entry?.item_id;
+    const srv = id ? byId.get(id) : null;
+    if (!id || !srv) continue;
+
+    try {
+      const skBE = entry?.keys?.secret_key_b64;
+      if (!skBE) throw new Error("missing secret_key_b64");
+      const sk = umbral.SecretKey.fromBEBytes(base64ToBytes(skBE));
+      const capsule = umbral.Capsule.fromBytes(base64ToBytes(srv.capsule_b64));
+      const ct = base64ToBytes(srv.ciphertext_b64);
+      const pt = umbral.decryptOriginal(sk, capsule, ct);
+      values[id] = dec.decode(pt);
+    } catch {
+      values[id] = "(decrypt failed)";
+    }
+  }
+
+  // Mirror hydrated store back to Session Storage (vault persists `private` only)
+  try { sessionStorage.setItem('crs:store', JSON.stringify(s)); } catch {}
+
+  // Render Personal table using hydrated plaintext
+  for (const entry of localItems) {
+    const name = entry?.item_name || entry?.item_id || "";
+    const val  = s?.ephemeral?.provider?.values?.[entry?.item_id] ?? "";
+    const itemId = entry?.item_id
+    appendRowToPersonal(name, val, itemId);
+  }
+
+  if (addBtn) addBtn.disabled = false;
 }

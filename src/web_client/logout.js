@@ -1,5 +1,5 @@
 // /app/logout.js
-export function wireLogoutAndSync({ api, vault, setStatus = () => {}, setStateChip = () => {} }) {
+export function wireUpLogoutAndSync({ api, vault, setStatus = () => {}, setStateChip = () => {} }) {
   const btn = document.querySelector('[data-action="logout"]');
   if (!btn) return;
 

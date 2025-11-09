@@ -2,37 +2,17 @@ import { CRSClient } from "/app/crs-sdk.js";
 import { initVault } from "/app/vault.js";
 
 import {
-  wireAddItemWithUmbral,
+  wireUpAddItemDialog,
   appendRowToPersonal,
   makePersonalCell,
-} from "/app/items-add.js";
+} from "/app/add-items.js";
 
-import { wireLogoutAndSync } from "/app/logout.js";
+import { wireUpLogoutAndSync } from "/app/logout.js";
 import { loadUmbral } from "/app/umbral-loader.js";
-import { initBuilder } from "/app/builder.js";
-
-const enc = new TextEncoder();
-const dec = new TextDecoder("utf-8");
-
-function base64ToBytes(b64) {
-  const s = atob(b64);
-  const a = new Uint8Array(s.length);
-  for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
-  return a;
-}
-
-function bytesToBase64(bytes) {
-  let s = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    s += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(s);
-}
+import { wireUpRequestBuilder } from "/app/request-builder.js";
 
 const api = new CRSClient();
 
-/* === read+remove passkey/email ASAP (your existing code) === */
 const PASSKEY = (() => {
   const k = sessionStorage.getItem("crs:passkey") || null;
   if (k) sessionStorage.removeItem("crs:passkey");
@@ -45,7 +25,6 @@ const EMAIL = (() => {
 })();
 const IS_OWNER_TAB = !!PASSKEY;
 
-/* === set the Personal title (optional) === */
 if (EMAIL) {
   window.addEventListener("DOMContentLoaded", () => {
     const title = document.querySelector('.panel[data-panel="personal"] .column-title');
@@ -57,7 +36,6 @@ if (EMAIL) {
   }, { once: true });
 }
 
-/* === UI hooks you already use === */
 function setStateChip(text, tone = "muted") {
   const el = document.getElementById("state-chip");
   if (!el) return;
@@ -70,114 +48,22 @@ function setStatus(text, tone = "muted") {
   el.textContent = text;
   el.className = tone;
 }
-function updateButtons() {}
 
-async function hydrateAndRenderPersonal({ api, vault }) {
-  setStateChip("Loading…");
-  setStatus("Loading inventory…");
-
-  // Disable Add-row until hydrated
-  const addBtn = document.querySelector('.panel[data-panel="personal"] [data-action="add-row"]');
-  if (addBtn) addBtn.disabled = true;
-
-  // Ensure DOM exists
-  const panel = document.querySelector('.panel[data-panel="personal"]');
-  const tbody = panel?.querySelector("tbody");
-  if (tbody) tbody.innerHTML = "";
-
-  // Load Umbral
-  const umbral = await loadUmbral();
-  if (!umbral) {
-    setStateChip("Umbral missing", "err");
-    setStatus("Umbral WASM not available; cannot decrypt items.", "err");
-    if (addBtn) addBtn.disabled = false; // still allow adding new plaintext rows
-    return;
-  }
-
-  // Local store with keys
-  const s = vault.store || {};
-  const localItems = Array.isArray(s?.private?.provider?.items) ? s.private.provider.items : [];
-
-  // Pull server inventory (encrypted blobs)
-  let serverItems = [];
-  try {
-    const res = await api.listMyItems();
-    serverItems = Array.isArray(res?.items) ? res.items : [];
-  } catch (e) {
-    setStateChip("Error", "err");
-    setStatus(e?.message || "Failed to fetch items from server.", "err");
-    if (addBtn) addBtn.disabled = false;
-    return;
-  }
-
-  // Mismatch detection (count or ids differ)
-  const localIds  = new Set(localItems.map(i => i?.item_id).filter(Boolean));
-  const serverIds = new Set(serverItems.map(i => i?.item_id).filter(Boolean));
-  const sameCount = localIds.size === serverIds.size;
-  const sameIds   = sameCount && [...localIds].every(id => serverIds.has(id)) && [...serverIds].every(id => localIds.has(id));
-  if (!sameIds) {
-    setStateChip("Mismatch", "warn");
-    setStatus("Local vault and server inventory differ (IDs or count).", "warn");
-  } else {
-    setStateChip("Synced", "ok");
-    setStatus("Inventory synced.", "ok");
-  }
-
-  const byId = new Map(serverItems.map(x => [x.item_id, x]));
-  s.ephemeral = s.ephemeral || {};
-  s.ephemeral.provider = s.ephemeral.provider || {};
-  const values = (s.ephemeral.provider.valuesById = {});
-
-  for (const entry of localItems) {
-    const id = entry?.item_id;
-    const srv = id ? byId.get(id) : null;
-    if (!id || !srv) continue;
-
-    try {
-      const skBE = entry?.keys?.secret_key_b64;
-      if (!skBE) throw new Error("missing secret_key_b64");
-      const sk = umbral.SecretKey.fromBEBytes(base64ToBytes(skBE));
-      const capsule = umbral.Capsule.fromBytes(base64ToBytes(srv.capsule_b64));
-      const ct = base64ToBytes(srv.ciphertext_b64);
-      const pt = umbral.decryptOriginal(sk, capsule, ct);
-      values[id] = dec.decode(pt);
-    } catch {
-      values[id] = "(decrypt failed)";
-    }
-  }
-
-  // Mirror hydrated store back to Session Storage (vault persists `private` only)
-  try { sessionStorage.setItem('crs:store', JSON.stringify(s)); } catch {}
-
-  // Render Personal table using hydrated plaintext
-  for (const entry of localItems) {
-    const name = entry?.item_name || entry?.item_id || "";
-    const val  = s?.ephemeral?.provider?.valuesById?.[entry?.item_id] ?? "";
-    const itemId = entry?.item_id
-    appendRowToPersonal(name, val, itemId);
-  }
-
-  if (addBtn) addBtn.disabled = false;
-}
-
-/* === Initialize vault and load, only for owner tab === */
 let vault = null;
 if (IS_OWNER_TAB) {
-  vault = initVault({ api, passkey: PASSKEY, email: EMAIL, ui: { setStateChip, setStatus, updateButtons } });
+  vault = initUserStore({ api, passkey: PASSKEY, email: EMAIL, ui: { setStateChip, setStatus } });
   (async () => {
     try {
       await vault.loadVault();
       await hydrateAndRenderPersonal({ api, vault });
     } finally {
-      // hook up the Add dialog last (so first click won’t race hydration)
-      wireAddItemWithUmbral({ api, vault, setStatus, setStateChip });
-      initBuilder({ vault, loadUmbral, setStatus, setStateChip });
+      wireUpAddItemDialog({ api, vault, setStatus, setStateChip });
+      wireUpRequestBuilder({ vault, loadUmbral, setStatus, setStateChip });
     }
   })();
-  wireLogoutAndSync({ api, vault, setStatus, setStateChip });
+  wireUpLogoutAndSync({ api, vault, setStatus, setStateChip });
 
 } else {
-  // Non-owner tab: show your "already open" overlay (you already do this)
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay open';
   overlay.innerHTML = `
@@ -417,7 +303,7 @@ newItemOverlay?.addEventListener('mousedown', (e) => {
       if (colIndex === 0) {
         // --- ITEM NAME EDIT -> update user store only ---
         const store = vault.store || {};
-        const items = store?.private?.provider?.items || [];
+        const items = store?.persistent?.provider?.items || [];
         const entry = items.find(it => it?.item_id === itemId);
         if (!entry) throw new Error("Item not found in store");
         if (!newVal) throw new Error("Item name cannot be empty");
@@ -442,7 +328,7 @@ newItemOverlay?.addEventListener('mousedown', (e) => {
         }
 
         const store = vault.store || {};
-        const items = store?.private?.provider?.items || [];
+        const items = store?.persistent?.provider?.items || [];
         const entry = items.find(it => it?.item_id === itemId);
         if (!entry?.keys?.secret_key_b64) throw new Error("Missing secret key for this item");
 

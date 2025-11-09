@@ -1,5 +1,7 @@
 # language utils
-from base64 import b64encode as b64e, b64decode as b64d
+from base64 import b64encode, b64decode as b64d
+def _transport_safe_b_string(parcel: bytes): return b64encode(parcel).decode()
+
 from typing import List, Optional, Dict, Any
 from pydantic import EmailStr
 from uuid import UUID
@@ -95,7 +97,7 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS vault (
                 user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
-                encrypted_localstore BYTEA NOT NULL
+                user_store BYTEA NOT NULL
             );
         """)
         # crypto_bundle
@@ -470,11 +472,11 @@ MAX_VAULT_BYTES = int(os.getenv("MAX_VAULT_BYTES", str(3 * 1024 * 1024)))  # 3 M
 def api_save_to_vault(request: Request, body: SaveToVaultRequest):
     user_id = request.state.user_id
     try:
-        encrypted_localstore = b64d(body.encrypted_localstore_b64)
+        user_store = b64d(body.user_store_b64)
     except Exception:
         raise HTTPException(status_code=400, detail="bad_base64")
 
-    if len(encrypted_localstore) > MAX_VAULT_BYTES:
+    if len(user_store) > MAX_VAULT_BYTES:
         return JSONResponse(
             {"error": "payload_too_large", "max_bytes": MAX_VAULT_BYTES},
             status_code=413,
@@ -483,12 +485,12 @@ def api_save_to_vault(request: Request, body: SaveToVaultRequest):
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO vault (user_id, encrypted_localstore)
+            INSERT INTO vault (user_id, user_store)
             VALUES (%s, %s)
             ON CONFLICT (user_id) DO UPDATE SET
-                encrypted_localstore = EXCLUDED.encrypted_localstore
+                user_store = EXCLUDED.user_store
             """,
-            (user_id, encrypted_localstore),
+            (user_id, user_store),
         )
     return _ok()
 
@@ -497,15 +499,15 @@ def api_load_from_vault(request: Request):
     user_id = request.state.user_id
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT encrypted_localstore FROM vault WHERE user_id=%s",
+            "SELECT user_store FROM vault WHERE user_id=%s",
             (user_id,),
         ).fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail="vault_not_found")
 
-    encrypted_localstore = row[0]
-    return { "encrypted_localstore_b64": b64e(encrypted_localstore).decode("ascii") }
+    user_store = row[0]
+    return { "user_store_b64": _transport_safe_b_string(user_store) }
 
 # ------------------- post office ---------------------
 
@@ -801,9 +803,9 @@ def api_request_item(request: Request, body: RequestItemRequest):
     cfrags = [reencrypt(capsule=capsule, kfrag=vkf) for vkf in verified_kfrags]
 
     return {
-        "capsule_b64": b64e(bytes(capsule)),
-        "ciphertext_b64": b64e(ciphertext),
-        "cfrags_b64": [b64e(bytes(c)) for c in cfrags],
+        "capsule_b64": _transport_safe_b_string(bytes(capsule)),
+        "ciphertext_b64": _transport_safe_b_string(ciphertext),
+        "cfrags_b64": [_transport_safe_b_string(bytes(c)) for c in cfrags],
     }
 
 @app.get("/api/list_my_items")
@@ -823,8 +825,8 @@ def api_list_my_items(request: Request):
     items = [
         {
             "item_id": row[0],
-            "capsule_b64": b64e(row[1]).decode("ascii"),
-            "ciphertext_b64": b64e(row[2]).decode("ascii"),
+            "capsule_b64": _transport_safe_b_string(row[1]),
+            "ciphertext_b64": _transport_safe_b_string(row[2]),
         }
         for row in rows
     ]

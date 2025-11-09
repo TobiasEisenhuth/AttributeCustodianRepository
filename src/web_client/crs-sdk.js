@@ -48,10 +48,10 @@ export class CRSClient {
   }
 
   // ---------- Vault ----------
-  saveToVault(encrypted_localstore_b64, rest) {
+  saveToVault(user_store_b64, rest) {
     return this._fetch("/api/save_to_vault", {
       method: "PUT",
-      body: { encrypted_localstore_b64 },
+      body: { user_store_b64 },
       ...(rest||{}),
     });
   }

@@ -30,3 +30,9 @@ button:hover{border-color:var(--accent)}button.danger{border-color:var(--err);co
 .muted{color:var(--muted)}.site-footer{margin:1.5rem 0;color:var(--muted)}
 .grid2{display:grid;grid-template-columns:1fr;gap:1rem}
 @media(min-width:820px){.grid2{grid-template-columns:1fr 1fr}}
+
+/* disable page on pageshow to save reloaded state to server before logging out */
+html[data-locked] {
+  pointer-events: none;
+  cursor: progress;
+}

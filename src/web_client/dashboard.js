@@ -35,30 +35,6 @@ if (IS_OWNER_TAB) {
   else window.addEventListener('DOMContentLoaded', () => document.body.appendChild(overlay), { once: true });
 }
 
-/* =====================  LAST-TAB LOGOUT (DO NOT LOG OUT OTHERS)  ===================== */
-
-// Cross-tab presence to know if we’re the last dashboard tab.
-const bc = ("BroadcastChannel" in window) ? new BroadcastChannel("crs:dashboard:presence") : null;
-const tabId = (crypto?.randomUUID?.()) || (Date.now().toString(36) + Math.random().toString(36).slice(2));
-const peers = new Set();
-
-if (bc) {
-  bc.onmessage = (e) => {
-    const msg = e?.data || {};
-    if (!msg || msg.id === tabId) return;
-    if (msg.t === "hello") {
-      peers.add(msg.id);
-      bc.postMessage({ t: "iam", id: tabId });
-    } else if (msg.t === "iam") {
-      peers.add(msg.id);
-    } else if (msg.t === "bye") {
-      peers.delete(msg.id);
-    }
-  };
-  // Announce presence
-  bc.postMessage({ t: "hello", id: tabId });
-}
-
 // Only when the **last** tab closes, clear storage + logout.
 // Non-last tabs do nothing, so they won’t kill the session of the owner tab.
 let didClose = false;

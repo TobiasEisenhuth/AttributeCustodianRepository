@@ -1,3 +1,10 @@
+const set = new Set();
+export function revisiting(name) {
+  if (set.has(name)) return true;
+  set.add(name);
+  return false;
+}
+
 export const enc = new TextEncoder();
 export const dec = new TextDecoder("utf-8");
 
@@ -59,15 +66,6 @@ export function fail(message, tone = "err") {
   delete btnAdd.dataset.busy;
 }
 
-function ensureVault(store) {
-  store.persistent ??= {};
-  store.persistent.provider ??= {};
-  store.persistent.provider.items ??= [];
-  store.ephemeral ??= {};
-  store.ephemeral.provider ??= {};
-  store.ephemeral.provider.values ??= [];
-}
-
 // todo - use AJV?
 function checkStoreMinimalCorrectness(store) {
   correct = false;
@@ -106,7 +104,7 @@ async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000,
 
 // todo - true for production
 const USE_CRYPTO = false;
-export async function packStoreToEnvelope(userStore, passkey) {
+export async function packUserStoreToEnvelope(userStore, passkey) {
   const {ephemeral, ...persistent} = userStore
   const persistent_utf_8 = JSON.stringify(persistent);
   const persistent_bytes = end.encode(persistent_utf_8);
@@ -174,8 +172,10 @@ export async function extractStoreFromEnvelope(envelopeB64, passkey = null ) {
 }
 
 export function initUser() {
-  const pass_key = sessionStorage.getItem("crs:passkey") || null;
-  if (pass_key)
+  if (revisiting('initUser')) return;
+
+  const passkey = sessionStorage.getItem("crs:passkey") || null;
+  if (passkey)
     sessionStorage.removeItem("crs:passkey");
 
   const email = sessionStorage.getItem("crs:email") || null;
@@ -193,7 +193,7 @@ export function initUser() {
     }, { once: true });
   }
 
-  const is_owner_tab = !!pass_key;
+  const is_owner_tab = !!passkey;
 
-  return {is_owner_tab, pass_key};
+  return {is_owner_tab, passkey};
 }

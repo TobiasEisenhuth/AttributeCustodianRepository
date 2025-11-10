@@ -1,6 +1,5 @@
-import {
-  initUserStore,
-} from "/app/user-store.js";
+import { initUserStore } from "/app/user-store.js";
+import { initSaveLogic } from "/app/save.js";
 
 import {
   setStateChip,
@@ -11,7 +10,7 @@ import {
 import { CRSClient } from "/app/crs-sdk.js";
 import { wireUpAddItemDialog } from "/app/add-items.js";
 import { wireUpRequestBuilder } from "/app/request-builder.js";
-import { wireUpLogoutAndSync } from "/app/logout.js";
+import { wireUpLogout } from "/app/logout.js";
 import { loadUmbral } from "/app/umbral-loader.js";
 
 IS_OWNER_TAB, PASSKEY = initUser();
@@ -22,7 +21,7 @@ if (IS_OWNER_TAB) {
   user_store = await initUserStore({ api, passkey: PASSKEY });
   await wireUpAddItemDialog({ api, user_store });
   await wireUpRequestBuilder({ user_store, loadUmbral });
-  await wireUpLogoutAndSync({ api, user_store, passkey: PASSKEY });
+  await wireUpLogout({ api, user_store, passkey: PASSKEY });
 } else {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay open';

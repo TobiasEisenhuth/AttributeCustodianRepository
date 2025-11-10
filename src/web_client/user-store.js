@@ -6,6 +6,7 @@ import {
   normalizeText,
   generateItemId,
   bytesToBase64,
+  revisiting,
   setStateChip,
   setStatus,
   base64ToBytes,
@@ -95,6 +96,7 @@ export async function hydrateUserStore({ api, userStore }) {
 }
 
 export async function initUserStore({ api, passkey }) {
+  if (revisiting('initUserStore')) return;
 
   let user_store = null;
 

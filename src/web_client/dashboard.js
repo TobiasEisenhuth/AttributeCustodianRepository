@@ -1,68 +1,28 @@
-import { CRSClient } from "/app/crs-sdk.js";
-import { initVault } from "/app/vault.js";
+import {
+  initUserStore,
+} from "/app/user-store.js";
 
 import {
-  wireUpAddItemDialog,
-  appendRowToPersonal,
-  makePersonalCell,
-} from "/app/add-items.js";
+  setStateChip,
+  setStatus,
+  initUser,
+} from "/app/utils.js";
 
+import { CRSClient } from "/app/crs-sdk.js";
+import { wireUpAddItemDialog } from "/app/add-items.js";
+import { wireUpRequestBuilder } from "/app/request-builder.js";
 import { wireUpLogoutAndSync } from "/app/logout.js";
 import { loadUmbral } from "/app/umbral-loader.js";
-import { wireUpRequestBuilder } from "/app/request-builder.js";
 
+IS_OWNER_TAB, PASSKEY = initUser();
 const api = new CRSClient();
+let user_store = null;
 
-const PASSKEY = (() => {
-  const k = sessionStorage.getItem("crs:passkey") || null;
-  if (k) sessionStorage.removeItem("crs:passkey");
-  return k;
-})();
-const EMAIL = (() => {
-  const e = sessionStorage.getItem("crs:email") || null;
-  if (e) sessionStorage.removeItem("crs:email");
-  return e;
-})();
-const IS_OWNER_TAB = !!PASSKEY;
-
-if (EMAIL) {
-  window.addEventListener("DOMContentLoaded", () => {
-    const title = document.querySelector('.panel[data-panel="personal"] .column-title');
-    if (title) title.textContent = `Personal Data | ${EMAIL}`;
-  }, { once: true });
-    window.addEventListener("DOMContentLoaded", () => {
-    const title = document.querySelector('.panel[data-panel="builder-form"] .column-title');
-    if (title) title.textContent = `Item builder | ${EMAIL}`;
-  }, { once: true });
-}
-
-function setStateChip(text, tone = "muted") {
-  const el = document.getElementById("state-chip");
-  if (!el) return;
-  el.textContent = text;
-  el.className = `chip ${tone}`;
-}
-function setStatus(text, tone = "muted") {
-  const el = document.getElementById("status-line");
-  if (!el) return;
-  el.textContent = text;
-  el.className = tone;
-}
-
-let vault = null;
 if (IS_OWNER_TAB) {
-  vault = initUserStore({ api, passkey: PASSKEY, email: EMAIL, ui: { setStateChip, setStatus } });
-  (async () => {
-    try {
-      await vault.loadVault();
-      await hydrateAndRenderPersonal({ api, vault });
-    } finally {
-      wireUpAddItemDialog({ api, vault, setStatus, setStateChip });
-      wireUpRequestBuilder({ vault, loadUmbral, setStatus, setStateChip });
-    }
-  })();
-  wireUpLogoutAndSync({ api, vault, setStatus, setStateChip });
-
+  user_store = await initUserStore({ api, passkey: PASSKEY });
+  await wireUpAddItemDialog({ api, user_store });
+  await wireUpRequestBuilder({ user_store, loadUmbral });
+  await wireUpLogoutAndSync({ api, user_store, passkey: PASSKEY });
 } else {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay open';
@@ -312,7 +272,7 @@ newItemOverlay?.addEventListener('mousedown', (e) => {
         entry.updated_at = new Date().toISOString();
 
         // mirror to session + re-encrypt/cached (no server save here; logout will sync)
-        try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}
+        try { sessionStorage.setItem('crs:userStore', JSON.stringify(store)); } catch {}
         await vault.encryptAndCachePrivate();
         vault.setDirty(true);
         setStatus(`Name updated.`, "ok");
@@ -366,7 +326,7 @@ newItemOverlay?.addEventListener('mousedown', (e) => {
 
         // Optionally bump local updated_at so vault shows activity; no plaintext stored
         entry.updated_at = new Date().toISOString();
-        try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}
+        try { sessionStorage.setItem('crs:userStore', JSON.stringify(store)); } catch {}
         await vault.encryptAndCachePrivate();
         vault.setDirty(true);
 

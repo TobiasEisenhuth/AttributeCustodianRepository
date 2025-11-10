@@ -39,6 +39,20 @@ export function generateItemId(existingIds) {
   return id;
 }
 
+export function setStateChip(text, tone = "muted") {
+  const el = document.getElementById("state-chip");
+  if (!el) return;
+  el.textContent = text;
+  el.className = `chip ${tone}`;
+}
+
+export function setStatus(text, tone = "muted") {
+  const el = document.getElementById("status-line");
+  if (!el) return;
+  el.textContent = text;
+  el.className = tone;
+}
+
 export function fail(message, tone = "err") {
   setStateChip("Error", "err");
   setStatus(message, tone);
@@ -90,18 +104,21 @@ async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000,
   );
 }
 
-export async function packStoreToEnvelope(store, passkey = null) {
-  const payloadText = JSON.stringify(store);
-  const payloadBytes = te.encode(payloadText);
+// todo - true for production
+const USE_CRYPTO = false;
+export async function packStoreToEnvelope(userStore, passkey) {
+  const {ephemeral, ...persistent} = userStore
+  const persistent_utf_8 = JSON.stringify(persistent);
+  const persistent_bytes = end.encode(persistent_utf_8);
 
-  if (!passkey) {
+  if (!USE_CRYPTO) {
     const envelope = {
       v: 1,
       enc: "none",
-      ct_b64: bytesToBase64(payloadBytes),
+      ct_b64: bytesToBase64(persistent_bytes),
     };
-    const envBytes = enc.encode(JSON.stringify(envelope));
-    return bytesToBase64(envBytes);
+    const envelope_bytes = enc.encode(JSON.stringify(envelope));
+    return bytesToBase64(envelope_bytes);
   }
 
   const salt = new Uint8Array(16);
@@ -110,8 +127,8 @@ export async function packStoreToEnvelope(store, passkey = null) {
   crypto.getRandomValues(nonce);
 
   const key = await deriveAesKeyPBKDF2(enc.encode(passkey), salt);
-  const ctBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, payloadBytes);
-  const cipher_text = new Uint8Array(ctBuf);
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, persistent_bytes);
+  const cipher_bytes = new Uint8Array(cipher);
 
   const envelope = {
     v: 1,
@@ -120,10 +137,10 @@ export async function packStoreToEnvelope(store, passkey = null) {
     iterations: 100_000,
     salt_b64: bytesToBase64(salt),
     nonce_b64: bytesToBase64(nonce),
-    ct_b64: bytesToBase64(cipher_text),
+    ct_b64: bytesToBase64(cipher_bytes),
   };
-  const envBytes = te.encode(JSON.stringify(envelope));
-  return bytesToBase64(envBytes);
+  const envelope_bytes = enc.encode(JSON.stringify(envelope));
+  return bytesToBase64(envelope_bytes);
 }
 
 export async function extractStoreFromEnvelope(envelopeB64, passkey = null ) {
@@ -156,8 +173,27 @@ export async function extractStoreFromEnvelope(envelopeB64, passkey = null ) {
   throw new Error(`Unsupported enc: ${envelope.enc}`);
 }
 
-// ---------- Public: manager that “just does the right thing” ----------
-export async function materializeStoreFromBlob(envelopeB64, { passkey = null } = {}) {
-  // Single entry point for callers who don't care about modes.
-  return decryptBlobToStore(envelopeB64, { passkey });
+export function initUser() {
+  const pass_key = sessionStorage.getItem("crs:passkey") || null;
+  if (pass_key)
+    sessionStorage.removeItem("crs:passkey");
+
+  const email = sessionStorage.getItem("crs:email") || null;
+  if (email)
+    sessionStorage.removeItem("crs:email");
+
+  if (email) {
+    window.addEventListener("DOMContentLoaded", () => {
+      const title = document.querySelector('.panel[data-panel="personal"] .column-title');
+      if (title) title.textContent = `Personal Data | ${email}`;
+    }, { once: true });
+      window.addEventListener("DOMContentLoaded", () => {
+      const title = document.querySelector('.panel[data-panel="builder-form"] .column-title');
+      if (title) title.textContent = `Item builder | ${email}`;
+    }, { once: true });
+  }
+
+  const is_owner_tab = !!pass_key;
+
+  return {is_owner_tab, pass_key};
 }

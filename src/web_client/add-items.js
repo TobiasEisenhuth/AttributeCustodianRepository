@@ -1,12 +1,14 @@
 import { loadUmbral } from "/app/umbral-loader.js";
 import {
-  nowIso,
+  base64ToBytes,
+  bytesToBase64,
   enc,
   fail,
-  normalizeText,
   generateItemId,
-  bytesToBase64,
-  base64ToBytes,
+  normalizeText,
+  nowIso,
+  setStateChip,
+  setStatus,
 } from "/app/utils.js";
 
 export function makePersonalCell(initialValue, placeholder) {
@@ -32,7 +34,7 @@ export function makePersonalCell(initialValue, placeholder) {
   return { wrapper, ro, input };
 }
 
-export function appendRowToPersonal(itemName, valueStr, itemId) {
+export function appendRowToGui(itemName, valueStr, itemId) {
   const panel = document.querySelector('.panel[data-panel="personal"]');
   const tbody = panel?.querySelector("tbody");
   if (!tbody) return;
@@ -54,7 +56,7 @@ export function appendRowToPersonal(itemName, valueStr, itemId) {
 // Item Upsert Heavy Lifting
 export async function upsertItem({
   api,
-  vault,
+  userStore,
   itemName,
   valueStr,
   itemId = null,
@@ -69,8 +71,7 @@ export async function upsertItem({
   if (!umbral) return fail("Umbral not loaded; cannot add item.");
 
   // todo - ill formed user store is silent
-  const store = vault.store;
-  const persistentItems = store.persistent.provider.items;
+  const persistentItems = userStore.persistent.provider.items;
 
   let delegating_sk, delegating_pk, signing_sk, verifying_pk, idx = null, item_id;
 
@@ -127,7 +128,7 @@ export async function upsertItem({
     item_id,
     item_value: valueStr,
   };
-  const ephemeralValues = store.ephemeral.provider.values;
+  const ephemeralValues = userStore.ephemeral.provider.values;
 
   if (idx >= 0) {
     persistentItems[idx] = { ...persistentItems[idx], ...persistent_entry, updated_at: now };
@@ -137,8 +138,8 @@ export async function upsertItem({
     ephemeralValues.push(ephemeral_entry);
   }
 
-  // todo - remove later
-  try { sessionStorage.setItem("crs:store", JSON.stringify(vault.store)); } catch {}
+  // todo - remove for production
+  try { sessionStorage.setItem("crs:userStore", JSON.stringify(vault.store)); } catch {}
 
 /* ================ Persistent & Server Store =============== */
 
@@ -153,7 +154,7 @@ export async function upsertItem({
   return item_id;
 }
 
-export function wireUpAddItemDialog({ api, vault, setStatus = () => {}, setStateChip = () => {} }) {
+export function wireUpAddItemDialog({ api, vault }) {
   const dialog = document.getElementById("new-item-dialog");
   if (!dialog) return;
 
@@ -178,7 +179,7 @@ export function wireUpAddItemDialog({ api, vault, setStatus = () => {}, setState
       const itemId = await upsertItem({itemName, valueStr, api, vault, setStatus, setStateChip});
       
       /* ============ Ephemeral User Interface ========== */
-      appendRowToPersonal(itemName, valueStr, itemId);
+      appendRowToGui(itemName, valueStr, itemId);
 
       dialog.classList.remove("open");
       dialog.setAttribute("aria-hidden", "true");
@@ -189,4 +190,8 @@ export function wireUpAddItemDialog({ api, vault, setStatus = () => {}, setState
       delete btnAdd.dataset.busy;
     }
   });
+}
+
+export function wireUpEditItemDialog() {
+
 }

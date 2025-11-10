@@ -126,7 +126,7 @@ function hasCollision({ vault }, candidateId) {
 
 // Save private side (encrypt + mark dirty) and mirror whole store to session
 async function persistPrivate({ vault }) {
-  try { sessionStorage.setItem('crs:store', JSON.stringify(vault.store || {})); } catch {}
+  try { sessionStorage.setItem('crs:userStore', JSON.stringify(vault.store || {})); } catch {}
   await vault.encryptAndCachePrivate();
   vault.setDirty(true);
 }

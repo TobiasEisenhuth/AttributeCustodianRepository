@@ -1,59 +1,45 @@
-// /app/logout.js
-export function wireUpLogoutAndSync({ api, vault, setStatus = () => {}, setStateChip = () => {} }) {
-  const btn = document.querySelector('[data-action="logout"]');
-  if (!btn) return;
+import { setStateChip, setStatus } from "/app/utils.js"
+import { packStoreToEnvelope } from "/app/user_store.js";
 
-  let inflight = false;
+export function wireUpLogoutAndSync({ api, userStore, passkey }) {
+  const btn = document.querySelector('[data-action="logout"]');
+  if (!btn || btn.dataset.isWiredUp === "1") return;
+  btn.dataset.isWiredUp = "1";
+
+  let in_flight = false;
 
   btn.addEventListener("click", async () => {
-    if (inflight) return;
-    inflight = true;
+    if (in_flight) return;
+    in_flight = true;
     btn.disabled = true;
 
+    setStateChip("Saving…", "warn");
+    setStatus("Saving latest changes…");
+
     try {
-      // 1) Ensure we have the freshest encrypted blob
-      setStateChip("Saving…", "warn");
-      setStatus("Saving latest changes…");
+      const envelope = await packStoreToEnvelope(userStore, passkey);
 
-      let b64 = null;
       try {
-        b64 = await vault.encryptAndCachePrivate?.();
-        if (!b64) b64 = vault.getEncryptedBlobB64?.();
-      } catch (_) {
-        // If encryption fails, we still proceed to logout, but warn.
+        const signal = AbortSignal.timeout(7000);
+
+        await api.saveToVault(envelope, { signal });
+
+        setStateChip("Synced", "ok");
+        setStatus("Saved to server. Logging out…", "ok");
+      } catch (e) {
+        const timedOut =
+          (e?.name === "AbortError" || e?.name === "TimeoutError");
+
+        setStateChip("Unsaved", "warn");
+        setStatus(
+          `Save failed (${timedOut ? "timeout" : (e?.message || "network error")}). Logging out anyway…`,
+          "warn"
+        );
       }
 
-      // 2) Best-effort push to server (with timeout)
-      if (b64) {
-        const ac = new AbortController();
-        const t = setTimeout(() => ac.abort(), 7000);
-        try {
-          await api.saveToVault(b64, { signal: ac.signal });
-          setStateChip("Synced", "ok");
-          setStatus("Saved to server. Logging out…", "ok");
-        } catch (e) {
-          setStateChip("Unsaved", "warn");
-          setStatus(`Save failed (${e?.message || "network error"}). Logging out anyway…`, "warn");
-        } finally {
-          clearTimeout(t);
-        }
-      } else {
-        // Nothing to save (empty store or encrypt not ready). Proceed.
-        setStatus("Nothing to save. Logging out…");
-      }
     } finally {
-      // 3) Always clear client state + end session
-      try {
-        sessionStorage.removeItem("crs:passkey");
-        sessionStorage.removeItem("crs:email");
-        sessionStorage.removeItem("crs:store");
-      } catch {}
-
       try { await api.logout({ keepalive: true }); } catch {}
-
-      // 4) Redirect to login
       location.replace("/app/login.html");
     }
   });
 }
-

@@ -13,6 +13,25 @@ import {
   setStatus,
 } from "/app/utils.js";
 
+export function appendRowToGui(itemName, valueStr, itemId) {
+  const panel = document.querySelector('.panel[data-panel="personal"]');
+  const tbody = panel?.querySelector("tbody");
+  if (!tbody) return;
+
+  const tr = document.createElement("tr");
+  if (itemId) tr.dataset.itemId = itemId;
+
+  const td1 = document.createElement("td");
+  { const { wrapper } = makePersonalCell(itemName, "Item Name"); td1.appendChild(wrapper); }
+
+  const td2 = document.createElement("td");
+  { const { wrapper } = makePersonalCell(valueStr, "Value"); td2.appendChild(wrapper); }
+
+  tr.appendChild(td1);
+  tr.appendChild(td2);
+  tbody.appendChild(tr);
+}
+
 export function makePersonalCell(initialValue, placeholder) {
   const wrapper = document.createElement("div");
   wrapper.className = "cell read-mode";
@@ -36,25 +55,6 @@ export function makePersonalCell(initialValue, placeholder) {
   return { wrapper, ro, input };
 }
 
-export function appendRowToGui(itemName, valueStr, itemId) {
-  const panel = document.querySelector('.panel[data-panel="personal"]');
-  const tbody = panel?.querySelector("tbody");
-  if (!tbody) return;
-
-  const tr = document.createElement("tr");
-  if (itemId) tr.dataset.itemId = itemId;
-
-  const td1 = document.createElement("td");
-  { const { wrapper } = makePersonalCell(itemName, "Item Name"); td1.appendChild(wrapper); }
-
-  const td2 = document.createElement("td");
-  { const { wrapper } = makePersonalCell(valueStr, "Value"); td2.appendChild(wrapper); }
-
-  tr.appendChild(td1);
-  tr.appendChild(td2);
-  tbody.appendChild(tr);
-}
-
 // Item Upsert Heavy Lifting
 export async function upsertItem({
   api,
@@ -66,6 +66,7 @@ export async function upsertItem({
   setStateChip = () => {},
 }) {
   itemName = normalizeText(itemName);
+  valueStr = normalizeText(itemName);
   if (!itemName) return fail("Please provide an item name.");
   if (!valueStr)  return fail("Please provide a value.");
 
@@ -114,8 +115,6 @@ export async function upsertItem({
     provider_verifying_key_b64: bytesToBase64(verifying_pk.toCompressedBytes()),
   };
 
-/* ============ Persistent & Ephemeral User Store ========== */
-
   let now = nowIso();
   const persistent_entry = {
     item_id,
@@ -143,8 +142,6 @@ export async function upsertItem({
   // todo - remove for production
   try { sessionStorage.setItem("crs:userStore", JSON.stringify(userStore)); } catch {}
 
-/* ================ Persistent & Server Store =============== */
-
   setStateChip("Upserting…");
   setStatus("Saving encrypted item to server…");
 
@@ -165,9 +162,38 @@ export function wireUpAddItemDialog({ api, userStore }) {
 
   const btnAdd = dialog.querySelector('[data-action="confirm-dialog"]');
   const btnCancel = dialog.querySelector('[data-action="cancel-dialog"]');
+  const inpName  = dialog.querySelector('input[data-field="Item Name"]');
+  const inpValue = dialog.querySelector('input[data-field="Value"]');
 
-  if (!btnAdd || btnAdd.dataset.isWiredUp === "1") return;
-  btnAdd.dataset.isWiredUp = "1";
+  const closeDialog = () => {
+    dialog.classList.remove('open');
+    dialog.setAttribute('aria-hidden', 'true');
+  };
+  
+  btnCancel.addEventListener('click', (ev) => { ev.preventDefault(); closeDialog(); });
+  dialog.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeDialog(); });
+  //dialog.addEventListener('click', (ev) => { if (ev.target === dialog) closeDialog(); });
+
+  const openDialog = () => {
+    inpName.value = '';
+    inpValue.value = '';
+    btnAdd.disabled = true;
+    dialog.classList.add('open');
+    dialog.setAttribute('aria-hidden', 'false');
+    inpName.focus();
+  };
+
+  const personalPanel = document.querySelector('.panel[data-panel="personal"]');
+  const btnAddRow = personalPanel.querySelector('[data-action="add-row"]');
+  btnAddRow.addEventListener('click', (ev) => {
+    ev.preventDefault(); openDialog();
+  });
+
+  const updateBtn = () => {
+    btnAdd.disabled = !(inpName.value.trim() && inpValue.value.trim());
+  };
+  inpName.addEventListener('input', updateBtn);
+  inpValue.addEventListener('input', updateBtn);
 
   btnAdd.addEventListener("click", async (ev) => {
     ev.preventDefault();
@@ -176,27 +202,19 @@ export function wireUpAddItemDialog({ api, userStore }) {
     btnAdd.dataset.busy = "1";
 
     try {
-      const itemName = String(dialog.querySelector('input[data-field="Item Name"]')?.value);
-      const valueStr = String(dialog.querySelector('input[data-field="Value"]')?.value ?? "");
-      if (!itemName) return fail("Please provide an item name.");
-      if (!valueStr)  return fail("Please provide a value.");
+      const itemName = inpName.value;
+      const valueStr = inpValue.value;
+      if (!itemName) return fail('Please provide an item name.');
+      if (!valueStr)  return fail('Please provide a value.');
 
       const itemId = await upsertItem({itemName, valueStr, api, userStore, setStatus, setStateChip});
-      
-      /* ============ Ephemeral User Interface ========== */
       appendRowToGui(itemName, valueStr, itemId);
-
-      dialog.classList.remove("open");
-      dialog.setAttribute("aria-hidden", "true");
-    } catch (e) {
-      console.error(e);
-      fail(e?.message || "Failed to add item.");
+      closeDialog();
+    } catch (err) {
+      console.error(err);
+      fail(err?.message || "Failed to add item.");
     } finally {
       delete btnAdd.dataset.busy;
     }
   });
-}
-
-export function wireUpEditItemDialog() {
-
 }

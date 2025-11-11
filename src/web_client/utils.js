@@ -32,8 +32,8 @@ export function nowIso() {
   return new Date().toISOString();
 }
 
-export function normalizeText(s) {
-  return String(s ?? "").replace(/\s+/g, " ").trim();
+export function normalizeText(str) {
+  return String(str ?? "").replace(/\s+/g, " ").trim();
 }
 
 export function generateItemId(existingIds) {

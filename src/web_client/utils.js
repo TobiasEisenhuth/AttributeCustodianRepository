@@ -69,8 +69,6 @@ export function fail(message, tone = "err") {
 // todo - use AJV?
 function checkStoreMinimalCorrectness(store) {
   correct = false;
-
-
   return correct;
 }
 

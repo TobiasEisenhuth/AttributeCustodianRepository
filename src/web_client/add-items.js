@@ -1,4 +1,5 @@
 import { loadUmbral } from "/app/umbral-loader.js";
+import { needsSave } from "/app/save.js"
 import {
   base64ToBytes,
   bytesToBase64,
@@ -143,10 +144,11 @@ export async function upsertItem({
 
 /* ================ Persistent & Server Store =============== */
 
-  setStateChip("Saving…");
+  setStateChip("Upserting…");
   setStatus("Saving encrypted item to server…");
 
   await api.upsertItem(payload);
+  needsSave(true);
 
   setStateChip("Synced", "ok");
   setStatus(`Item "${itemName}" saved.`, "ok");
@@ -155,6 +157,8 @@ export async function upsertItem({
 }
 
 export function wireUpAddItemDialog({ api, vault }) {
+  if (revisiting('wireUpAddItemDialog')) return;
+
   const dialog = document.getElementById("new-item-dialog");
   if (!dialog) return;
 

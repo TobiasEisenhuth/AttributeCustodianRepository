@@ -1,6 +1,3 @@
-// navigation.js (ES module)
-// Purpose: ONLY handle view switching (visibility/activeness). No business logic.
-
 const DEFAULT_VIEW = 'share';
 
 let currentView = null;
@@ -16,18 +13,14 @@ function init() {
   panels = qa('.panel');
   navButtons = qa('.nav-btn[data-action="nav-view"]');
 
-  // Initial view: hash -> aria-current -> default
   const hashView = (location.hash || '').slice(1);
   const ariaCurrent = q('.nav-btn[aria-current="page"]')?.dataset.view;
   const initial = hashView || ariaCurrent || DEFAULT_VIEW;
 
-  // Wire events
   document.addEventListener('click', onNavClick);
   window.addEventListener('hashchange', onHashChange);
 
-  // First paint
   setView(initial, { push: false, focus: false });
-  // After DOM is painted, move focus politely
   queueMicrotask(() => focusActiveHeading());
 }
 
@@ -65,7 +58,6 @@ function togglePanels(view) {
     p.toggleAttribute('inert', !active);
   });
 
-  // Toggle one-column layout if this view has no visible right panel
   const hasRight = panels.some(
     p => p.dataset.view === view && p.dataset.slot === 'right' && !p.hasAttribute('hidden')
   );
@@ -75,7 +67,6 @@ function togglePanels(view) {
 export function setView(view, { push = true, focus = true } = {}) {
   if (!view) view = DEFAULT_VIEW;
   if (currentView === view) {
-    // Even if same view, ensure hash/nav/panels are consistent
     if (push && location.hash !== `#${view}`) history.pushState({ view }, '', `#${view}`);
     updateNavState(view);
     togglePanels(view);
@@ -91,7 +82,6 @@ export function setView(view, { push = true, focus = true } = {}) {
     history.pushState({ view }, '', `#${view}`);
   }
 
-  // Announce to other modules
   window.dispatchEvent(new CustomEvent('viewchange', { detail: { view } }));
 
   if (focus) focusActiveHeading();
@@ -101,7 +91,6 @@ export function getView() {
   return currentView || DEFAULT_VIEW;
 }
 
-// Auto-init when DOM is ready (works even if script is before </body>)
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init, { once: true });
 } else {

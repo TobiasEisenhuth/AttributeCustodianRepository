@@ -98,16 +98,18 @@ export async function hydrateUserStore({ api, userStore }) {
 export async function initUserStore({ api, passkey }) {
   if (revisiting('initUserStore')) return;
 
-  let user_store = null;
-
   setStateChip('Loading…');
   setStatus('Loading from vault…');
 
+  let user_store = null;
   try {
-    const envelope_b64 = api.loadFromVault();
+    const envelope_b64 = await api.loadFromVault();
     user_store = await extractStoreFromEnvelope(envelope_b64, passkey);
-    hydrateUserStore(api, user_store);
-  } finally {
+    await hydrateUserStore(api, user_store);
+  } catch (e) {
+    setStateChip("Error", "err");
+    setStatus(e.message || "Failed to load from vault", "err");
+    return;
   }
 
   return user_store;

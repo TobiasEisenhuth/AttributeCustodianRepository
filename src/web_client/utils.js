@@ -103,7 +103,7 @@ async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000,
 // todo - true for production
 const USE_CRYPTO = false;
 export async function packUserStoreToEnvelope(userStore, passkey) {
-  const {ephemeral, ...persistent} = userStore
+  const {ephemeral, ...persistent} = userStore;
   const persistent_utf_8 = JSON.stringify(persistent);
   const persistent_bytes = end.encode(persistent_utf_8);
 

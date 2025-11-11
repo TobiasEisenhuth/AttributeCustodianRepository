@@ -1,3 +1,4 @@
+import { loadUmbral } from "/app/umbral-loader.js";
 import {
   nowIso,
   enc,
@@ -13,7 +14,7 @@ import {
   extractStoreFromEnvelope,
 } from "/app/utils.js";
 
-export async function hydrateUserStore({ api, userStore }) {
+export async function hydrateUserStore(api, userStore) {
 
   setStateChip("Composing…");
   setStatus("Composing inventory…");
@@ -32,12 +33,14 @@ export async function hydrateUserStore({ api, userStore }) {
   const tbody = panel?.querySelector("tbody");
   if (tbody) tbody.innerHTML = "";
 
-  const local_items = Array.isArray(userStore.persistent.provider.items)
+  const local_items = Array.isArray(userStore.persistent?.provider?.items)
+  ? userStore.persistent.provider.items
+  : [];
 
-  const server_items = [];
+  let server_items = [];
   try {
     const res = await api.listMyItems();
-    server_items = Array.isArray(res.items);
+    server_items = Array.isArray(res.items) ? res.items : [];
   } catch (e) {
     setStateChip("Error", "err");
     setStatus(e?.message || "Failed to fetch items from server.", "err");
@@ -89,10 +92,10 @@ export async function hydrateUserStore({ api, userStore }) {
     appendRowToGui(item_name, plain_text, common_id);
   }
 
-  // todo - remove for production
-  try { sessionStorage.setItem('crs:userStore', JSON.stringify(userStore)); } catch {}
-
   if (addBtn) addBtn.disabled = false;
+  
+  // todo - remove for production
+  try { sessionStorage.setItem('crs:userStore', JSON.stringify(userStore)); } catch {} 
 }
 
 export async function initUserStore({ api, passkey }) {
@@ -105,6 +108,7 @@ export async function initUserStore({ api, passkey }) {
   try {
     const { envelope_b64 } = await api.loadFromVault();
     user_store = await extractStoreFromEnvelope(envelope_b64, passkey);
+    console.log(user_store);
     await hydrateUserStore(api, user_store);
   } catch (e) {
     setStateChip("Error", "err");

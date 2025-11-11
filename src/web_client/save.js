@@ -37,9 +37,9 @@ export function initSaveLogic() {
 
 export async function bestEffortSave(api, userStore, passkey) {
 
-  let envelope;
+  let envelope_b64;
   try {
-    envelope = await packUserStoreToEnvelope(userStore, passkey);
+    envelope_b64 = await packUserStoreToEnvelope(userStore, passkey);
   } catch {
     setStateChip("Saving Not Possible", "warn");
     setStatus("Could Not Pack User Store", "warn");
@@ -47,7 +47,7 @@ export async function bestEffortSave(api, userStore, passkey) {
   }
 
   try {
-    await api.saveToVault(envelope, { signal: AbortSignal.timeout(10000) });
+    await api.saveToVault(envelope_b64, { signal: AbortSignal.timeout(10000) });
     DIRTY = false;
     disableLeavePrompt();
 

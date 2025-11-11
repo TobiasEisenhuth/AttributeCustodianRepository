@@ -8,6 +8,7 @@ import {
   generateItemId,
   normalizeText,
   nowIso,
+  revisiting,
   setStateChip,
   setStatus,
 } from "/app/utils.js";
@@ -140,7 +141,7 @@ export async function upsertItem({
   }
 
   // todo - remove for production
-  try { sessionStorage.setItem("crs:userStore", JSON.stringify(vault.store)); } catch {}
+  try { sessionStorage.setItem("crs:userStore", JSON.stringify(userStore)); } catch {}
 
 /* ================ Persistent & Server Store =============== */
 
@@ -156,7 +157,7 @@ export async function upsertItem({
   return item_id;
 }
 
-export function wireUpAddItemDialog({ api, vault }) {
+export function wireUpAddItemDialog({ api, userStore }) {
   if (revisiting('wireUpAddItemDialog')) return;
 
   const dialog = document.getElementById("new-item-dialog");
@@ -180,7 +181,7 @@ export function wireUpAddItemDialog({ api, vault }) {
       if (!itemName) return fail("Please provide an item name.");
       if (!valueStr)  return fail("Please provide a value.");
 
-      const itemId = await upsertItem({itemName, valueStr, api, vault, setStatus, setStateChip});
+      const itemId = await upsertItem({itemName, valueStr, api, userStore, setStatus, setStateChip});
       
       /* ============ Ephemeral User Interface ========== */
       appendRowToGui(itemName, valueStr, itemId);

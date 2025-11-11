@@ -1,5 +1,5 @@
 # language utils
-from base64 import b64encode, b64decode as b64d
+from base64 import b64encode, b64decode
 def _transport_safe_b_string(parcel: bytes): return b64encode(parcel).decode()
 
 from typing import List, Optional, Dict, Any
@@ -95,9 +95,9 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS by_expires_at ON sessions (expires_at);")
         # user's encrypted store
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS vault (
+            CREATE TABLE IF NOT EXISTS user_vault (
                 user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
-                user_store BYTEA NOT NULL
+                envelope BYTEA NOT NULL
             );
         """)
         # crypto_bundle
@@ -380,14 +380,14 @@ async def gatekeeper(request: Request, call_next):
     path = request.url.path
 
     # auth Backend always availbale
-    if path.startswith("/auth"):
+    if path.startswith("/auth/"):
         return await call_next(request)
 
     user_id = await user_id_by_session(request)
     logged_in = bool(user_id)
 
     # API always exposed but only available in session
-    if path.startswith("/api"):
+    if path.startswith("/api/"):
         if not logged_in:
             return JSONResponse({"error": "not_authenticated"}, status_code=401)
         request.state.user_id = user_id
@@ -415,8 +415,8 @@ async def gatekeeper(request: Request, call_next):
 
     # if we can't serve it ... dashboard it is
     response = await call_next(request)
-    if response.status_code == 404 and request.method in ("GET", "HEAD"):
-        return RedirectResponse(DASHBOARD_PAGE, status_code=303)
+    # if response.status_code == 404 and request.method in ("GET", "HEAD"):
+    #     return RedirectResponse(DASHBOARD_PAGE, status_code=303)
     return response
 
 # =================== CRS API ===================
@@ -472,11 +472,11 @@ MAX_VAULT_BYTES = int(os.getenv("MAX_VAULT_BYTES", str(3 * 1024 * 1024)))  # 3 M
 def api_save_to_vault(request: Request, body: SaveToVaultRequest):
     user_id = request.state.user_id
     try:
-        user_store = b64d(body.user_store_b64)
+        envelope = b64decode(body.envelope_b64)
     except Exception:
         raise HTTPException(status_code=400, detail="bad_base64")
 
-    if len(user_store) > MAX_VAULT_BYTES:
+    if len(envelope) > MAX_VAULT_BYTES:
         return JSONResponse(
             {"error": "payload_too_large", "max_bytes": MAX_VAULT_BYTES},
             status_code=413,
@@ -485,12 +485,12 @@ def api_save_to_vault(request: Request, body: SaveToVaultRequest):
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO vault (user_id, user_store)
+            INSERT INTO user_vault (user_id, envelope)
             VALUES (%s, %s)
             ON CONFLICT (user_id) DO UPDATE SET
-                user_store = EXCLUDED.user_store
+                envelope = EXCLUDED.envelope
             """,
-            (user_id, user_store),
+            (user_id, envelope),
         )
     return _ok()
 
@@ -499,15 +499,15 @@ def api_load_from_vault(request: Request):
     user_id = request.state.user_id
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT user_store FROM vault WHERE user_id=%s",
+            "SELECT envelope FROM user_vault WHERE user_id=%s",
             (user_id,),
         ).fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail="vault_not_found")
 
-    user_store = row[0]
-    return { "user_store_b64": _transport_safe_b_string(user_store) }
+    envelope = row[0]
+    return { "envelope_b64": _transport_safe_b_string(envelope) }
 
 # ------------------- post office ---------------------
 
@@ -529,7 +529,7 @@ def _validate_solicitation_payload(payload: Dict[str, Any]) -> None:
             if not ((isinstance(ro, str) and re.match(r"^\d+\.\d+$", ro))):
                 raise HTTPException(status_code=400, detail="bad_request_order")
         try:
-            b64d(r["requester_public_key_b64"])
+            b64decode(r["requester_public_key_b64"])
         except Exception:
             raise HTTPException(status_code=400, detail="bad_public_key_b64")
 
@@ -658,10 +658,10 @@ def api_upsert_item(request: Request, body: UpsertItemRequest):
         """,(
                 request.state.user_id,
                 body.item_id,
-                b64d(body.capsule_b64),
-                b64d(body.ciphertext_b64),
-                b64d(body.provider_public_key_b64),
-                b64d(body.provider_verifying_key_b64),
+                b64decode(body.capsule_b64),
+                b64decode(body.ciphertext_b64),
+                b64decode(body.provider_public_key_b64),
+                b64decode(body.provider_verifying_key_b64),
         ),)
     return _ok()
 
@@ -703,7 +703,7 @@ def api_grant_access(request: Request, body: GrantAccessRequest):
     provider_id = request.state.user_id
 
     try:
-        kfrags_bytes = [b64d(b) for b in body.kfrags_b64]
+        kfrags_bytes = [b64decode(b) for b in body.kfrags_b64]
     except Exception:
         raise HTTPException(status_code=400, detail="bad_kfrags_b64")
     kfrags_blob = msgpack.packb(kfrags_bytes, use_bin_type=True)
@@ -752,7 +752,7 @@ def api_request_item(request: Request, body: RequestItemRequest):
     requester_id = request.state.user_id
 
     try:
-        requester_pk = PublicKey.from_compressed_bytes(b64d(body.requester_public_key_b64))
+        requester_pk = PublicKey.from_compressed_bytes(b64decode(body.requester_public_key_b64))
     except Exception:
         raise HTTPException(status_code=400, detail="bad_requester_public_key")
 

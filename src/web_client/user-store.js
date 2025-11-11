@@ -52,7 +52,7 @@ export async function hydrateUserStore({ api, userStore }) {
   const ids_are_identical = same_count && [...server_ids].every(id => local_ids.has(id));
   if (!ids_are_identical) {
     setStateChip("Mismatch", "warn");
-    setStatus("Local vault and server inventory differ (IDs or count).", "warn");
+    setStatus("Local user store and server inventory differ (IDs or count).", "warn");
     return;
   } else {
     setStateChip("Synced", "ok");
@@ -101,9 +101,9 @@ export async function initUserStore({ api, passkey }) {
   setStateChip('Loading…');
   setStatus('Loading from vault…');
 
-  let user_store = null;
+  let user_store;
   try {
-    const envelope_b64 = await api.loadFromVault();
+    const { envelope_b64 } = await api.loadFromVault();
     user_store = await extractStoreFromEnvelope(envelope_b64, passkey);
     await hydrateUserStore(api, user_store);
   } catch (e) {

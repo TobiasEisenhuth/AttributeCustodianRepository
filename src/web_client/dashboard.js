@@ -9,7 +9,7 @@ import {
 
 import { CRSClient } from "/app/crs-sdk.js";
 import { wireUpAddItemDialog } from "/app/add-items.js";
-import { wireUpRequestBuilder } from "/app/request-builder.js";
+// import { wireUpRequestBuilder } from "/app/request-builder.js";
 import { wireUpLogout } from "/app/logout.js";
 import { loadUmbral } from "/app/umbral-loader.js";
 
@@ -20,7 +20,7 @@ let user_store = null;
 if (is_owner_tab) {
   user_store = await initUserStore({ api, passkey });
   await wireUpAddItemDialog({ api, user_store });
-  await wireUpRequestBuilder({ user_store, loadUmbral });
+  // await wireUpRequestBuilder({ user_store, loadUmbral });
   await wireUpLogout({ api, user_store, passkey });
 } else {
   const overlay = document.createElement('div');

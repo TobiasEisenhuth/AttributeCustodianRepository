@@ -11,9 +11,99 @@ import {
   setStateChip,
   setStatus,
   base64ToBytes,
-  extractStoreFromEnvelope,
 } from "/app/utils.js";
 import { appendRowToGui } from "/app/add-items.js";
+
+async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000, keyLen = 256) {
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    passkeyBytes,
+    { name: "PBKDF2" },
+    false,
+    ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: saltBytes,
+      iterations,
+      hash: "SHA-256",
+    },
+    keyMaterial,
+    { name: "AES-GCM", length: keyLen },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+// todo - true for production
+const USE_CRYPTO = false;
+export async function packUserStoreToEnvelope(userStore, passkey) {
+  const {ephemeral, ...persistent} = userStore;
+  const persistent_utf_8 = JSON.stringify(persistent);
+  const persistent_bytes = enc.encode(persistent_utf_8);
+
+  if (!USE_CRYPTO) {
+    const envelope = {
+      v: 1,
+      enc: "none",
+      ct_b64: bytesToBase64(persistent_bytes),
+    };
+    const envelope_bytes = enc.encode(JSON.stringify(envelope));
+    return bytesToBase64(envelope_bytes);
+  }
+
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  const nonce = new Uint8Array(12);
+  crypto.getRandomValues(nonce);
+
+  const key = await deriveAesKeyPBKDF2(enc.encode(passkey), salt);
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, persistent_bytes);
+  const cipher_bytes = new Uint8Array(cipher);
+
+  const envelope = {
+    v: 1,
+    enc: "aes-256-gcm",
+    kdf: "pbkdf2-sha256",
+    iterations: 100_000,
+    salt_b64: bytesToBase64(salt),
+    nonce_b64: bytesToBase64(nonce),
+    ct_b64: bytesToBase64(cipher_bytes),
+  };
+  const envelope_bytes = enc.encode(JSON.stringify(envelope));
+  return bytesToBase64(envelope_bytes);
+}
+
+export async function extractStoreFromEnvelope(envelopeB64, passkey = null ) {
+  const envelope_bytes = base64ToBytes(envelopeB64);
+  const envelope_utf_8 = dec.decode(envelope_bytes);
+  const envelope = JSON.parse(envelope_utf_8);
+
+  if (!envelope || envelope.v !== 1 || !envelope.enc) {
+    throw new Error("Invalid envelope.");
+  }
+
+  if (envelope.enc === "none") {
+    const plain_text_bytes = base64ToBytes(envelope.ct_b64);
+    return JSON.parse(dec.decode(plain_text_bytes));
+  }
+
+  if (envelope.enc === "aes-256-gcm") {
+    if (!passkey) throw new Error("Passkey required to decrypt.");
+    const salt = base64ToBytes(envelope.salt_b64);
+    const nonce = base64ToBytes(envelope.nonce_b64);
+    const cipher_text = base64ToBytes(envelope.ct_b64);
+    const iterations = envelope.iterations;
+    const key = await deriveAesKeyPBKDF2(enc.encode(passkey), salt, iterations);
+
+    const plain_text_buffer = await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, key, cipher_text);
+    const plain_text_bytes = new Uint8Array(plain_text_buffer);
+    return JSON.parse(dec.decode(plain_text_bytes));
+  }
+
+  throw new Error(`Unsupported enc: ${envelope.enc}`);
+}
 
 export async function hydrateUserStore(api, userStore) {
   if (revisiting('hydrateUserStore')) return;

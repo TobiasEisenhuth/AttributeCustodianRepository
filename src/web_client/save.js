@@ -1,9 +1,9 @@
 import {
-  packUserStoreToEnvelope,
   revisiting,
   setStateChip,
   setStatus
 } from "/app/utils.js"
+import { packUserStoreToEnvelope } from "/app/user-store.js";
 
 const intercept = (ev) => {
   ev.preventDefault();

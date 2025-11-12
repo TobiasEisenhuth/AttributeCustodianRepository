@@ -39,7 +39,7 @@ class RequestItemRequest(BaseModel):
     requester_public_key_b64: str
 
 class SaveToVaultRequest(BaseModel):
-    encrypted_localstore_b64: str
+    envelope_b64: str
 
 class PushSolicitationRequest(BaseModel):
     provider_id: UUID

@@ -13,8 +13,10 @@ import {
   base64ToBytes,
   extractStoreFromEnvelope,
 } from "/app/utils.js";
+import { appendRowToGui } from "/app/add-items.js";
 
 export async function hydrateUserStore(api, userStore) {
+  if (revisiting('hydrateUserStore')) return;
 
   setStateChip("Composing…");
   setStatus("Composing inventory…");
@@ -62,9 +64,7 @@ export async function hydrateUserStore(api, userStore) {
     setStatus("Inventory synced.", "ok");
   }
 
-  userStore.ephemeral = userStore.ephemeral || {};
-  userStore.ephemeral.provider = userStore.ephemeral.provider || {};
-  userStore.ephemeral.provider.values = userStore.ephemeral.provider.values || {};
+  userStore.ephemeral = { provider: { values: new Map() } };
 
   const server_items_by_id = new Map(server_items.map(x => [x.item_id, x]));
   for (const entry of local_items) {
@@ -72,24 +72,20 @@ export async function hydrateUserStore(api, userStore) {
     const matching_item = server_items_by_id.get(common_id);
 
     const item_name = entry.item_name;
-    let plain_text;
+    let plain_value;
     try {
       const secret_key_b64 = entry.keys.secret_key_b64;
       const secret_key = umbral.SecretKey.fromBEBytes(base64ToBytes(secret_key_b64));
       const capsule = umbral.Capsule.fromBytes(base64ToBytes(matching_item.capsule_b64));
       const cipher_text = base64ToBytes(matching_item.ciphertext_b64);
-      plain_text = umbral.decryptOriginal(secret_key, capsule, cipher_text);
+      const plain_value_buffer = umbral.decryptOriginal(secret_key, capsule, cipher_text);
+      plain_value = dec.decode(plain_value_buffer)
     } catch {
-      plain_text = "(decrypt failed)";
+      plain_value = "(decrypt failed)";
     }
-    
-    const ephemeral_entry = {
-      common_id,
-      item_value: plain_text,
-    };
-    userStore.ephemeral.provider.values.push(ephemeral_entry);
+    userStore.ephemeral.provider.values.set(common_id, plain_value);
 
-    appendRowToGui(item_name, plain_text, common_id);
+    appendRowToGui(item_name, plain_value, common_id);
   }
 
   if (addBtn) addBtn.disabled = false;
@@ -109,9 +105,9 @@ export async function initUserStore({ api, passkey }) {
     const { envelope_b64 } = await api.loadFromVault();
     user_store = await extractStoreFromEnvelope(envelope_b64, passkey);
     await hydrateUserStore(api, user_store);
-  } catch (e) {
+  } catch (err) {
     setStateChip("Error", "err");
-    setStatus(e.message || "Failed to load from vault", "err");
+    setStatus(err.message || "Failed to load from vault", "err");
     return;
   }
 

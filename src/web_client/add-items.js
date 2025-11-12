@@ -76,7 +76,8 @@ export async function upsertItem({
   // todo - ill formed user store is silent
   const persistentItems = userStore.persistent.provider.items;
 
-  let delegating_sk, delegating_pk, signing_sk, verifying_pk, idx = null, item_id;
+  let delegating_sk, delegating_pk, signing_sk, verifying_pk;
+  let idx = -1, item_id;
 
   if (itemId) {
     item_id = itemId;
@@ -87,11 +88,7 @@ export async function upsertItem({
     signing_sk = umbral.SecretKey.fromBEBytes(base64ToBytes(persistentItems[idx].keys.signing_key_b64));
     verifying_pk = signing_sk.publicKey();
   } else {
-    const existing = new Set(
-      [...persistentItems]
-        .map(it => it?.item_id)
-        .filter(Boolean)
-    );
+    const existing = new Set(persistentItems.map(it => it?.item_id).filter(Boolean));
     item_id = generateItemId(existing);
     delegating_sk = umbral.SecretKey.random();
     delegating_pk = delegating_sk.publicKey();
@@ -115,7 +112,7 @@ export async function upsertItem({
     provider_verifying_key_b64: bytesToBase64(verifying_pk.toCompressedBytes()),
   };
 
-  let now = nowIso();
+  const now = nowIso();
   const persistent_entry = {
     item_id,
     item_name: itemName,
@@ -125,19 +122,15 @@ export async function upsertItem({
     },
   };
 
-  const ephemeral_entry = {
-    item_id,
-    item_value: valueStr,
-  };
-  const ephemeralValues = userStore.ephemeral.provider.values;
-
-  if (idx >= 0) {
+  if (idx > -1) {
     persistentItems[idx] = { ...persistentItems[idx], ...persistent_entry, updated_at: now };
-    ephemeralValues[idx] = { ...ephemeralValues[idx], ...ephemeral_entry };
   } else {
     persistentItems.push({...persistent_entry, created_at: now, updated_at: now });
-    ephemeralValues.push(ephemeral_entry);
   }
+
+  userStore.ephemeral.provider.values.set(item_id, valueStr);
+
+  needsSave(true);
 
   // todo - remove for production
   try { sessionStorage.setItem("crs:userStore", JSON.stringify(userStore)); } catch {}
@@ -146,7 +139,6 @@ export async function upsertItem({
   setStatus("Saving encrypted item to server…");
 
   await api.upsertItem(payload);
-  needsSave(true);
 
   setStateChip("Synced", "ok");
   setStatus(`Item "${itemName}" saved.`, "ok");
@@ -200,8 +192,6 @@ export function wireUpAddItemDialog({ api, userStore }) {
     if (btnAdd.disabled) return;
     if (btnAdd.dataset.busy === "1") return;
     btnAdd.dataset.busy = "1";
-
-    console.assert(userStore, 'userStore missing at call site');
 
     try {
       const itemName = inpName.value;

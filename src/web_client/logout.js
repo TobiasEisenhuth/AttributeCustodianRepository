@@ -4,8 +4,7 @@ import { needsSave, bestEffortSave } from "/app/save.js";
 const logout = async (api, userStore, passkey) => {
   if (revisiting('logout'))
     return;
-  console.log("logout");
-  console.log(userStore);
+
   if (needsSave()) {
     setStateChip("Saving…", "warn");
     setStatus("Saving latest changes…");

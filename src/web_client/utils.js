@@ -104,7 +104,7 @@ const USE_CRYPTO = false;
 export async function packUserStoreToEnvelope(userStore, passkey) {
   const {ephemeral, ...persistent} = userStore;
   const persistent_utf_8 = JSON.stringify(persistent);
-  const persistent_bytes = end.encode(persistent_utf_8);
+  const persistent_bytes = enc.encode(persistent_utf_8);
 
   if (!USE_CRYPTO) {
     const envelope = {
@@ -148,8 +148,8 @@ export async function extractStoreFromEnvelope(envelopeB64, passkey = null ) {
   }
 
   if (envelope.enc === "none") {
-    const plaint_text = base64ToBytes(envelope.ct_b64);
-    return JSON.parse(dec.decode(plaint_text));
+    const plain_text_bytes = base64ToBytes(envelope.ct_b64);
+    return JSON.parse(dec.decode(plain_text_bytes));
   }
 
   if (envelope.enc === "aes-256-gcm") {
@@ -160,8 +160,8 @@ export async function extractStoreFromEnvelope(envelopeB64, passkey = null ) {
     const iterations = envelope.iterations;
     const key = await deriveAesKeyPBKDF2(enc.encode(passkey), salt, iterations);
 
-    const plain_text_b64 = await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, key, cipher_text);
-    const plain_text_bytes = new Uint8Array(plain_text_b64);
+    const plain_text_buffer = await crypto.subtle.decrypt({ name: "AES-GCM", iv: nonce }, key, cipher_text);
+    const plain_text_bytes = new Uint8Array(plain_text_buffer);
     return JSON.parse(dec.decode(plain_text_bytes));
   }
 

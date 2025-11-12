@@ -391,7 +391,7 @@
         await api.login(em, auth_material_b64url);
 
         setSessionVaultKey(vault_key_b64, em);
-        location.replace("/"); // middleware → dashboard
+        location.replace("/app/dashboard.html");
       } catch (e) {
         error(loginErr, e?.data?.detail || e?.message || "Login failed");
       } finally {

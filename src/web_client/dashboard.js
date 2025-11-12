@@ -12,6 +12,7 @@ import { wireUpAddItemDialog } from "/app/add-items.js";
 // import { wireUpRequestBuilder } from "/app/request-builder.js";
 import { wireUpLogout } from "/app/logout.js";
 import { loadUmbral } from "/app/umbral-loader.js";
+import { wireUpUnexpectedExit } from "./logout";
 
 const { is_owner_tab, passkey } = initUser();
 const api = new CRSClient();
@@ -19,9 +20,10 @@ const api = new CRSClient();
 let user_store = null;
 if (is_owner_tab) {
   user_store = await initUserStore({ api, passkey });
-  await wireUpAddItemDialog({ api, user_store });
+  await wireUpAddItemDialog({ api, userStore: user_store });
   // await wireUpRequestBuilder({ user_store, loadUmbral });
-  await wireUpLogout({ api, user_store, passkey });
+  await wireUpLogout({ api, userStore: user_store, passkey });
+  await wireUpUnexpectedExit({api, userStore: user_store, passkey})
 } else {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay open';

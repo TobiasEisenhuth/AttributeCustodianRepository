@@ -66,7 +66,7 @@ export async function upsertItem({
   setStateChip = () => {},
 }) {
   itemName = normalizeText(itemName);
-  valueStr = normalizeText(itemName);
+  valueStr = normalizeText(valueStr);
   if (!itemName) return fail("Please provide an item name.");
   if (!valueStr)  return fail("Please provide a value.");
 
@@ -172,7 +172,7 @@ export function wireUpAddItemDialog({ api, userStore }) {
   
   btnCancel.addEventListener('click', (ev) => { ev.preventDefault(); closeDialog(); });
   dialog.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeDialog(); });
-  //dialog.addEventListener('click', (ev) => { if (ev.target === dialog) closeDialog(); });
+  // dialog.addEventListener('click', (ev) => { if (ev.target === dialog) closeDialog(); });
 
   const openDialog = () => {
     inpName.value = '';
@@ -200,6 +200,8 @@ export function wireUpAddItemDialog({ api, userStore }) {
     if (btnAdd.disabled) return;
     if (btnAdd.dataset.busy === "1") return;
     btnAdd.dataset.busy = "1";
+
+    console.assert(userStore, 'userStore missing at call site');
 
     try {
       const itemName = inpName.value;

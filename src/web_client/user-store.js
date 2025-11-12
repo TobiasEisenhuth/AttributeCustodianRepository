@@ -108,7 +108,6 @@ export async function initUserStore({ api, passkey }) {
   try {
     const { envelope_b64 } = await api.loadFromVault();
     user_store = await extractStoreFromEnvelope(envelope_b64, passkey);
-    console.log(user_store);
     await hydrateUserStore(api, user_store);
   } catch (e) {
     setStateChip("Error", "err");

@@ -63,7 +63,6 @@ export function setStatus(text, tone = "muted") {
 export function fail(message, tone = "err") {
   setStateChip("Error", "err");
   setStatus(message, tone);
-  delete btnAdd.dataset.busy;
 }
 
 // todo - use AJV?

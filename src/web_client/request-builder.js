@@ -8,6 +8,7 @@ import {
   base64UrlFromBytes,
 } from "/app/utils.js";
 import { needsSave } from "/app/save.js";
+import { loadUmbral } from "/app/umbral-loader.js";
 
 /* ------------------------- tiny helpers ------------------------- */
 
@@ -35,19 +36,19 @@ function newRequesterItemId() {
 /* --------------------- DOM refs for builder --------------------- */
 
 function getDomRefs() {
-  const formPanel  = q('.panel[data-panel="builder-form"]');
+  const formPanel = q('.panel[data-panel="builder-form"]');
   const itemsPanel = q('.panel[data-panel="builder-items"]');
 
-  const infoInput      = formPanel?.querySelector('input[data-field="Info String"]') || null;
-  const toInput        = formPanel?.querySelector('input[data-field="To"]') || null;
-  const nameInput      = formPanel?.querySelector('input[data-field="Item Name"]') || null;
-  const exampleInput   = formPanel?.querySelector('input[data-field="Example Value"]') || null;
-  const defaultInput   = formPanel?.querySelector('input[data-field="Default Field"]') || null;
+  const infoInput = formPanel?.querySelector('input[data-field="Info String"]') || null;
+  const toInput = formPanel?.querySelector('input[data-field="To"]') || null;
+  const nameInput = formPanel?.querySelector('input[data-field="Item Name"]') || null;
+  const exampleInput = formPanel?.querySelector('input[data-field="Example Value"]') || null;
+  const defaultInput = formPanel?.querySelector('input[data-field="Default Field"]') || null;
 
-  const applyBtn  = formPanel?.querySelector('[data-action="builder-apply"]') || null;
+  const applyBtn = formPanel?.querySelector('[data-action="builder-apply"]') || null;
 
-  const tbody     = itemsPanel?.querySelector('tbody') || null;
-  const countEl   = itemsPanel?.querySelector('.column-title .count') || null;
+  const tbody = itemsPanel?.querySelector('tbody') || null;
+  const countEl = itemsPanel?.querySelector('.column-title .count') || null;
   const commitBtn = itemsPanel?.querySelector('[data-action="builder-commit"]') || null;
 
   return { formPanel, itemsPanel, infoInput, toInput, nameInput, exampleInput, defaultInput, applyBtn, tbody, countEl, commitBtn };
@@ -170,7 +171,7 @@ function clearHeaderIfNoItems(userStore) {
 
 /* ------------------------- main wire-up -------------------------- */
 
-export function wireUpRequestBuilder({ userStore, loadUmbral }) {
+export function wireUpRequestBuilder({ api, userStore }) {
   if (revisiting("wireUpRequestBuilder")) return;
 
   const dom = getDomRefs();
@@ -182,8 +183,8 @@ export function wireUpRequestBuilder({ userStore, loadUmbral }) {
   // Apply button: add one row
   dom.applyBtn?.addEventListener("click", async () => {
     const info_string = normalizeText(dom.infoInput?.value ?? "");
-    const to          = normalizeText(dom.toInput?.value ?? "");
-    const item_name   = normalizeText(dom.nameInput?.value ?? "");
+    const to = normalizeText(dom.toInput?.value ?? "");
+    const item_name = normalizeText(dom.nameInput?.value ?? "");
     const example_val = normalizeText(dom.exampleInput?.value ?? "");
     const default_field = normalizeText(dom.defaultInput?.value ?? "None") || "None";
 

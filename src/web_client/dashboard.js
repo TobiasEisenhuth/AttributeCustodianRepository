@@ -8,8 +8,8 @@ import {
 } from "/app/utils.js";
 
 import { CRSClient } from "/app/crs-sdk.js";
-import { wireUpAddItemDialog } from "/app/add-items.js";
-// import { wireUpRequestBuilder } from "/app/request-builder.js";
+import { wireUpAddItemDialog, wireUpItemUpdate } from "/app/upsert-items.js";
+import { wireUpRequestBuilder } from "/app/request-builder.js";
 import { wireUpLogout, wireUpUnexpectedExit } from "/app/logout.js";
 import { loadUmbral } from "/app/umbral-loader.js";
 
@@ -18,9 +18,11 @@ const api = new CRSClient();
 
 let userStore = null;
 if (is_owner_tab) {
+  initSaveLogic();
   userStore = await initUserStore({ api, passkey });
   await wireUpAddItemDialog({ api, userStore });
-  // await wireUpRequestBuilder({ userStore, loadUmbral });
+  await wireUpItemUpdate({ api, userStore });
+  await wireUpRequestBuilder({ userStore, loadUmbral });
   await wireUpLogout({ api, userStore, passkey });
   await wireUpUnexpectedExit({api, userStore, passkey})
 } else {
@@ -163,7 +165,7 @@ if (is_owner_tab) {
 //   if (e.target === newItemOverlay) closeNewItemDialog();
 // });
 
-// /* ----------- Ctrl + Left-click editing (PERSONAL ONLY) ----------- */
+// // /* ----------- Ctrl + Left-click editing (PERSONAL ONLY) ----------- */
 // (function setupCtrlClickEditing() {
 //   const personalPanel = document.querySelector('.panel[data-panel="personal"]');
 //   if (!personalPanel) return;

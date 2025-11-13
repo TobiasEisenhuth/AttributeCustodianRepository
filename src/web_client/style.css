@@ -36,3 +36,32 @@ html[data-locked] {
   pointer-events: none;
   cursor: progress;
 }
+
+/* Show read-only text by default; hide the input */
+.cell.read-mode .ro-text { display: inline; }
+.cell.read-mode input[type="text"] { display: none; }
+
+/* In edit mode, hide ro-text and show the input */
+.cell.edit-mode .ro-text { display: none; }
+.cell.edit-mode input[type="text"] { display: inline-block; }
+
+/* Optional: visual cue while Ctrl is held */
+body.ctrl-down .panel[data-panel="personal"] .cell .ro-text {
+  cursor: text;
+  text-decoration: underline dotted;
+}
+
+/* Optional: nicer focus while editing */
+.cell.edit-mode input[type="text"]:focus {
+  outline: 2px solid var(--accent);
+  background: var(--bg);
+}
+
+/* Optional: disabled buttons look disabled */
+button[disabled], .btn[disabled] {
+  opacity: .5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.panel[data-panel="builder-items"] tr.selected { outline: 2px solid var(--accent); background: #0001; }

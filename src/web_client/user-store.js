@@ -12,7 +12,7 @@ import {
   setStatus,
   base64ToBytes,
 } from "/app/utils.js";
-import { appendRowToGui } from "/app/add-items.js";
+import { appendRowToGui } from "/app/upsert-items.js";
 
 async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000, keyLen = 256) {
   const keyMaterial = await crypto.subtle.importKey(
@@ -37,7 +37,7 @@ async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000,
 }
 
 // todo - true for production
-const USE_CRYPTO = false;
+const USE_CRYPTO = true;
 export async function packUserStoreToEnvelope(userStore, passkey) {
   const {ephemeral, ...persistent} = userStore;
   const persistent_utf_8 = JSON.stringify(persistent);

@@ -55,18 +55,28 @@ export function makePersonalCell(initialValue, placeholder) {
   return { wrapper, ro, input };
 }
 
+
+
 // Item Upsert Heavy Lifting
 export async function upsertItem({
   api,
   userStore,
-  itemName,
+  itemName = null,
   valueStr,
   itemId = null,
   setStatus = () => {},
   setStateChip = () => {},
 }) {
+  if (itemName == null) {
+    if (!itemId) return fail("itemId required when itemName is omitted.");
+    const items = userStore.persistent.provider.items;
+    const entry = items.find(it => it?.item_id === itemId);
+    itemName = entry?.item_name ?? "Item";
+  }
+  
   itemName = normalizeText(itemName);
   valueStr = normalizeText(valueStr);
+
   if (!itemName) return fail("Please provide an item name.");
   if (!valueStr)  return fail("Please provide a value.");
 
@@ -209,4 +219,117 @@ export function wireUpAddItemDialog({ api, userStore }) {
       delete btnAdd.dataset.busy;
     }
   });
+}
+
+export function wireUpItemUpdate({ api, userStore }) {
+  if (revisiting("wireUpItemUpdate")) return;
+
+  const enterEditMode = (wrapper, input) => {
+    input.readOnly = false;
+    wrapper.classList.remove("read-mode");
+    wrapper.classList.add("edit-mode");
+    setTimeout(() => { input.focus({ preventScroll: true }); input.select(); }, 0);
+  };
+
+  const exitEditMode = (wrapper, ro, input) => {
+    ro.textContent = normalizeText(input.value || "");
+    input.readOnly = true;
+    wrapper.classList.remove("edit-mode");
+    wrapper.classList.add("read-mode");
+  };
+
+  const setCtrlDown = (on) => document.body.classList.toggle("ctrl-down", !!on);
+  document.addEventListener("keydown", (ev) => { if (ev.ctrlKey) setCtrlDown(true); });
+  document.addEventListener("keyup", (ev) => { if (ev.key === "Control" || !ev.ctrlKey) setCtrlDown(false); });
+  window.addEventListener("blur", () => setCtrlDown(false));
+
+  const personalPanel = document.querySelector('.panel[data-panel="personal"]');
+
+  personalPanel.addEventListener("mousedown", (ev) => {
+    const td = ev.target.closest("td");
+    if (!td || !personalPanel.contains(td)) return;
+
+    const wrapper = ev.target.closest('.cell');
+    const input = wrapper?.querySelector('input[type="text"]');
+    const ro    = wrapper?.querySelector(".ro-text");
+    if (!wrapper || !input || !ro) return;
+
+    if (ev.button === 2) { // right-click
+      ev.preventDefault();
+      exitEditMode(wrapper, ro, input);
+      return;
+    }
+    if (ev.button === 0 && ev.ctrlKey) {
+      enterEditMode(wrapper, input);
+    }
+  });
+
+  personalPanel.addEventListener("keydown", (ev) => {
+    const input = ev.target;
+    if (!(input instanceof HTMLInputElement)) return;
+    if (ev.key === "Enter" || ev.key === "Escape") input.blur();
+  });
+
+  personalPanel.addEventListener("blur", async (ev) => {
+    const input = ev.target;
+    if (!(input instanceof HTMLInputElement)) return;
+
+    const wrapper = input.closest(".cell");
+    const ro   = wrapper?.querySelector(".ro-text");
+    const td   = wrapper?.closest("td");
+    const tr   = wrapper?.closest("tr");
+    if (!wrapper || !ro || !td || !tr) return;
+
+    const oldVal = ro.textContent || "";
+    const newVal = normalizeText(input.value || "");
+
+    exitEditMode(wrapper, ro, input);
+    if (newVal === oldVal) return;
+
+    // Determine column (0 = name, 1 = value)
+    const colIndex = Array.prototype.indexOf.call(tr.children, td);
+    const itemId   = tr.dataset.itemId;
+    if (!itemId) return;
+
+    try {
+      if (colIndex === 0) {
+        const items = userStore.persistent?.provider?.items || [];
+        const entry = items.find(it => it?.item_id === itemId);
+        if (!entry) throw new Error("Item not found");
+        if (!newVal) throw new Error("Item name cannot be empty");
+
+        entry.item_name = newVal;
+        entry.updated_at = nowIso();
+
+        needsSave(true);
+        setStateChip("Unsaved", "warn");
+        setStatus("Name updated.", "ok");
+      } else if (colIndex === 1) {
+        if (!newVal) {
+          ro.textContent = oldVal; input.value = oldVal;
+          setStateChip("Error", "err");
+          setStatus("Value cannot be empty.", "err");
+          return;
+        }
+
+        setStateChip("Saving…", "warn");
+        setStatus("Updating encrypted value…");
+
+        await upsertItem({
+          api,
+          userStore,
+          valueStr: newVal,
+          itemId
+        });
+
+        setStateChip("Synced", "ok");
+        setStatus("Item value updated.", "ok");
+      }
+    } catch (err) {
+      ro.textContent = oldVal;
+      input.value    = oldVal;
+      setStateChip("Error", "err");
+      setStatus(err?.message || "Failed to save edit.", "err");
+    }
+  }, true);
 }

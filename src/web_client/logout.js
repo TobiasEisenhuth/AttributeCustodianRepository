@@ -17,6 +17,8 @@ const logout = async (api, userStore, passkey) => {
   } catch {
     setStateChip("Still Logged In", "warn");
     setStatus("Could Not Log Out");
+  } finally {
+    sessionStorage.clear();
   }
 }
 

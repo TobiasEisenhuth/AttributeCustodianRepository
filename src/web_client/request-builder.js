@@ -1,3 +1,4 @@
+// request-builder.js
 import {
   revisiting,
   normalizeText,
@@ -15,46 +16,109 @@ import { loadUmbral } from "/app/umbral-loader.js";
 const q  = (sel, root = document) => root.querySelector(sel);
 const qa = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-function ensure(obj, path, finalType = "object") {
-  const parts = path.split(".");
-  let cur = obj;
-  for (let i = 0; i < parts.length; i++) {
-    const k = parts[i], last = i === parts.length - 1;
-    if (!(k in cur) || cur[k] == null) {
-      cur[k] = last ? (finalType === "array" ? [] : {}) : {};
-    }
-    cur = cur[k];
-  }
-  return cur;
-}
-
 function newRequesterItemId() {
   const rnd = crypto.getRandomValues(new Uint8Array(18)); // 144 bits
   return "req_" + base64UrlFromBytes(rnd);
 }
 
+function injectSelectionStylesOnce() {
+  if (document.getElementById("builder-selection-style")) return;
+  const css = `
+  /* --- form panel: cells aren't selectable & never show focus ring --- */
+  .panel[data-panel="builder-form"] .data-table th,
+  .panel[data-panel="builder-form"] .data-table td { user-select: none; }
+  .panel[data-panel="builder-form"] table:focus,
+  .panel[data-panel="builder-form"] tr:focus,
+  .panel[data-panel="builder-form"] td:focus,
+  .panel[data-panel="builder-form"] th:focus { outline: none !important; }
+
+  /* --- items panel: suppress UA focus ring on rows/cells --- */
+  .panel[data-panel="builder-items"] table:focus,
+  .panel[data-panel="builder-items"] tr:focus,
+  .panel[data-panel="builder-items"] td:focus,
+  .panel[data-panel="builder-items"] th:focus { outline: none !important; }
+
+  /* selected item look: blue background + solid accent border */
+  .panel[data-panel="builder-items"] tr.selected td {
+    background: rgba(0, 95, 204, .18); /* blue-ish */
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  `;
+  const style = document.createElement("style");
+  style.id = "builder-selection-style";
+  style.textContent = css;
+  document.head.appendChild(style);
+}
+
 /* --------------------- DOM refs for builder --------------------- */
 
 function getDomRefs() {
-  const formPanel = q('.panel[data-panel="builder-form"]');
+  const formPanel  = q('.panel[data-panel="builder-form"]');
   const itemsPanel = q('.panel[data-panel="builder-items"]');
 
-  const infoInput = formPanel?.querySelector('input[data-field="Info String"]') || null;
-  const toInput = formPanel?.querySelector('input[data-field="To"]') || null;
-  const nameInput = formPanel?.querySelector('input[data-field="Item Name"]') || null;
-  const exampleInput = formPanel?.querySelector('input[data-field="Example Value"]') || null;
-  const defaultInput = formPanel?.querySelector('input[data-field="Default Field"]') || null;
+  const infoInput      = formPanel?.querySelector('input[data-field="Info String"]') || null;
+  const addresseeInput = formPanel?.querySelector('input[data-field="Addressee"], input[data-field="To"]') || null;
+  const nameInput      = formPanel?.querySelector('input[data-field="Item Name"]') || null;
+  const exampleInput   = formPanel?.querySelector('input[data-field="Example Value"]') || null;
+  const defaultInput   = formPanel?.querySelector('input[data-field="Default Field"]') || null;
 
-  const applyBtn = formPanel?.querySelector('[data-action="builder-apply"]') || null;
+  const applyBtn  = formPanel?.querySelector('[data-action="builder-apply"]') || null;
 
-  const tbody = itemsPanel?.querySelector('tbody') || null;
-  const countEl = itemsPanel?.querySelector('.column-title .count') || null;
+  const table     = itemsPanel?.querySelector('table') || null;
+  const tbody     = table?.querySelector('tbody') || null;
+  const countEl   = itemsPanel?.querySelector('.column-title .count') || null;
   const commitBtn = itemsPanel?.querySelector('[data-action="builder-commit"]') || null;
 
-  return { formPanel, itemsPanel, infoInput, toInput, nameInput, exampleInput, defaultInput, applyBtn, tbody, countEl, commitBtn };
+  return {
+    formPanel, itemsPanel,
+    infoInput, addresseeInput, nameInput, exampleInput, defaultInput,
+    applyBtn, table, tbody, countEl, commitBtn
+  };
+}
+
+/* ------------- explicit scaffold (boring but readable) ----------- */
+
+function initRequesterScaffold(userStore) {
+  if (!userStore.persistent) userStore.persistent = {};
+  if (!userStore.persistent.requester) userStore.persistent.requester = {};
+  if (!Array.isArray(userStore.persistent.requester.items)) {
+    userStore.persistent.requester.items = [];
+  }
+  if (!userStore.ephemeral) userStore.ephemeral = {};
+  if (!userStore.ephemeral.requester) userStore.ephemeral.requester = {};
+  if (!userStore.ephemeral.requester.outbound) userStore.ephemeral.requester.outbound = {};
+
+  const outbound = userStore.ephemeral.requester.outbound;
+  if (!outbound.header) outbound.header = {};
+  if (typeof outbound.header.info_string !== "string") outbound.header.info_string = "";
+  if (typeof outbound.header.addressee   !== "string") outbound.header.addressee   = "";
+  if (!Array.isArray(outbound.items)) outbound.items = [];
 }
 
 /* -------------------- render right-hand table -------------------- */
+
+function headerRow(label, value) {
+  const tr = document.createElement("tr");
+  tr.dataset.kind = "header";
+  tr.setAttribute("tabindex", "-1");
+  const td = document.createElement("td");
+  td.textContent = `${label} | ${value ?? ""}`;
+  tr.appendChild(td);
+  return tr;
+}
+
+function itemRow(it) {
+  const tr = document.createElement("tr");
+  tr.dataset.kind = "item";
+  tr.dataset.itemId = it.item_id;
+  tr.setAttribute("tabindex", "-1");
+  const td = document.createElement("td");
+  const label = it?.item_name ?? it?.item_id ?? "";
+  const value = it?.example_value ?? "";
+  td.textContent = `${label} | ${value}`;
+  tr.appendChild(td);
+  return tr;
+}
 
 function renderList({ userStore, tbody, countEl, commitBtn }) {
   if (!tbody) return;
@@ -64,66 +128,32 @@ function renderList({ userStore, tbody, countEl, commitBtn }) {
   const header = out.header || {};
   const items  = Array.isArray(out.items) ? out.items : [];
 
-  let count = 0;
-
-  // Header rows (only if present or we already have items)
-  const showHeader = (header.info_string || header.to || items.length > 0);
-  if (showHeader) {
-    const tr1 = document.createElement("tr");
-    tr1.dataset.kind = "header"; tr1.dataset.header = "info";
-    tr1.innerHTML = `<th scope="row">Info String</th><td>${header.info_string ?? ""}</td>`;
-    tbody.appendChild(tr1);
-
-    const tr2 = document.createElement("tr");
-    tr2.dataset.kind = "header"; tr2.dataset.header = "to";
-    tr2.innerHTML = `<th scope="row">To</th><td>${header.to ?? ""}</td>`;
-    tbody.appendChild(tr2);
+  if (items.length > 0) {
+    tbody.appendChild(headerRow("Info String", header.info_string || ""));
+    tbody.appendChild(headerRow("Addressee",   header.addressee   || ""));
   }
+  for (const it of items) tbody.appendChild(itemRow(it));
 
-  // Item rows
-  for (const it of items) {
-    const tr = document.createElement("tr");
-    tr.dataset.kind = "item";
-    tr.dataset.itemId = it.item_id;
-    const label = it.item_name ?? it.item_id ?? "";
-    const value = it.example_value ?? "";
-    tr.innerHTML = `<th scope="row">${label}</th><td>${value}</td>`;
-    tbody.appendChild(tr);
-    count++;
-  }
-
-  if (countEl) countEl.textContent = String(count);
-  if (commitBtn) commitBtn.disabled = count === 0;
+  if (countEl) countEl.textContent = String(items.length);
+  if (commitBtn) commitBtn.disabled = items.length === 0;
 }
 
 /* ------------- mutate userStore for add / delete ops ------------- */
 
-function ensureRequesterScaffold(userStore) {
-  ensure(userStore, "persistent.requester.items", "array");
-  ensure(userStore, "ephemeral.requester.outbound.items", "array");
-  ensure(userStore, "ephemeral.requester.outbound.header");
-  // header fields default
-  const header = userStore.ephemeral.requester.outbound.header;
-  if (!("info_string" in header)) header.info_string = "";
-  if (!("to" in header)) header.to = "";
-}
+async function addDraftItem({ userStore, info_string, addressee, item_name, example_value, default_field }) {
+  initRequesterScaffold(userStore);
 
-async function addDraftItem({ userStore, loadUmbral, info_string, to, item_name, example_value, default_field }) {
-  ensureRequesterScaffold(userStore);
+  const outbound = userStore.ephemeral.requester.outbound;
+  outbound.header.info_string = info_string;
+  outbound.header.addressee   = addressee;
 
-  // Update header (persist until changed)
-  userStore.ephemeral.requester.outbound.header.info_string = info_string;
-  userStore.ephemeral.requester.outbound.header.to = to;
-
-  // Per-item requester keypair
   const umbral = await loadUmbral();
   if (!umbral) throw new Error("Umbral not loaded.");
+
   const sk = umbral.SecretKey.random();
   const pk = sk.publicKey();
-
   const item_id = newRequesterItemId();
 
-  // Persistent: store secret for later decrypt (requester side)
   userStore.persistent.requester.items.push({
     item_id,
     item_name,
@@ -132,8 +162,7 @@ async function addDraftItem({ userStore, loadUmbral, info_string, to, item_name,
     updated_at: nowIso(),
   });
 
-  // Ephemeral outbound: what we intend to send
-  userStore.ephemeral.requester.outbound.items.push({
+  outbound.items.push({
     item_id,
     item_name,
     example_value,
@@ -142,31 +171,30 @@ async function addDraftItem({ userStore, loadUmbral, info_string, to, item_name,
   });
 }
 
-function deleteDraftItemById(userStore, itemId) {
-  ensureRequesterScaffold(userStore);
+function deleteDraftItemsByIds(userStore, itemIds) {
+  if (!itemIds?.size) return 0;
+  initRequesterScaffold(userStore);
+
   const itemsP = userStore.persistent.requester.items;
   const itemsE = userStore.ephemeral.requester.outbound.items;
 
-  const pIdx = itemsP.findIndex(i => i?.item_id === itemId);
-  if (pIdx > -1) itemsP.splice(pIdx, 1);
+  let removed = 0;
 
-  const eIdx = itemsE.findIndex(i => i?.item_id === itemId);
-  if (eIdx > -1) itemsE.splice(eIdx, 1);
-
-  // If no items remain, clear header too
-  if (itemsE.length === 0) {
-    userStore.ephemeral.requester.outbound.header.info_string = "";
-    userStore.ephemeral.requester.outbound.header.to = "";
+  for (let i = itemsP.length - 1; i >= 0; i--) {
+    const id = itemsP[i]?.item_id;
+    if (itemIds.has(id)) { itemsP.splice(i, 1); removed++; }
   }
-}
-
-function clearHeaderIfNoItems(userStore) {
-  ensureRequesterScaffold(userStore);
-  const itemsE = userStore.ephemeral.requester.outbound.items;
-  if (itemsE.length === 0) {
-    userStore.ephemeral.requester.outbound.header.info_string = "";
-    userStore.ephemeral.requester.outbound.header.to = "";
+  for (let i = itemsE.length - 1; i >= 0; i--) {
+    const id = itemsE[i]?.item_id;
+    if (itemIds.has(id)) itemsE.splice(i, 1);
   }
+
+  if (itemsE.length === 0) {
+    const header = userStore.ephemeral.requester.outbound.header;
+    header.info_string = "";
+    header.addressee   = "";
+  }
+  return removed;
 }
 
 /* ------------------------- main wire-up -------------------------- */
@@ -174,23 +202,23 @@ function clearHeaderIfNoItems(userStore) {
 export function wireUpRequestBuilder({ api, userStore }) {
   if (revisiting("wireUpRequestBuilder")) return;
 
+  injectSelectionStylesOnce();
+
   const dom = getDomRefs();
   if (!dom.formPanel || !dom.itemsPanel) return;
 
-  // Initial paint
   renderList({ userStore, tbody: dom.tbody, countEl: dom.countEl, commitBtn: dom.commitBtn });
 
-  // Apply button: add one row
   dom.applyBtn?.addEventListener("click", async () => {
-    const info_string = normalizeText(dom.infoInput?.value ?? "");
-    const to = normalizeText(dom.toInput?.value ?? "");
-    const item_name = normalizeText(dom.nameInput?.value ?? "");
-    const example_val = normalizeText(dom.exampleInput?.value ?? "");
+    const info_string   = normalizeText(dom.infoInput?.value ?? "");
+    const addressee     = normalizeText(dom.addresseeInput?.value ?? "");
+    const item_name     = normalizeText(dom.nameInput?.value ?? "");
+    const example_val   = normalizeText(dom.exampleInput?.value ?? "");
     const default_field = normalizeText(dom.defaultInput?.value ?? "None") || "None";
 
-    if (!info_string || !to || !item_name) {
+    if (!info_string || !addressee || !item_name) {
       setStateChip("Error", "err");
-      setStatus("Please fill Info String, To, and Item Name.", "err");
+      setStatus("Please fill Info String, Addressee, and Item Name.", "err");
       return;
     }
 
@@ -200,17 +228,20 @@ export function wireUpRequestBuilder({ api, userStore }) {
 
       await addDraftItem({
         userStore,
-        loadUmbral,
         info_string,
-        to,
+        addressee,
         item_name,
-        example_value: example_val || "",   // optional → ""
-        default_field,                      // optional → "None"
+        example_value: example_val || "",
+        default_field,
       });
 
-      needsSave(true); // local state changed
+      needsSave(true);
       setStateChip("Unsaved", "warn");
-      setStatus("Item added to draft.", "ok");
+      setStatus("Item added to current request.", "ok");
+
+      if (dom.nameInput)    dom.nameInput.value = "";
+      if (dom.exampleInput) dom.exampleInput.value = "";
+      if (dom.defaultInput) dom.defaultInput.value = "None";
 
       renderList({ userStore, tbody: dom.tbody, countEl: dom.countEl, commitBtn: dom.commitBtn });
     } catch (e) {
@@ -219,89 +250,85 @@ export function wireUpRequestBuilder({ api, userStore }) {
     }
   });
 
-  /* ---------- selection (Ctrl+click) and Delete behavior ---------- */
+  /* ---------- multi-select (Ctrl+click) and clearing behavior ---------- */
 
-  let selectedRow = null;
-  const clearSelection = () => {
-    selectedRow?.classList.remove("selected");
-    selectedRow = null;
-  };
+  const selectedIds = new Set();
 
+  function clearSelection() {
+    selectedIds.clear();
+    qa('tr[data-kind="item"].selected', dom.tbody).forEach(tr => tr.classList.remove('selected'));
+  }
+  function toggleRowSelection(tr) {
+    if (!tr || tr.dataset.kind !== "item") return;
+    const id = tr.dataset.itemId;
+    if (!id) return;
+    if (selectedIds.has(id)) { selectedIds.delete(id); tr.classList.remove("selected"); }
+    else { selectedIds.add(id); tr.classList.add("selected"); }
+  }
+
+  // Inside items panel:
   dom.itemsPanel.addEventListener("mousedown", (e) => {
     const tr = e.target.closest("tr");
     if (!tr || !dom.tbody?.contains(tr)) return;
 
+    // Ctrl + left click toggles items only
     if (e.button === 0 && e.ctrlKey) {
-      // toggle selection
-      if (selectedRow === tr) {
-        clearSelection();
-      } else {
-        clearSelection();
-        selectedRow = tr;
-        tr.classList.add("selected");
-      }
+      if (tr.dataset.kind === "item") toggleRowSelection(tr);
+      e.preventDefault(); e.stopPropagation();
+      return;
     }
+
+    // Plain left click anywhere in the panel clears selection
+    if (e.button === 0 && !e.ctrlKey) {
+      clearSelection();
+    }
+
+    // Right click clears selection
     if (e.button === 2) {
       e.preventDefault();
       clearSelection();
     }
   });
 
+  // Click anywhere outside the items panel clears selection
+  document.addEventListener("mousedown", (e) => {
+    if (!dom.itemsPanel.contains(e.target)) clearSelection();
+  });
+
+  // Escape or window blur clears selection
   dom.itemsPanel.addEventListener("keydown", (e) => {
-    if (!selectedRow) return;
+    if (e.key === "Escape") { clearSelection(); return; }
+    if (selectedIds.size === 0) return;
     if (e.key !== "Delete" && e.key !== "Backspace") return;
     e.preventDefault();
 
-    const kind = selectedRow.dataset.kind;
-
     try {
-      if (kind === "item") {
-        const itemId = selectedRow.dataset.itemId;
-        if (!itemId) return;
-
-        deleteDraftItemById(userStore, itemId);
+      const removed = deleteDraftItemsByIds(userStore, selectedIds);
+      if (removed > 0) {
         needsSave(true);
         setStateChip("Unsaved", "warn");
-        setStatus("Item removed.", "ok");
-        clearSelection();
-        renderList({ userStore, tbody: dom.tbody, countEl: dom.countEl, commitBtn: dom.commitBtn });
-      } else if (kind === "header") {
-        // Only allow header removal if there are no item rows
-        ensureRequesterScaffold(userStore);
-        const itemsE = userStore.ephemeral.requester.outbound.items;
-        if (itemsE.length > 0) {
-          setStateChip("Info", "muted");
-          setStatus("Remove all items first to clear header.", "muted");
-          return;
-        }
-        // Clear whichever header row was selected
-        const which = selectedRow.dataset.header; // "info" | "to"
-        if (which === "info") userStore.ephemeral.requester.outbound.header.info_string = "";
-        if (which === "to")   userStore.ephemeral.requester.outbound.header.to = "";
-        clearHeaderIfNoItems(userStore);
-        needsSave(true);
-        setStateChip("Unsaved", "warn");
-        setStatus("Header cleared.", "ok");
-        clearSelection();
-        renderList({ userStore, tbody: dom.tbody, countEl: dom.countEl, commitBtn: dom.commitBtn });
+        setStatus(removed === 1 ? "Item removed." : `${removed} items removed.`, "ok");
       }
+      clearSelection();
+      renderList({ userStore, tbody: dom.tbody, countEl: dom.countEl, commitBtn: dom.commitBtn });
     } catch (err) {
       setStateChip("Error", "err");
       setStatus(err?.message || "Failed to delete.", "err");
     }
   });
 
-  // Make the items panel focusable so it can receive Delete key
+  window.addEventListener("blur", clearSelection);
+
+  // Make the items panel focusable so it can receive Delete/Escape
   dom.itemsPanel.tabIndex = 0;
 
   /* -------------------- commit (hook only for now) -------------------- */
 
   dom.commitBtn?.addEventListener("click", () => {
     const out = userStore?.ephemeral?.requester?.outbound || { header: {}, items: [] };
-    // Emit event for future sending logic
     window.dispatchEvent(new CustomEvent("builder:confirm", { detail: out }));
     setStateChip("Info", "muted");
-    setStatus("Draft ready to send (not implemented yet).", "muted");
+    setStatus("Request sending is not implemented yet.", "muted");
   });
 
   /* --------------------- optional: Ctrl visual hint -------------------- */

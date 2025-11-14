@@ -65,3 +65,6 @@ button[disabled], .btn[disabled] {
 }
 
 .panel[data-panel="builder-items"] tr.selected { outline: 2px solid var(--accent); background: #0001; }
+
+.table-scroll thead th { position: sticky; top: 0; background: var(--card); z-index: 1; }
+.panel[data-panel="builder-items"] tr.selected { outline: 2px solid var(--accent); background: #0001; }

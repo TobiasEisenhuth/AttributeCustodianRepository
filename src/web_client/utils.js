@@ -93,10 +93,10 @@ export function initUser() {
       const title = document.querySelector('.panel[data-panel="personal"] .column-title');
       if (title) title.textContent = `Personal Data | ${email}`;
     }, { once: true });
-      window.addEventListener("DOMContentLoaded", () => {
-      const title = document.querySelector('.panel[data-panel="builder-form"] .column-title');
-      if (title) title.textContent = `Item builder | ${email}`;
-    }, { once: true });
+    //   window.addEventListener("DOMContentLoaded", () => {
+    //   const title = document.querySelector('.panel[data-panel="builder-form"] .column-title');
+    //   if (title) title.textContent = `Item builder | ${email}`;
+    // }, { once: true });
   }
 
   const is_owner_tab = !!passkey;

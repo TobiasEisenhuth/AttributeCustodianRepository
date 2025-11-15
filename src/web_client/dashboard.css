@@ -166,3 +166,19 @@ input[type="text"][readonly] { cursor: default; }
 .modal-table input[type="text"] { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 0; background: #fff; }
 
 .modal-hint { margin: 8px 0 0; font-size: 0.85rem; color: #666; }
+
+/* --- suggestions for inbound editable cells --- */
+.inbound-edit-cell { position: relative; }
+.inbound-input-wrap { position: relative; }
+.suggestbox {
+  position: absolute;
+  left: 0; right: 0; top: 100%;
+  background: #fff;
+  border: 1px solid #ddd;
+  z-index: 5;
+  max-height: 180px;
+  overflow: auto;
+}
+.suggestlist { list-style: none; margin: 0; padding: 0; }
+.suggestitem { padding: 6px 8px; cursor: pointer; }
+.suggestitem.hot, .suggestitem:hover { background: #f0f6ff; }

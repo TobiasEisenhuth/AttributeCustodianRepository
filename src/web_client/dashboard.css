@@ -31,11 +31,15 @@ body {
 /* All left/right panels go to fixed columns */
 .dashboard > .panel[data-slot="left"]  { grid-column: 2; min-width: 0; }
 .dashboard > .panel[data-slot="right"] { grid-column: 3; min-width: 0; }
+.dashboard > .panel[data-slot="span"]  { grid-column: 2 / 4; min-width: 0; }
 
 /* --- replace this line (remove it):
 .panel + .panel { border-left: 1px solid #f0f0f0; }
    --- with this: right column always gets the divider --- */
 .panel[data-slot="right"] { border-left: 1px solid #f0f0f0; }
+
+/* Ensure spanning panel does NOT show a vertical divider */
+.panel[data-slot="span"] { border-left: none; }
 
 /* hidden should truly leave layout (belt & suspenders) */
 [hidden] { display: none !important; }

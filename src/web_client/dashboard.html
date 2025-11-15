@@ -105,60 +105,23 @@
       </div>
     </section>
 
-    <section class="column panel" data-view="builder" data-slot="left" data-panel="builder-form" hidden inert>
-      <h2 class="column-title">Item builder</h2>
+    <section class="column panel" data-view="builder" data-slot="span" data-panel="builder-form" hidden inert>
+      <h2 class="column-title">Request Builder</h2>
       <div class="column-content">
         <div class="table-scroll">
-          <!-- Using the same table-based form pattern you use in the modal for consistency -->
           <form class="builder-form" aria-labelledby="builderFormTitle">
-            <h3 id="builderFormTitle" class="visually-hidden">Item Builder Form</h3>
+            <h3 id="builderFormTitle" class="visually-hidden">Request Builder Form</h3>
             <table class="data-table" aria-label="Item builder form">
-              <tbody>
-                <tr>
-                  <th scope="row">Info String</th>
-                  <td><input type="text" data-field="Info String" autocomplete="off" /></td>
-                </tr>
-                <tr>
-                  <th scope="row">To</th>
-                  <td><input type="text" data-field="To" autocomplete="off" /></td>
-                </tr>
-                <tr>
-                  <th scope="row">Item Name</th>
-                  <td><input type="text" data-field="Item Name" autocomplete="off" /></td>
-                </tr>
-                <tr>
-                  <th scope="row">Example Value</th>
-                  <td><input type="text" data-field="Example Value" autocomplete="off" /></td>
-                </tr>
-                <tr>
-                  <th scope="row">Default Field</th>
-                  <td><input type="text" data-field="Default Field" autocomplete="off" /></td>
-                </tr>
-              </tbody>
+
             </table>
           </form>
         </div>
         <div class="panel-footer">
-          <button type="button" class="btn primary" data-action="builder-apply">Use input</button>
+          <button type="button" class="btn primary" data-action="builder-apply">Send Request</button>
         </div>
       </div>
     </section>
 
-    <section class="column panel" data-view="builder" data-slot="right" data-panel="builder-items" hidden inert>
-      <h2 class="column-title">Outbound Request | Item Count <span class="count" aria-live="polite">0</span></h2>
-      <div class="column-content">
-        <div class="table-scroll">
-          <table class="data-table" aria-label="Compounded items list">
-            <tbody>
-              <!-- list added via JS -->
-            </tbody>
-          </table>
-        </div>
-        <div class="panel-footer">
-          <button type="button" class="btn" data-action="builder-commit" disabled>Send Request</button>
-        </div>
-      </div>
-    </section>
   </div>
 
   <div id="app-statusbar" class="panel-footer" style="display:flex;gap:.5rem;align-items:center; padding:8px 12px; border-top:1px solid #eee;">

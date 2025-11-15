@@ -11,6 +11,7 @@ import { CRSClient } from "/app/crs-sdk.js";
 import { wireUpAddItemDialog, wireUpItemUpdate } from "/app/upsert-items.js";
 import { wireUpRequestBuilder } from "/app/request-builder.js";
 import { wireUpInboundRequests } from "/app/inbound-request.js";
+import { wireUpQueryItems } from "/app/fetch-items.js";
 import { wireUpLogout, wireUpUnexpectedExit } from "/app/logout.js";
 
 const { is_owner_tab, passkey } = initUser();
@@ -21,11 +22,12 @@ if (is_owner_tab) {
   initSaveLogic();
   userStore = await initUserStore({ api, passkey });
   await wireUpLogout({ api, userStore, passkey });
+  await wireUpUnexpectedExit({api, userStore, passkey});
   await wireUpAddItemDialog({ api, userStore });
   await wireUpItemUpdate({ api, userStore });
   await wireUpInboundRequests({api, userStore});
   await wireUpRequestBuilder({ api, userStore });
-  await wireUpUnexpectedExit({api, userStore, passkey})
+  await wireUpQueryItems({ api, userStore });
 } else {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay open';

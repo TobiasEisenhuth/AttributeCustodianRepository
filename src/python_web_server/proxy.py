@@ -803,9 +803,13 @@ def api_request_item(request: Request, body: RequestItemRequest):
     cfrags = [reencrypt(capsule=capsule, kfrag=vkf) for vkf in verified_kfrags]
 
     return {
+        "requester_item_id": body.requester_item_id,
+        "provider_item_id": provider_item_id,
         "capsule_b64": _transport_safe_b_string(bytes(capsule)),
         "ciphertext_b64": _transport_safe_b_string(ciphertext),
         "cfrags_b64": [_transport_safe_b_string(bytes(c)) for c in cfrags],
+        "delegating_pk_b64": _transport_safe_b_string(spk_b),
+        "verifying_pk_b64": _transport_safe_b_string(svk_b),
     }
 
 @app.get("/api/list_my_items")

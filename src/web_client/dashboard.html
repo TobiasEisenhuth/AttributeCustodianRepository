@@ -17,6 +17,7 @@
       <div class="column-content">
         <button type="button" class="btn nav-btn" data-action="nav-view" data-view="share" aria-current="page">Share Item</button>
         <button type="button" class="btn nav-btn" data-action="nav-view" data-view="builder">Request Builder</button>
+        <button type="button" class="btn nav-btn" data-action="nav-view" data-view="query">Fetch Request</button>
 
         <hr class="muted" aria-hidden="true" />
 
@@ -115,6 +116,23 @@
         </div>
         <div class="panel-footer">
           <button type="button" class="btn primary" data-action="builder-apply">Send Request</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="column panel" data-view="query" data-slot="span" data-panel="query-form" hidden inert>
+      <h2 class="column-title">Query Items</h2>
+      <div class="column-content">
+        <div class="table-scroll">
+          <form class="builder-form" aria-labelledby="builderFormTitle">
+            <h3 id="builderFormTitle" class="visually-hidden">Query</h3>
+            <table class="data-table" aria-label="Item builder form">
+
+            </table>
+          </form>
+        </div>
+        <div class="panel-footer">
+          <button type="button" class="btn primary" data-action="builder-apply">Fetch</button>
         </div>
       </div>
     </section>

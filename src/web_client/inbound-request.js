@@ -403,7 +403,11 @@ export function wireUpInboundRequests({ api, userStore }) {
       setStatus("Access granted. Acknowledging bundle…");
 
       // Ack the whole bundle for this requester, then remove these rows and load next
-      await api.ackSolicitationBundle(requester_id, ack_token, { signal: AbortSignal.timeout(15000) });
+      await api.ackSolicitationBundle({
+        requester_id,
+        max_created_at: ack_token?.max_created_at,
+        max_request_id: ack_token?.max_request_id,
+        }, { signal: AbortSignal.timeout(15000) });
 
       // Clean up this group from UI and update count
       const removedRows = items.length + 2 /*headers*/ + 1 /*button row*/;

@@ -60,7 +60,7 @@ export function makePersonalCell(initialValue, placeholder) {
 // Item Upsert Heavy Lifting
 export async function upsertItem({
   api,
-  userStore,
+  store,
   itemName = null,
   valueStr,
   itemId = null,
@@ -69,7 +69,7 @@ export async function upsertItem({
 }) {
   if (itemName == null) {
     if (!itemId) return fail("itemId required when itemName is omitted.");
-    const items = userStore.persistent.provider.items;
+    const items = store.persistent.provider.items;
     const entry = items.find(it => it?.item_id === itemId);
     itemName = entry?.item_name ?? "Item";
   }
@@ -80,14 +80,18 @@ export async function upsertItem({
   if (!itemName) return fail("Please provide an item name.");
   if (!valueStr)  return fail("Please provide a value.");
 
-  const umbral = await loadUmbral();
-  if (!umbral) return fail("Umbral not loaded; cannot add item.");
-
   // todo - ill formed user store is silent
-  const persistentItems = userStore.persistent.provider.items;
+  const persistentItems = store.persistent.provider.items;
 
   let delegating_sk, delegating_pk, signing_sk, verifying_pk;
   let idx = -1, item_id;
+
+  const umbral = await loadUmbral();
+  if (!umbral) {
+    setStateChip("Error", "err");
+    setStatus("Umbral not available.", "err");
+    return;
+  }
 
   if (itemId) {
     item_id = itemId;
@@ -138,12 +142,12 @@ export async function upsertItem({
     persistentItems.push({...persistent_entry, created_at: now, updated_at: now });
   }
 
-  userStore.ephemeral.provider.values.set(item_id, valueStr);
+  store.ephemeral.provider.values.set(item_id, valueStr);
 
   needsSave(true);
 
   // todo - remove for production
-  try { sessionStorage.setItem("crs:userStore", JSON.stringify(userStore)); } catch {}
+  try { sessionStorage.setItem("crs:store", JSON.stringify(store)); } catch {}
 
   setStateChip("Upserting…");
   setStatus("Saving encrypted item to server…");
@@ -156,7 +160,7 @@ export async function upsertItem({
   return item_id;
 }
 
-export function wireUpAddItemDialog({ api, userStore }) {
+export function wireUpAddItemDialog({ api, store }) {
   if (revisiting('wireUpAddItemDialog')) return;
 
   const dialog = document.getElementById("new-item-dialog");
@@ -209,7 +213,7 @@ export function wireUpAddItemDialog({ api, userStore }) {
       if (!itemName) return fail('Please provide an item name.');
       if (!valueStr)  return fail('Please provide a value.');
 
-      const itemId = await upsertItem({itemName, valueStr, api, userStore, setStatus, setStateChip});
+      const itemId = await upsertItem({itemName, valueStr, api, store, setStatus, setStateChip});
       appendRowToGui(itemName, valueStr, itemId);
       closeDialog();
     } catch (err) {
@@ -221,7 +225,7 @@ export function wireUpAddItemDialog({ api, userStore }) {
   });
 }
 
-export function wireUpItemUpdate({ api, userStore }) {
+export function wireUpItemUpdate({ api, store }) {
   if (revisiting("wireUpItemUpdate")) return;
 
   const enterEditMode = (wrapper, input) => {
@@ -293,7 +297,7 @@ export function wireUpItemUpdate({ api, userStore }) {
 
     try {
       if (colIndex === 0) {
-        const items = userStore.persistent?.provider?.items || [];
+        const items = store.persistent?.provider?.items || [];
         const entry = items.find(it => it?.item_id === itemId);
         if (!entry) throw new Error("Item not found");
         if (!newVal) throw new Error("Item name cannot be empty");
@@ -317,7 +321,7 @@ export function wireUpItemUpdate({ api, userStore }) {
 
         await upsertItem({
           api,
-          userStore,
+          store,
           valueStr: newVal,
           itemId
         });

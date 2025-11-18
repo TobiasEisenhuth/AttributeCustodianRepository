@@ -1,10 +1,10 @@
-// request-builder.js
 import {
   revisiting,
   normalizeText,
   setStateChip,
   setStatus,
   nowIso,
+  enc,
   bytesToBase64,
   base64UrlFromBytes,
 } from "/app/utils.js";
@@ -18,14 +18,6 @@ const q = (sel, root = document) => root.querySelector(sel);
 function newRequesterItemId() {
   const rnd = crypto.getRandomValues(new Uint8Array(18)); // 144 bits
   return "req_" + base64UrlFromBytes(rnd);
-}
-
-function ensurePersistentRequester(userStore) {
-  if (!userStore.persistent) userStore.persistent = {};
-  if (!userStore.persistent.requester) userStore.persistent.requester = {};
-  if (!Array.isArray(userStore.persistent.requester.items)) {
-    userStore.persistent.requester.items = [];
-  }
 }
 
 /* ---------- table building ---------- */
@@ -126,27 +118,30 @@ function resetBuilderTable(tableEl) {
 
 function readForm(tableEl) {
   const info = normalizeText(tableEl.querySelector('input[data-role="info"]')?.value || "");
-  const addressee = normalizeText(tableEl.querySelector('input[data-role="addressee"]')?.value || "");
+  const provider_id = normalizeText(tableEl.querySelector('input[data-role="addressee"]')?.value || "");
 
   const items = [];
   const rows = Array.from(tableEl.querySelectorAll('tbody tr[data-kind="item"]'));
   for (const tr of rows) {
     const name  = normalizeText(tr.querySelector('input[data-field="name"]')?.value || "");
+    if (!name) continue;
+
     const value = normalizeText(tr.querySelector('input[data-field="value"]')?.value || "");
-    let deflt   = normalizeText(tr.querySelector('input[data-field="default"]')?.value || "");
-    if (!name && !value && !deflt) continue;      // skip empty row
-    if (!name)  throw new Error("Each item needs an Item Name.");
-    if (!value) throw new Error("Each item needs an Example Value."); // required by backend
-    if (!deflt) deflt = null;                     // string or null
-    items.push({ item_name: name, value_example: value, default_field: deflt });
+    const deflt = normalizeText(tr.querySelector('input[data-field="default"]')?.value || "");
+
+    const item = { item_name: name };
+    if (value) item.value_example = value;
+    if (deflt) item.default_field = deflt;
+
+    items.push( item );
   }
 
-  return { info, addressee, items };
+  return { info, provider_id, items };
 }
 
 /* ---------- main wire-up ---------- */
 
-export function wireUpRequestBuilder({ api, userStore }) {
+export function wireUpRequestBuilder({ api, store }) {
   if (revisiting("wireUpRequestBuilder")) return;
 
   const panel = q('.panel[data-panel="builder-form"]');
@@ -159,14 +154,6 @@ export function wireUpRequestBuilder({ api, userStore }) {
 
   const tbody = buildTableSkeleton(table);
 
-  // Open-ended rows as user types in the last item row
-  table.addEventListener("input", (e) => {
-    const tr = e.target.closest('tr[data-kind="item"]');
-    if (!tr) return;
-    if (tr === getLastItemRow(tbody)) ensureOpenEnded(tbody);
-  });
-
-  // Enter in the last item row → add another empty row and focus it
   table.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
     const tr = e.target.closest('tr[data-kind="item"]');
@@ -179,26 +166,26 @@ export function wireUpRequestBuilder({ api, userStore }) {
     }
   });
 
-  // Send
   applyBtn?.addEventListener("click", async () => {
     if (applyBtn.dataset.busy === "1") return;
     applyBtn.dataset.busy = "1";
     applyBtn.disabled = true;
 
+    const umbral = await loadUmbral();
+    if (!umbral) {
+      setStateChip("Error", "err");
+      setStatus("Umbral not available.", "err");
+      return;
+    }
+
     try {
-      const { info, addressee, items } = readForm(table);
+      const { info, provider_id, items } = readForm(table);
       if (!info)      throw new Error("Please fill Info String.");
-      if (!addressee) throw new Error("Please fill Addressee.");
+      if (!provider_id) throw new Error("Please fill Addressee.");
       if (items.length === 0) throw new Error("Please add at least one item.");
 
       setStateChip("Preparing…", "warn");
       setStatus("Generating keys and building solicitation…");
-
-      ensurePersistentRequester(userStore);
-
-      // Umbral for keypairs
-      const umbral = await loadUmbral();
-      if (!umbral) throw new Error("Umbral WASM not available.");
 
       const created_at = nowIso();
       const rows = [];
@@ -210,37 +197,35 @@ export function wireUpRequestBuilder({ api, userStore }) {
         const sk = umbral.SecretKey.random();
         const pk = sk.publicKey();
 
-        // persist requester secret locally
-        userStore.persistent.requester.items.push({
+        store.persistent.requester.items.push({
           item_id: secret_id,
           item_name: it.item_name,
           keys: { secret_key_b64: bytesToBase64(sk.toBEBytes()) },
-          created_at,
-          updated_at: created_at,
+          last_touched: created_at,
         });
 
         rows.push({
-          item_name: it.item_name,
           secret_id: secret_id,
-          value_example: it.value_example,
+          item_name: it.item_name,
           requester_public_key_b64: bytesToBase64(pk.toCompressedBytes()),
-          default_field: it.default_field,           // string or null
-          request_order: `${i + 1}.0`,
+          value_example: it.value_example,
+          default_field: it.default_field,
         });
       }
 
-      const payload = { rows };
+      const request = { info_string: info, rows };
+      const request_bytes = enc.encode(JSON.stringify(request));
+      const request_b64 = bytesToBase64(request_bytes);
 
       setStateChip("Sending…", "warn");
       setStatus("Pushing solicitation to server…");
       await api.pushSolicitation(
-        addressee,     // provider_id
-        payload,
+        provider_id,
+        request_b64,
         { signal: AbortSignal.timeout(15000) }
       );
 
       needsSave(true);
-      // ✅ Clear the table on success
       resetBuilderTable(table);
 
       setStateChip("Sent", "ok");

@@ -1,11 +1,14 @@
 # language utils
-from base64 import b64encode, b64decode
-def _transport_safe_b_string(parcel: bytes): return b64encode(parcel).decode()
-
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Union
 from pydantic import EmailStr
 from uuid import UUID
-import re
+
+from base64 import b64encode, b64decode
+BytesLike = Union[bytes, bytearray, memoryview]
+def _transport_safe_b_string(parcel: BytesLike) -> str:
+    if parcel is None:
+        raise ValueError("parcel is None")
+    return b64encode(parcel).decode("ascii")
 
 # pre proxy core
 from umbral_pre import PublicKey, Capsule, KeyFrag, reencrypt
@@ -20,9 +23,6 @@ import sys
 # time
 import time
 from datetime import datetime, timedelta, timezone
-
-# json
-import json
 
 # web utils
 import anyio
@@ -50,7 +50,7 @@ from common import (
     GrantAccessRequest, RevokeAccessRequest,
     RequestItemRequest,
     SaveToVaultRequest,
-    PushSolicitationRequest, PullSolicitationBundleRequest, AckSolicitationBundleRequest
+    PushSolicitationRequest, PullSolicitationBundleRequest, AckSolicitationRequest
 )
 
 PROXY_HOST = os.getenv("PROXY_HOST", "0.0.0.0")
@@ -133,7 +133,7 @@ def init_db():
                 request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 requester_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 provider_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                payload JSONB NOT NULL,
+                payload BYTEA NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
         """)
@@ -478,7 +478,7 @@ def api_save_to_vault(request: Request, body: SaveToVaultRequest):
 
     if len(envelope) > MAX_VAULT_BYTES:
         return JSONResponse(
-            {"error": "payload_too_large", "max_bytes": MAX_VAULT_BYTES},
+            {"error": "envelope_too_large", "max_bytes": MAX_VAULT_BYTES},
             status_code=413,
         )
 
@@ -511,51 +511,38 @@ def api_load_from_vault(request: Request):
 
 # ------------------- post office ---------------------
 
-def _validate_solicitation_payload(payload: Dict[str, Any]) -> None:
-    rows = payload.get("rows")
-    if not isinstance(rows, list) or not rows:
-        raise HTTPException(status_code=400, detail="invalid_payload_rows")
-    for r in rows:
-        if not isinstance(r, dict):
-            raise HTTPException(status_code=400, detail="invalid_row_type")
-        for k in ("item_name", "secret_id", "value_example", "requester_public_key_b64"):
-            v = r.get(k)
-            if not isinstance(v, str) or not v:
-                raise HTTPException(status_code=400, detail=f"missing_{k}")
-        if "default_field" in r and not isinstance(r["default_field"], (str, type(None))):
-            raise HTTPException(status_code=400, detail="bad_default_field")
-        if "request_order" in r:
-            ro = r["request_order"]
-            if not ((isinstance(ro, str) and re.match(r"^\d+\.\d+$", ro))):
-                raise HTTPException(status_code=400, detail="bad_request_order")
-        try:
-            b64decode(r["requester_public_key_b64"])
-        except Exception:
-            raise HTTPException(status_code=400, detail="bad_public_key_b64")
+MAX_SOLICITATION_BYTES = int(os.getenv("MAX_SOLICITATION_BYTES", str(3 * 1024 * 1024)))  # 3 MiB default
 
-@app.post("/api/push_solicitation")
+@app.put("/api/push_solicitation")
 def api_push_solicitation(request: Request, body: PushSolicitationRequest):
     requester_id = request.state.user_id
     if requester_id == body.provider_id:
         raise HTTPException(status_code=400, detail="self_request_forbidden")
 
-    _validate_solicitation_payload(body.payload)
-    payload_json = json.dumps(body.payload, separators=(",", ":"))
+    try:
+        payload = b64decode(body.payload_b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad_base64")
+
+    if len(payload) > MAX_SOLICITATION_BYTES:
+        return JSONResponse(
+            {"error": "payload_too_large", "max_bytes": MAX_SOLICITATION_BYTES},
+            status_code=413,
+        )
 
     with get_conn() as conn:
         cur = conn.execute(
             """
             INSERT INTO solicitations (requester_id, provider_id, payload)
-            VALUES (%s, %s, %s::jsonb)
+            VALUES (%s, %s, %s)
             RETURNING request_id, created_at
             """,
-            (requester_id, body.provider_id, payload_json),
+            (requester_id, body.provider_id, payload),
         )
         request_id, created_at = cur.fetchone()
 
     return {
-        "request_id": str(request_id),
-        "created_at": created_at.isoformat(),
+        "request_id": str(request_id)
     }
 
 @app.post("/api/pull_solicitation_bundle")
@@ -563,81 +550,51 @@ def api_pull_solicitation_bundle(request: Request, body: PullSolicitationBundleR
     provider_id = request.state.user_id
 
     with get_conn() as conn:
-        head = conn.execute(
-            """
-            SELECT requester_id, request_id, created_at
-            FROM solicitations
-            WHERE provider_id=%s
-            ORDER BY created_at ASC, request_id ASC
-            LIMIT 1
-            """,
-            (provider_id,),
-        ).fetchone()
-
-        if not head:
-            return {"has_bundle": False, "has_more": False}
-
-        target_requester_id = head[0]
-
         rows = conn.execute(
             """
-            SELECT request_id, payload, created_at
+            SELECT request_id, requester_id, payload, created_at
             FROM solicitations
-            WHERE provider_id=%s AND requester_id=%s
-            ORDER BY created_at ASC, request_id ASC
+            WHERE provider_id = %s
+            ORDER BY requester_id ASC, created_at DESC, request_id DESC
             """,
-            (provider_id, target_requester_id),
+            (provider_id,),
         ).fetchall()
 
-        (has_more,) = conn.execute(
-            """
-            SELECT EXISTS(
-                SELECT 1 FROM solicitations
-                WHERE provider_id=%s AND requester_id <> %s
-            )
-            """,
-            (provider_id, target_requester_id),
-        ).fetchone()
+    if not rows:
+        return {
+            "has_any": False,
+            "count": 0,
+            "solicitations": [],
+        }
 
-    last_created_at = rows[-1][2]
-    last_request_id = rows[-1][0]
-
-    bundle_requests = []
-    for req_id, payload, created_at in rows:
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        bundle_requests.append({
-            "request_id": str(req_id),
-            "payload": payload,
+    out = []
+    for request_id, requester_id, payload, created_at in rows:
+        out.append({
+            "request_id": str(request_id),
+            "requester_id": str(requester_id),
+            "payload_b64": _transport_safe_b_string(payload),
             "created_at": created_at.isoformat(),
         })
 
     return {
-        "has_bundle": True,
-        "requester_id": str(target_requester_id),
-        "bundle": {
-            "requests": bundle_requests,  # oldest -> newest
-            "ack_token": {
-                "max_created_at": last_created_at.isoformat(),
-                "max_request_id": str(last_request_id),
-            },
-        },
-        "has_more": bool(has_more),
+        "has_any": True,
+        "count": len(out),
+        "solicitations": out,
     }
 
-@app.post("/api/ack_solicitation_bundle")
-def api_ack_solicitation_bundle(request: Request, body: AckSolicitationBundleRequest):
+@app.post("/api/ack_solicitation")
+def api_ack_solicitation(request: Request, body: AckSolicitationRequest):
     provider_id = request.state.user_id
     with get_conn() as conn:
-        cur = conn.execute(
+        conn.execute(
             """
             DELETE FROM solicitations
-            WHERE provider_id=%s AND requester_id=%s
-              AND (created_at, request_id) <= (%s, %s)
+            WHERE provider_id=%s AND request_id=%s
             """,
-            (provider_id, body.requester_id, body.max_created_at, body.max_request_id),
+            (provider_id, body.request_id),
         )
-    return _ok({"deleted": cur.rowcount})
+    return _ok({"deleted": str(body.request_id)})
+
 
 # ------------------- CRS ---------------------
 

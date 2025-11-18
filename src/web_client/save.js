@@ -35,11 +35,11 @@ export function initSaveLogic() {
   disableLeavePrompt();
 }
 
-export async function bestEffortSave(api, userStore, passkey) {
+export async function bestEffortSave(api, store, passkey) {
 
   let envelope_b64;
   try {
-    envelope_b64 = await packUserStoreToEnvelope(userStore, passkey);
+    envelope_b64 = await packUserStoreToEnvelope(store, passkey);
   } catch {
     setStateChip("Saving Not Possible", "warn");
     setStatus("Could Not Pack User Store", "warn");

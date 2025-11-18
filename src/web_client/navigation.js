@@ -1,3 +1,4 @@
+// navigation.js
 const DEFAULT_VIEW = 'share';
 
 let currentView = null;
@@ -10,7 +11,8 @@ function qa(sel, root = document) { return Array.from(root.querySelectorAll(sel)
 
 function init() {
   dashboardEl = q('.dashboard');
-  panels = qa('.panel');
+  // Only panels that participate in view switching
+  panels = qa('.panel[data-view]');
   navButtons = qa('.nav-btn[data-action="nav-view"]');
 
   const hashView = (location.hash || '').slice(1);
@@ -28,6 +30,7 @@ function onNavClick(e) {
   const btn = e.target.closest('.nav-btn[data-action="nav-view"]');
   if (!btn) return;
   const view = btn.dataset.view;
+  if (!view) return;
   setView(view);
 }
 
@@ -54,10 +57,17 @@ function updateNavState(view) {
 function togglePanels(view) {
   panels.forEach(p => {
     const active = p.dataset.view === view;
-    p.toggleAttribute('hidden', !active);
-    p.toggleAttribute('inert', !active);
+    // Critical: ensure only the active view is interactive
+    if (active) {
+      p.removeAttribute('hidden');
+      p.removeAttribute('inert');
+    } else {
+      p.setAttribute('hidden', '');
+      p.setAttribute('inert', '');
+    }
   });
 
+  // Layout helper class (optional; harmless if unused by CSS)
   const hasRight = panels.some(
     p => p.dataset.view === view && p.dataset.slot === 'right' && !p.hasAttribute('hidden')
   );
@@ -66,14 +76,8 @@ function togglePanels(view) {
 
 export function setView(view, { push = true, focus = true } = {}) {
   if (!view) view = DEFAULT_VIEW;
-  if (currentView === view) {
-    if (push && location.hash !== `#${view}`) history.pushState({ view }, '', `#${view}`);
-    updateNavState(view);
-    togglePanels(view);
-    if (focus) focusActiveHeading();
-    return;
-  }
 
+  // Even if it's the same view, still re-apply toggles to guarantee 'inert' is correct.
   currentView = view;
   updateNavState(view);
   togglePanels(view);
@@ -96,4 +100,3 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
-

@@ -17,17 +17,17 @@ import { wireUpLogout, wireUpUnexpectedExit } from "/app/logout.js";
 const { is_owner_tab, passkey } = initUser();
 const api = new CRSClient();
 
-let userStore = null;
+let store = null;
 if (is_owner_tab) {
   initSaveLogic();
-  userStore = await initUserStore({ api, passkey });
-  await wireUpLogout({ api, userStore, passkey });
-  await wireUpUnexpectedExit({api, userStore, passkey});
-  await wireUpAddItemDialog({ api, userStore });
-  await wireUpItemUpdate({ api, userStore });
-  await wireUpInboundRequests({api, userStore});
-  await wireUpRequestBuilder({ api, userStore });
-  await wireUpQueryItems({ api, userStore });
+  store = await initUserStore({ api, passkey });
+  await wireUpLogout({ api, store, passkey });
+  await wireUpUnexpectedExit({api, store, passkey});
+  await wireUpAddItemDialog({ api, store });
+  await wireUpItemUpdate({ api, store });
+  await wireUpInboundRequests({api, store});
+  await wireUpRequestBuilder({ api, store });
+  await wireUpQueryItems({ api, store });
 } else {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay open';

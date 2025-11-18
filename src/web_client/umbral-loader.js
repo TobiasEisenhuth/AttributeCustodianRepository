@@ -1,9 +1,5 @@
 let U = null;
 
-/**
- * Dynamically load Umbral WASM bindings (once).
- * Returns the Umbral module or null if unavailable.
- */
 export async function loadUmbral() {
   if (U) return U;
   try {
@@ -18,4 +14,3 @@ export async function loadUmbral() {
     return null;
   }
 }
-

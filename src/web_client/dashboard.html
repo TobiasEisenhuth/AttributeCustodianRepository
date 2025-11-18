@@ -10,8 +10,12 @@
   <script type="module" src="dashboard.js"></script>
 </head>
 <body>
+
+  <div class="page-meter">
+    <meter id="page-meter" min="0" max="100" value="80"></meter>
+  </div>
+
   <div class="dashboard">
-    <!-- Left: Navigation -->
     <aside class="column nav-col">
       <h2 class="column-title">Navigation</h2>
       <div class="column-content">
@@ -37,7 +41,6 @@
               </tr>
             </thead>
             <tbody>
-              <!-- rows added via JS -->
             </tbody>
           </table>
         </div>
@@ -85,18 +88,13 @@
     </div>
 
     <section class="column panel" data-view="share" data-slot="right" data-panel="requests">
-      <h2 class="column-title">Inbound Requests | <span class="count" aria-live="polite">0</span></h2>
+      <h2 class="column-title">Inbound Requests </h2>
       <div class="column-content">
         <div class="table-scroll">
           <table class="data-table" aria-label="Requests table">
             <thead>
-              <tr>
-                <th scope="col">Request</th>
-                <th scope="col">Details</th>
-              </tr>
             </thead>
             <tbody>
-              <!-- rows added via JS -->
             </tbody>
           </table>
         </div>
@@ -132,17 +130,18 @@
           </form>
         </div>
         <div class="panel-footer">
-          <button type="button" class="btn primary" data-action="builder-apply">Fetch</button>
+          <button type="button" class="btn primary" data-action="fetch">Fetch</button>
         </div>
       </div>
     </section>
 
   </div>
 
-  <div id="app-statusbar" class="panel-footer" style="display:flex;gap:.5rem;align-items:center; padding:8px 12px; border-top:1px solid #eee;">
-    <span id="state-chip" class="chip muted" style="border:1px solid #ddd; border-radius:999px; padding:.15rem .6rem;">Untouched</span>
+  <div id="app-statusbar" class="panel-footer">
+    <span id="state-chip" class="chip muted">Untouched</span>
     <span id="status-line" class="muted">Untouched</span>
     <div class="spacer" style="flex:1"></div>
   </div>
+
 </body>
 </html>

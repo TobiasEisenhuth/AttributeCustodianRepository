@@ -14,6 +14,18 @@ import {
 } from "/app/utils.js";
 import { appendRowToGui } from "/app/upsert-items.js";
 
+export function getCurrentOptions(store) {
+  const items = store?.persistent?.provider?.items || [];
+  const values = store?.ephemeral?.provider?.values || new Map();
+
+  const options = items.map(it => ({
+    id: it.item_id,
+    label: values.get(it.item_id)
+  }));
+
+  return options;
+}
+
 async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000, keyLen = 256) {
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
@@ -38,8 +50,8 @@ async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000,
 
 // todo - true for production
 const USE_CRYPTO = false;
-export async function packUserStoreToEnvelope(userStore, passkey) {
-  const {ephemeral, ...persistent} = userStore;
+export async function packUserStoreToEnvelope(store, passkey) {
+  const {ephemeral, ...persistent} = store;
   const persistent_utf_8 = JSON.stringify(persistent);
   const persistent_bytes = enc.encode(persistent_utf_8);
 
@@ -105,83 +117,106 @@ export async function extractStoreFromEnvelope(envelopeB64, passkey = null ) {
   throw new Error(`Unsupported enc: ${envelope.enc}`);
 }
 
-export async function hydrateUserStore(api, userStore) {
+export async function hydrateUserStore(api, store) {
   if (revisiting('hydrateUserStore')) return;
 
   setStateChip("Composing…");
   setStatus("Composing inventory…");
 
-  const umbral = await loadUmbral();
-  if (!umbral) {
-    setStateChip("Umbral missing", "err");
-    setStatus("Umbral WASM not available; cannot decrypt items.", "err");
-    return;
-  }
-
   const addBtn = document.querySelector('.panel[data-panel="personal"] [data-action="add-row"]');
+  const panel  = document.querySelector('.panel[data-panel="personal"]');
+  const tbody  = panel?.querySelector("tbody");
+  if (tbody) tbody.innerHTML = "";
   if (addBtn) addBtn.disabled = true;
 
-  const panel = document.querySelector('.panel[data-panel="personal"]');
-  const tbody = panel?.querySelector("tbody");
-  if (tbody) tbody.innerHTML = "";
-
-  const local_items = Array.isArray(userStore.persistent?.provider?.items)
-  ? userStore.persistent.provider.items
-  : [];
-
-  let server_items = [];
   try {
-    const res = await api.listMyItems();
-    server_items = Array.isArray(res.items) ? res.items : [];
-  } catch (e) {
-    setStateChip("Error", "err");
-    setStatus(e?.message || "Failed to fetch items from server.", "err");
-    if (addBtn) addBtn.disabled = false;
-    return;
-  }
+    const local_items = store.persistent?.provider?.items;
 
-  const local_ids  = new Set(local_items.map(i => i.item_id).filter(Boolean));
-  const server_ids = new Set(server_items.map(i => i.item_id).filter(Boolean));
-
-  const same_count = local_ids.size === server_ids.size;
-  const ids_are_identical = same_count && [...server_ids].every(id => local_ids.has(id));
-  if (!ids_are_identical) {
-    setStateChip("Mismatch", "warn");
-    setStatus("Local user store and server inventory differ (IDs or count).", "warn");
-    return;
-  } else {
-    setStateChip("Synced", "ok");
-    setStatus("Inventory synced.", "ok");
-  }
-
-  userStore.ephemeral = { provider: { values: new Map() } };
-
-  const server_items_by_id = new Map(server_items.map(x => [x.item_id, x]));
-  for (const entry of local_items) {
-    const common_id = entry.item_id;
-    const matching_item = server_items_by_id.get(common_id);
-
-    const item_name = entry.item_name;
-    let plain_value;
+    // Fetch server side inventory (crypto_bundle rows → via your SDK)
+    let server_items = [];
     try {
-      const secret_key_b64 = entry.keys.secret_key_b64;
-      const secret_key = umbral.SecretKey.fromBEBytes(base64ToBytes(secret_key_b64));
-      const capsule = umbral.Capsule.fromBytes(base64ToBytes(matching_item.capsule_b64));
-      const cipher_text = base64ToBytes(matching_item.ciphertext_b64);
-      const plain_value_buffer = umbral.decryptOriginal(secret_key, capsule, cipher_text);
-      plain_value = dec.decode(plain_value_buffer)
-    } catch {
-      plain_value = "(decrypt failed)";
+      const res = await api.listMyItems();
+      server_items = Array.isArray(res.items) ? res.items : [];
+    } catch (e) {
+      setStateChip("Error", "err");
+      setStatus(e?.message || "Failed to fetch items from server.", "err");
+      // Continue: we can still show local items as "(not on server)"
+      server_items = [];
     }
-    userStore.ephemeral.provider.values.set(common_id, plain_value);
 
-    appendRowToGui(item_name, plain_value, common_id);
+    // Build id sets to compare
+    const local_ids  = new Set(local_items.map(i => i.item_id).filter(Boolean));
+    const server_ids = new Set(server_items.map(i => i.item_id).filter(Boolean));
+
+    const same_count = local_ids.size === server_ids.size;
+    const ids_are_identical = same_count && [...server_ids].every(id => local_ids.has(id));
+
+    // Report state, but DO NOT early-return anymore
+    if (!ids_are_identical) {
+      const onlyLocal  = [...local_ids].filter(id => !server_ids.has(id)).length;
+      const onlyServer = [...server_ids].filter(id => !local_ids.has(id)).length;
+      setStateChip("Mismatch", "warn");
+      setStatus(`Inventory differs (local-only: ${onlyLocal}, server-only: ${onlyServer}). Showing best-effort view.`, "warn");
+    } else {
+      setStateChip("Synced", "ok");
+      setStatus("Inventory synced.", "ok");
+    }
+
+    // Fast lookup of server bundles by item_id
+    const serverById = new Map(server_items.map(x => [x.item_id, x]));
+
+    const umbral = await loadUmbral();
+    if (!umbral) {
+      setStateChip("Error", "err");
+      setStatus("Umbral not available.", "err");
+      return;
+    }
+
+    // Render every LOCAL item; if missing on server, mark it as such
+    for (const entry of local_items) {
+      const item_id   = entry.item_id;
+      const item_name = entry.item_name;
+
+      const bundle = serverById.get(item_id); // may be undefined
+      let plain_value = "";
+      if (!bundle) {
+        // No server-side crypto bundle for this item
+        plain_value = "(not on server)";
+      } else {
+        try {
+          const secret_key_b64 = entry?.keys?.secret_key_b64;
+          if (!secret_key_b64) throw new Error("Missing secret key");
+          const sk        = umbral.SecretKey.fromBEBytes(base64ToBytes(secret_key_b64));
+          const capsule   = umbral.Capsule.fromBytes(base64ToBytes(bundle.capsule_b64));
+          const ct_bytes  = base64ToBytes(bundle.ciphertext_b64);
+          const pt_buffer = umbral.decryptOriginal(sk, capsule, ct_bytes);
+          plain_value     = dec.decode(pt_buffer);
+        } catch {
+          plain_value = "(decrypt failed)";
+        }
+      }
+
+      // Mirror to ephemeral map for provider UX (inbound suggestions, etc.)
+      store.ephemeral.provider.values.set(item_id, plain_value);
+
+      // Paint the row in the Personal table
+      appendRowToGui(item_name, plain_value, item_id);
+    }
+
+    // (Optional) If there are server-only items, you could surface a hint.
+    // We do not render them here since there is no local metadata/keys.
+
+    // If absolutely nothing to show, keep UI usable and clear status
+    if (local_items.length === 0) {
+      setStatus("No personal items yet. Use “Add Row” to create one.", "muted");
+    }
+
+  } finally {
+    // ALWAYS re-enable the Add Row button
+    if (addBtn) addBtn.disabled = false;
+    // For debugging / dev
+    try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}
   }
-
-  if (addBtn) addBtn.disabled = false;
-  
-  // todo - remove for production
-  try { sessionStorage.setItem('crs:userStore', JSON.stringify(userStore)); } catch {} 
 }
 
 export async function initUserStore({ api, passkey }) {
@@ -190,16 +225,27 @@ export async function initUserStore({ api, passkey }) {
   setStateChip('Loading…');
   setStatus('Loading from vault…');
 
-  let user_store;
+  let store;
   try {
     const { envelope_b64 } = await api.loadFromVault();
-    user_store = await extractStoreFromEnvelope(envelope_b64, passkey);
-    await hydrateUserStore(api, user_store);
+    store = await extractStoreFromEnvelope(envelope_b64, passkey);
   } catch (err) {
     setStateChip("Error", "err");
     setStatus(err.message || "Failed to load from vault", "err");
     return;
   }
 
-  return user_store;
+  if (!store.persistent) store.persistent = {};
+  if (!store.persistent.provider) store.persistent.provider = {}
+  if (!Array.isArray(store.persistent.provider.items)) { store.persistent.provider.items = []; }
+  if (!store.persistent.requester) store.persistent.requester = {};
+  if (!Array.isArray(store.persistent.requester.items)) { store.persistent.requester.items = []; }
+
+  store.ephemeral = {};
+  store.ephemeral.provider = {};
+  store.ephemeral.provider.values = new Map();
+
+  await hydrateUserStore(api, store);
+
+  return store;
 }

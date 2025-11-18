@@ -65,11 +65,13 @@ export class CRSClient {
   }
 
   // ---------- Post Office (Solicitations) ----------
-  pushSolicitation(provider_id, payload, rest) {
-    return this._fetch("/api/push_solicitation", { body: { provider_id, payload }, ...(rest||{}) });
+  pushSolicitation(provider_id, payload_b64, rest) {
+    return this._fetch("/api/push_solicitation", {
+      method: "PUT", 
+      body: { provider_id, payload_b64 },
+      ...(rest||{}) });
   }
   pullSolicitationBundle(rest) {
-    // server expects POST with (empty) JSON body
     return this._fetch("/api/pull_solicitation_bundle", { body: {}, ...(rest||{}) });
   }
   ackSolicitationBundle({ requester_id, max_created_at, max_request_id }, rest) {

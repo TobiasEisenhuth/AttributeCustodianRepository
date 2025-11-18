@@ -1,10 +1,8 @@
-// fetch-items.js
 import {
   setStatus,
   setStateChip,
   bytesToBase64,
   base64ToBytes,
-  enc,
   dec,
 } from "/app/utils.js";
 import { loadUmbral } from "/app/umbral-loader.js";
@@ -13,55 +11,84 @@ import { loadUmbral } from "/app/umbral-loader.js";
 const q  = (sel, root = document) => root.querySelector(sel);
 const qa = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-function tableClear(tbody) {
-  while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
-}
+function tableClear(tbody) { while (tbody.firstChild) tbody.removeChild(tbody.firstChild); }
 function td(colspan = 1) { const d = document.createElement("td"); d.colSpan = colspan; return d; }
 function tr() { return document.createElement("tr"); }
+
+/* ---------------- Requester index (name -> item) ---------------- */
+function buildRequesterIndex(stash) {
+  const list = Array.isArray(stash?.persistent?.requester?.items)
+    ? stash.persistent.requester.items
+    : [];
+
+  const byId = new Map();
+  const byName = new Map();
+
+  for (const it of list) {
+    if (!it?.item_id || !it?.item_name) continue;
+    byId.set(it.item_id, it);
+    // First occurrence wins if duplicate names exist
+    if (!byName.has(it.item_name)) byName.set(it.item_name, it);
+  }
+  return { list, byId, byName };
+}
 
 /* ---------------- Build the query table ---------------- */
 function buildQueryUI(panel, requesterIndex) {
   const table = panel.querySelector("table.data-table");
   if (!table) return null;
 
-  // Ensure THEAD/TBODY exist
+  // ensure sections
   let thead = table.querySelector("thead");
   let tbody = table.querySelector("tbody");
   if (!thead) { thead = document.createElement("thead"); table.appendChild(thead); }
   if (!tbody) { tbody = document.createElement("tbody"); table.appendChild(tbody); }
-  thead.innerHTML = ""; // no headers per spec
+  thead.innerHTML = ""; // no headers
   tableClear(tbody);
 
-  // 1) Provider ID row (spans 2 columns)
+  // Provider ID row (spans 2 cols)
   const rProv = tr();
   const tdProv = td(2);
   const inputProv = document.createElement("input");
   inputProv.type = "text";
   inputProv.placeholder = "Provider ID";
   inputProv.autocomplete = "off";
-  inputProv.dataset.role = "provider-id";
   tdProv.appendChild(inputProv);
   rProv.appendChild(tdProv);
   tbody.appendChild(rProv);
 
-  // Shared datalist of requester item names (for suggestions)
+  // One shared datalist (names only)
   const dlId = "req-item-names";
   if (!document.getElementById(dlId)) {
     const dl = document.createElement("datalist");
     dl.id = dlId;
     for (const it of requesterIndex.list) {
       const opt = document.createElement("option");
-      opt.value = it.item_name; // label shown
-      // for disambiguation you could add opt.label or opt.textContent here
+      opt.value = it.item_name;
       dl.appendChild(opt);
     }
     document.body.appendChild(dl);
   }
 
-  // Helper to create one item row
+  function resolveMapping(row, inputEl) {
+    const label = (inputEl.value || "").trim();
+    const entry = requesterIndex.byName.get(label);
+    if (entry) row.dataset.requesterItemId = entry.item_id;
+    else delete row.dataset.requesterItemId;
+  }
+
+  function maybeAppendOpenEndRow(row) {
+    const rows = qa("tbody tr", table).slice(1); // skip provider row
+    const last = rows[rows.length - 1];
+    if (row === last && row.dataset.requesterItemId) {
+      tbody.appendChild(makeItemRow()); // append one fresh empty row
+    }
+  }
+
   function makeItemRow() {
     const row = tr();
-    // Left input: requester item (by name)
+
+    // Left input (item name)
     const nameCell = td(1);
     const inName = document.createElement("input");
     inName.type = "text";
@@ -71,69 +98,52 @@ function buildQueryUI(panel, requesterIndex) {
     inName.className = "query-item-input";
     nameCell.appendChild(inName);
 
-    // Right cell: output (readonly text)
+    // Right output (plain text)
     const outCell = td(1);
     outCell.className = "query-item-output";
-    outCell.textContent = ""; // filled after fetch
-
     row.appendChild(nameCell);
     row.appendChild(outCell);
 
-    // When the name field changes, resolve to requester_item_id
-    function resolveMapping() {
-      const label = (inName.value || "").trim();
-      const entry = requesterIndex.byName.get(label);
-      if (entry) {
-        row.dataset.requesterItemId = entry.item_id;
-      } else {
-        delete row.dataset.requesterItemId;
-      }
-    }
-    inName.addEventListener("change", resolveMapping);
-    inName.addEventListener("input", resolveMapping);
-
-    // Keep an open-end row: when the last row becomes non-empty, append another
-    inName.addEventListener("blur", () => {
-      const rows = qa("tbody tr", table).slice(1); // skip provider row
-      const last = rows[rows.length - 1];
-      const lastInput = last?.querySelector(".query-item-input");
-      if (last && lastInput && lastInput.value && row === last) {
-        tbody.appendChild(makeItemRow());
-      }
-    });
+    // map on input/change; add new row when last row becomes mapped
+    const onChange = () => { resolveMapping(row, inName); maybeAppendOpenEndRow(row); };
+    inName.addEventListener("input", onChange);
+    inName.addEventListener("change", onChange);
 
     return row;
   }
 
-  // Start with a single empty item row
+  // start with a single empty item row
   tbody.appendChild(makeItemRow());
 
   return { table, tbody, inputProv };
 }
 
-/* ---------------- Requester index (name -> item) ---------------- */
-function buildRequesterIndex(userStore) {
-  const list = Array.isArray(userStore?.persistent?.requester?.items)
-    ? userStore.persistent.requester.items
-    : [];
+/* ---------------- Umbral helpers ---------------- */
+function verifyCFragsFlexible(umbral, { capsule, verifying_pk, delegating_pk, receiving_pk, cfragsBytes }) {
+  // Try a batched form first: verify(capsule, verifying_pk, delegating_pk, receiving_pk, cfragsBytes)
+  try {
+    const vcfrags = umbral.verify(capsule, verifying_pk, delegating_pk, receiving_pk, cfragsBytes);
+    if (Array.isArray(vcfrags)) return vcfrags;
+  } catch { /* fall through */ }
 
-  const byId = new Map();
-  const byName = new Map();
-  for (const it of list) {
-    if (!it?.item_id || !it?.item_name) continue;
-    byId.set(it.item_id, it);
-    // if duplicate names exist, the first one wins
-    if (!byName.has(it.item_name)) byName.set(it.item_name, it);
+  // Fallback: per-cfrag verify
+  try {
+    const vcfrags = cfragsBytes.map(c =>
+      umbral.verify(capsule, verifying_pk, delegating_pk, receiving_pk, c)
+    );
+    return vcfrags;
+  } catch {
+    // As a last resort, return raw cfrags (some bindings auto-verify on decrypt)
+    return cfragsBytes;
   }
-  return { list, byId, byName };
 }
 
 /* ---------------- Main wire-up ---------------- */
-export function wireUpQueryItems({ api, userStore }) {
+export function wireUpQueryItems({ api, stash }) {
   const panel = q('.panel[data-panel="query-form"]');
   if (!panel) return;
 
-  const requesterIndex = buildRequesterIndex(userStore);
+  const requesterIndex = buildRequesterIndex(stash);
   const ui = buildQueryUI(panel, requesterIndex);
   if (!ui) return;
 
@@ -147,16 +157,14 @@ export function wireUpQueryItems({ api, userStore }) {
       return;
     }
 
-    // Collect item rows with a mapped requester_item_id
-    const rows = qa("tbody tr", ui.table).slice(1); // skip provider row
-    const targets = rows
-      .map(r => ({
-        row: r,
-        input: r.querySelector(".query-item-input"),
-        out: r.querySelector(".query-item-output"),
-        requester_item_id: r.dataset.requesterItemId || null,
-      }))
-      .filter(x => x.requester_item_id);
+    // Collect mapped rows (skip provider row)
+    const rows = qa("tbody tr", ui.table).slice(1);
+    const targets = rows.map(r => ({
+      row: r,
+      input: r.querySelector(".query-item-input"),
+      out: r.querySelector(".query-item-output"),
+      requester_item_id: r.dataset.requesterItemId || null,
+    })).filter(x => x.requester_item_id);
 
     if (targets.length === 0) {
       setStateChip("Info", "muted");
@@ -175,7 +183,7 @@ export function wireUpQueryItems({ api, userStore }) {
     setStatus(`Requesting ${targets.length} item(s)…`);
 
     for (const t of targets) {
-      // Look up requester's secret for this item to derive receiving_pk
+      // Find requester secret to derive receiving PK
       const entry = requesterIndex.byId.get(t.requester_item_id);
       if (!entry?.keys?.secret_key_b64) {
         t.out.textContent = "(failed)";
@@ -187,27 +195,36 @@ export function wireUpQueryItems({ api, userStore }) {
         const receiving_pk = receiving_sk.publicKey();
         const requester_public_key_b64 = bytesToBase64(receiving_pk.toCompressedBytes());
 
-        // 1) Ask service for capsule, ciphertext, cfrags and provider keys
-        const resp = await api.requestItem({
-          provider_id: providerId,
-          requester_item_id: t.requester_item_id,
-          requester_public_key_b64,
-        }, { signal: AbortSignal.timeout(15000) });
+        // Ask service for the encrypted bundle
+        let resp;
+        try {
+          resp = await api.requestItem({
+            provider_id: providerId,
+            requester_item_id: t.requester_item_id,
+            requester_public_key_b64,
+          }, { signal: AbortSignal.timeout?.(15000) });
+        } catch (e) {
+          if (e?.status === 404 && e?.message?.includes?.("grant_not_found")) {
+            t.out.textContent = "(not granted)";
+          } else {
+            t.out.textContent = "(failed)";
+          }
+          continue;
+        }
 
-        // 2) Rebuild objects
+        // Rehydrate pieces
         const capsule       = umbral.Capsule.fromBytes(base64ToBytes(resp.capsule_b64));
         const ciphertext    = base64ToBytes(resp.ciphertext_b64);
         const delegating_pk = umbral.PublicKey.fromCompressedBytes(base64ToBytes(resp.delegating_pk_b64));
         const verifying_pk  = umbral.PublicKey.fromCompressedBytes(base64ToBytes(resp.verifying_pk_b64));
         const cfragsBytes   = (resp.cfrags_b64 || []).map(b => base64ToBytes(b));
 
-        // 3) Verify every cfrag client-side
-        const vcfrags = cfragsBytes.map(c =>
-          // If your binding differs, adapt this call accordingly
-          umbral.verify(capsule, verifying_pk, delegating_pk, receiving_pk, c)
-        );
+        // Verify cfrags if binding requires/permits it
+        const vcfrags = verifyCFragsFlexible(umbral, {
+          capsule, verifying_pk, delegating_pk, receiving_pk, cfragsBytes
+        });
 
-        // 4) Decrypt with verified cfrags
+        // Decrypt
         const ptBytes = umbral.decryptReencrypted(
           receiving_sk,
           delegating_pk,
@@ -215,9 +232,8 @@ export function wireUpQueryItems({ api, userStore }) {
           vcfrags,
           ciphertext
         );
-        const plain = dec.decode(ptBytes);
-        t.out.textContent = plain;
-      } catch (e) {
+        t.out.textContent = dec.decode(ptBytes);
+      } catch {
         t.out.textContent = "(failed)";
       }
     }

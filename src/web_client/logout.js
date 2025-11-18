@@ -1,14 +1,14 @@
 import { revisiting, setStateChip, setStatus } from "/app/utils.js"
 import { needsSave, bestEffortSave } from "/app/save.js";
 
-const logout = async (api, userStore, passkey) => {
+const logout = async (api, store, passkey) => {
   if (revisiting('logout'))
     return;
 
   if (needsSave()) {
     setStateChip("Saving…", "warn");
     setStatus("Saving latest changes…");
-    await bestEffortSave(api, userStore, passkey);
+    await bestEffortSave(api, store, passkey);
   }
 
   try {
@@ -22,14 +22,14 @@ const logout = async (api, userStore, passkey) => {
   }
 }
 
-export function wireUpLogout({ api, userStore, passkey }) {
+export function wireUpLogout({ api, store, passkey }) {
   if (revisiting('wireUpLogout')) return;
 
   const btn = document.querySelector('[data-action="logout"]');
-  btn.addEventListener("click", () => logout(api, userStore, passkey));
+  btn.addEventListener("click", () => logout(api, store, passkey));
 }
 
-export function wireUpUnexpectedExit({ api, userStore, passkey }) {
+export function wireUpUnexpectedExit({ api, store, passkey }) {
   if (revisiting('wireUpUnexpectedExit')) return;
 
   window.addEventListener('pagehide', (ev) => {
@@ -40,7 +40,7 @@ export function wireUpUnexpectedExit({ api, userStore, passkey }) {
 
   window.addEventListener('pageshow', async (ev) => {
     if (ev.persisted && !revisiting('final')) {
-      await logout(api, userStore, passkey)
+      await logout(api, store, passkey)
     }
   }, { capture: true });
 }

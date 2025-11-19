@@ -14,18 +14,6 @@ import {
 } from "/app/utils.js";
 import { appendRowToGui } from "/app/upsert-items.js";
 
-export function getCurrentOptions(store) {
-  const items = store?.persistent?.provider?.items || [];
-  const values = store?.ephemeral?.provider?.values || new Map();
-
-  const options = items.map(it => ({
-    id: it.item_id,
-    label: values.get(it.item_id)
-  }));
-
-  return options;
-}
-
 async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000, keyLen = 256) {
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
@@ -51,7 +39,7 @@ async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000,
 // todo - set to true for production
 const USE_CRYPTO = false;
 export async function packUserStoreToEnvelope(store, passkey) {
-  const { persistent } = store;
+  const persistent = store.persistent;
   const persistent_utf_8 = JSON.stringify(persistent);
   const persistent_bytes = enc.encode(persistent_utf_8);
 
@@ -130,7 +118,15 @@ export async function hydrateUserState(api, store) {
   if (addBtn) addBtn.disabled = true;
 
   try {
-    const local_items = store.persistent?.provider?.items;
+    if (!store || !store.good) {
+      setStateChip("Error", "err");
+      setStatus("Store not initialized.", "err");
+      return;
+    }
+
+    const local_items = Array.isArray(store.persistent?.provider?.items)
+      ? store.persistent.provider.items
+      : [];
 
     let server_items = [];
     try {
@@ -145,18 +141,24 @@ export async function hydrateUserState(api, store) {
     const local_ids  = new Set(local_items.map(i => i.item_id).filter(Boolean));
     const server_ids = new Set(server_items.map(i => i.item_id).filter(Boolean));
 
-    const same_count = local_ids.size === server_ids.size;
-    const ids_are_identical = same_count && [...server_ids].every(id => local_ids.has(id));
+    // IDs that exist only on one side
+    const onlyLocalIds  = [...local_ids].filter(id => !server_ids.has(id));
+    const onlyServerIds = [...server_ids].filter(id => !local_ids.has(id));
+
+    const ids_are_identical =
+      onlyLocalIds.length === 0 && onlyServerIds.length === 0;
 
     if (!ids_are_identical) {
-      const onlyLocal  = [...local_ids].filter(id => !server_ids.has(id)).length;
-      const onlyServer = [...server_ids].filter(id => !local_ids.has(id)).length;
       setStateChip("Mismatch", "warn");
-      setStatus(`Inventory differs (local-only: ${onlyLocal}, server-only: ${onlyServer}). Showing best-effort view.`, "warn");
+      setStatus(
+        `Inventory differs (local-only: ${onlyLocalIds.length}, server-only: ${onlyServerIds.length}). Showing best-effort view.`,
+        "warn"
+      );
     } else {
       setStateChip("Synced", "ok");
       setStatus("Inventory synced.", "ok");
     }
+
     const serverById = new Map(server_items.map(x => [x.item_id, x]));
 
     const umbral = await loadUmbral();
@@ -168,32 +170,50 @@ export async function hydrateUserState(api, store) {
 
     for (const entry of local_items) {
       const item_id   = entry.item_id;
-      const item_name = entry.item_name;
+      const item_name = entry.item_name || "(unnamed item)";
 
       const bundle = serverById.get(item_id);
       let plain_value = "";
+      let isMismatch  = false;
+
       if (!bundle) {
-        plain_value = "(not on server)";
+        plain_value = "(cipher missing on server)";
+        isMismatch  = true;
       } else {
         try {
           const secret_key_b64 = entry?.keys?.secret_key_b64;
           if (!secret_key_b64) throw new Error("Missing secret key");
+
           const sk        = umbral.SecretKey.fromBEBytes(base64ToBytes(secret_key_b64));
           const capsule   = umbral.Capsule.fromBytes(base64ToBytes(bundle.capsule_b64));
           const ct_bytes  = base64ToBytes(bundle.ciphertext_b64);
           const pt_buffer = umbral.decryptOriginal(sk, capsule, ct_bytes);
           plain_value     = dec.decode(pt_buffer);
-        } catch {
+        } catch (err) {
           plain_value = "(decrypt failed)";
+          isMismatch  = true;
         }
       }
 
       store.ephemeral.provider.values.set(item_id, plain_value);
 
-      appendRowToGui(item_name, plain_value, item_id);
+      const label = isMismatch
+        ? `${item_name} (mismatch)`
+        : item_name;
+
+      appendRowToGui(label, plain_value, item_id);
     }
 
-    if (local_items.length === 0) {
+    for (const id of onlyServerIds) {
+      const bundle = serverById.get(id);
+
+      const item_name   = "(mismatch: server-only item)";
+      const plain_value = "(cipher present but no local metadata)";
+
+      appendRowToGui(item_name, plain_value, id);
+    }
+
+    if (local_items.length === 0 && onlyServerIds.length === 0) {
       setStatus("No personal items yet. Use “Add Row” to create one.", "muted");
     }
 
@@ -216,18 +236,17 @@ export async function initUserStore({ api, passkey }) {
   setStateChip('Loading…');
   setStatus('Loading from vault…');
 
-  let persisted;
+  let persistedBranche;
   try {
     const { envelope_b64 } = await api.loadFromVault();
-    persisted = await extractStoreFromEnvelope(envelope_b64, passkey);
+    persistedBranche = await extractStoreFromEnvelope(envelope_b64, passkey);
   } catch (err) {
     setStateChip("Error", "err");
     setStatus(err.message || "Failed to load from vault", "err");
     return;
   }
 
-
-  Object.assign(store, persisted);
+  Object.assign(store.persistent, persistedBranche.persistent);
 
   if (!store.persistent) store.persistent = {};
   if (!store.persistent.provider) store.persistent.provider = {}

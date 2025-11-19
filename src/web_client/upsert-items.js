@@ -11,6 +11,7 @@ import {
   revisiting,
   setStateChip,
   setStatus,
+  updateProviderDatalist,
 } from "/app/utils.js";
 
 export function appendRowToGui(itemName, valueStr, itemId) {
@@ -55,8 +56,6 @@ export function makePersonalCell(initialValue, placeholder) {
   return { wrapper, ro, input };
 }
 
-
-
 // Item Upsert Heavy Lifting
 export async function upsertItem({
   api,
@@ -80,7 +79,6 @@ export async function upsertItem({
   if (!itemName) return fail("Please provide an item name.");
   if (!valueStr)  return fail("Please provide a value.");
 
-  // todo - ill formed user store is silent
   const providerItems = store.persistent.provider.items;
 
   let delegating_sk, delegating_pk, signing_sk, verifying_pk;
@@ -156,6 +154,8 @@ export async function upsertItem({
 
   setStateChip("Synced", "ok");
   setStatus(`Item "${itemName}" saved.`, "ok");
+
+  updateProviderDatalist(store);
 
   return item_id;
 }

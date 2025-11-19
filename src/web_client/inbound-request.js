@@ -5,8 +5,8 @@ import {
   setStateChip,
   bytesToBase64,
   base64ToBytes,
+  updateProviderDatalist,
 } from "/app/utils.js";
-import { getCurrentOptions } from "/app/user-store.js";
 import { loadUmbral } from "/app/umbral-loader.js";
 
 async function grantFlow({ requester_id, ack_token, items, cleanup }) {
@@ -79,6 +79,9 @@ async function grantFlow({ requester_id, ack_token, items, cleanup }) {
   }
 
 function populateRequestsWidget(store) {
+
+  updateProviderDatalist(store);
+
   const container = document.getElementById('requestsContainer');
   const requests = store.ephemeral.provider.requests;
   
@@ -89,14 +92,28 @@ function populateRequestsWidget(store) {
 
   container.innerHTML = '';
 
-  const providerOptions = [];
+  // Create or update the shared datalist
+  let datalist = document.getElementById('providerOptionsDatalist');
+  if (!datalist) {
+    datalist = document.createElement('datalist');
+    datalist.id = 'providerOptionsDatalist';
+    document.body.appendChild(datalist);
+  }
+
+  // Build provider options
+  datalist.innerHTML = '';
+  const validProviderIds = new Set();
+  
   for (const providerItem of store.persistent.provider.items) {
     const value = store.ephemeral.provider.values.get(providerItem.item_id);
     if (value !== undefined && value !== null) {
-      providerOptions.push({
-        item_id: providerItem.item_id,
-        displayText: `${providerItem.item_name} -> ${value}`
-      });
+      const option = document.createElement('option');
+      option.value = providerItem.item_id;
+      option.textContent = `${providerItem.item_name} -> ${value}`;
+      // Store display text as data attribute for validation
+      option.dataset.displayText = option.textContent;
+      datalist.appendChild(option);
+      validProviderIds.add(providerItem.item_id);
     }
   }
 
@@ -160,31 +177,50 @@ function populateRequestsWidget(store) {
       label.htmlFor = `${request.request_id}-item-${index}`;
       formRow.appendChild(label);
 
-      const select = document.createElement('select');
-      select.id = `${request.request_id}-item-${index}`;
-      select.name = `item-${item.item_id}`;
-
-      // Add placeholder option
-      const placeholderOption = document.createElement('option');
-      placeholderOption.value = '';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.id = `${request.request_id}-item-${index}`;
+      input.name = `item-${item.item_id}`;
+      input.setAttribute('list', 'providerOptionsDatalist');
+      input.autocomplete = 'off';
+      
+      // Set placeholder
       if (item.value_example) {
-        placeholderOption.textContent = `e.g., ${item.value_example}`;
+        input.placeholder = `e.g., ${item.value_example} (type to search, click to select)`;
       } else {
-        placeholderOption.textContent = '-- Select --';
+        input.placeholder = 'Type to search, click to select';
       }
-      placeholderOption.disabled = true;
-      placeholderOption.selected = true;
-      select.appendChild(placeholderOption);
 
-      // Add provider options
-      providerOptions.forEach(providerOption => {
-        const option = document.createElement('option');
-        option.value = providerOption.item_id;
-        option.textContent = providerOption.displayText;
-        select.appendChild(option);
+      // Store the valid provider IDs for this input's validation
+      input.dataset.validIds = JSON.stringify([...validProviderIds]);
+
+      // Validation: only accept click selection or valid item_id
+      input.addEventListener('blur', function(e) {
+        validateInput(e.target, datalist);
       });
 
-      formRow.appendChild(select);
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          validateInput(e.target, datalist);
+          e.target.blur();
+        }
+      });
+
+      // When user selects from datalist (click or arrow+enter on suggestion)
+      input.addEventListener('input', function(e) {
+        // Check if the current value matches an option's value (item_id)
+        const options = Array.from(datalist.options);
+        const match = options.find(opt => opt.value === e.target.value);
+        
+        if (match) {
+          // Valid selection - store the display text for showing
+          e.target.dataset.selectedDisplay = match.dataset.displayText;
+          e.target.value = match.dataset.displayText;
+        }
+      });
+
+      formRow.appendChild(input);
       fieldset.appendChild(formRow);
     });
 
@@ -220,6 +256,47 @@ function populateRequestsWidget(store) {
     container.appendChild(requesterCard);
   }
 }
+
+/**
+ * Validates input against datalist options
+ * Clears input if value is not valid
+ */
+function validateInput(input, datalist) {
+  const options = Array.from(datalist.options);
+  
+  // Check if input value matches any option's display text
+  const match = options.find(opt => opt.dataset.displayText === input.value);
+  
+  if (!match) {
+    // Invalid input - clear it
+    input.value = '';
+    delete input.dataset.selectedDisplay;
+  }
+}
+
+/**
+ * Gets the selected provider item_id from an input field
+ * Returns null if no valid selection
+ */
+function getSelectedProviderId(input) {
+  if (!input.dataset.selectedDisplay || !input.value) {
+    return null;
+  }
+  
+  const datalist = document.getElementById('providerOptionsDatalist');
+  const options = Array.from(datalist.options);
+  const match = options.find(opt => opt.dataset.displayText === input.value);
+  
+  return match ? match.value : null;
+}
+
+// To get form data on approve:
+// const inputs = form.querySelectorAll('input[type="text"]');
+// inputs.forEach(input => {
+//   const requesterItemId = input.closest('.form-row').dataset.requesterItemId;
+//   const providerItemId = getSelectedProviderId(input);
+//   console.log(`Map ${requesterItemId} -> ${providerItemId}`);
+// });
 
 async function loadInboundRequests(api, store) {
   setStateChip("Loading…", "warn");

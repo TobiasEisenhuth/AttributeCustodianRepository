@@ -6,27 +6,17 @@ import {
   nowIso,
   enc,
   bytesToBase64,
-  base64UrlFromBytes,
+  generateItemId,
 } from "/app/utils.js";
 import { needsSave } from "/app/save.js";
 import { loadUmbral } from "/app/umbral-loader.js";
 
-/* ---------- helpers ---------- */
-
 const q = (sel, root = document) => root.querySelector(sel);
-
-function newRequesterItemId() {
-  const rnd = crypto.getRandomValues(new Uint8Array(18)); // 144 bits
-  return "req_" + base64UrlFromBytes(rnd);
-}
-
-/* ---------- table building ---------- */
 
 function buildTableSkeleton(tableEl) {
   tableEl.innerHTML = "";
   const tbody = document.createElement("tbody");
 
-  // Row 1: Info String (spans 3 cols)
   const trInfo = document.createElement("tr");
   trInfo.dataset.kind = "info";
   const tdInfo = document.createElement("td");
@@ -35,7 +25,6 @@ function buildTableSkeleton(tableEl) {
   trInfo.appendChild(tdInfo);
   tbody.appendChild(trInfo);
 
-  // Row 2: Addressee (spans 3 cols)
   const trAddr = document.createElement("tr");
   trAddr.dataset.kind = "addressee";
   const tdAddr = document.createElement("td");
@@ -44,7 +33,6 @@ function buildTableSkeleton(tableEl) {
   trAddr.appendChild(tdAddr);
   tbody.appendChild(trAddr);
 
-  // First empty item row
   tbody.appendChild(buildItemRow());
 
   tableEl.appendChild(tbody);
@@ -93,34 +81,27 @@ function ensureOpenEnded(tbody) {
   }
 }
 
-/* Reset UI after successful send */
 function resetBuilderTable(tableEl) {
   const tbody = tableEl.querySelector("tbody");
   if (!tbody) return;
 
-  // Clear info/addressee
   const info = tableEl.querySelector('input[data-role="info"]');
   const addr = tableEl.querySelector('input[data-role="addressee"]');
   if (info) info.value = "";
   if (addr) addr.value = "";
 
-  // Remove all item rows
   tbody.querySelectorAll('tr[data-kind="item"]').forEach(tr => tr.remove());
-  // Add one fresh empty item row
   tbody.appendChild(buildItemRow());
 
-  // Scroll to top & focus
   tableEl.closest(".table-scroll")?.scrollTo({ top: 0, behavior: "instant" });
   info?.focus();
 }
-
-/* ---------- read form ---------- */
 
 function readForm(tableEl) {
   const info = normalizeText(tableEl.querySelector('input[data-role="info"]')?.value || "");
   const provider_id = normalizeText(tableEl.querySelector('input[data-role="addressee"]')?.value || "");
 
-  const items = [];
+  const inputs = [];
   const rows = Array.from(tableEl.querySelectorAll('tbody tr[data-kind="item"]'));
   for (const tr of rows) {
     const name  = normalizeText(tr.querySelector('input[data-field="name"]')?.value || "");
@@ -133,13 +114,11 @@ function readForm(tableEl) {
     if (value) item.value_example = value;
     if (deflt) item.default_field = deflt;
 
-    items.push( item );
+    inputs.push( item );
   }
 
-  return { info, provider_id, items };
+  return { info, provider_id, inputs };
 }
-
-/* ---------- main wire-up ---------- */
 
 export function wireUpRequestBuilder({ api, store }) {
   if (revisiting("wireUpRequestBuilder")) return;
@@ -179,41 +158,44 @@ export function wireUpRequestBuilder({ api, store }) {
     }
 
     try {
-      const { info, provider_id, items } = readForm(table);
+      const { info, provider_id, inputs } = readForm(table);
       if (!info)      throw new Error("Please fill Info String.");
       if (!provider_id) throw new Error("Please fill Addressee.");
-      if (items.length === 0) throw new Error("Please add at least one item.");
+      if (inputs.length === 0) throw new Error("Please add at least one item.");
 
       setStateChip("Preparing…", "warn");
       setStatus("Generating keys and building solicitation…");
 
       const created_at = nowIso();
-      const rows = [];
+      const items = [];
 
-      for (let i = 0; i < items.length; i++) {
-        const it = items[i];
-        const secret_id = newRequesterItemId();
+      const requesterItems = store.persistent.requester.items;
+      const existing = new Set(requesterItems.map(it => it?.item_id).filter(Boolean));
+
+      for (const item of inputs) {
+        const item_id = generateItemId(existing);
+        existing.add(item_id);
 
         const sk = umbral.SecretKey.random();
         const pk = sk.publicKey();
 
-        store.persistent.requester.items.push({
-          item_id: secret_id,
-          item_name: it.item_name,
+        requesterItems.push({
+          item_id: item_id,
+          item_name: item.item_name,
           keys: { secret_key_b64: bytesToBase64(sk.toBEBytes()) },
           last_touched: created_at,
         });
 
-        rows.push({
-          secret_id: secret_id,
-          item_name: it.item_name,
+        items.push({
+          item_id: item_id,
+          item_name: item.item_name,
           requester_public_key_b64: bytesToBase64(pk.toCompressedBytes()),
-          value_example: it.value_example,
-          default_field: it.default_field,
+          value_example: item.value_example,
+          default_field: item.default_field,
         });
       }
 
-      const request = { info_string: info, rows };
+      const request = { info_string: info, items };
       const request_bytes = enc.encode(JSON.stringify(request));
       const request_b64 = bytesToBase64(request_bytes);
 
@@ -221,8 +203,7 @@ export function wireUpRequestBuilder({ api, store }) {
       setStatus("Pushing solicitation to server…");
       await api.pushSolicitation(
         provider_id,
-        request_b64,
-        { signal: AbortSignal.timeout(15000) }
+        request_b64
       );
 
       needsSave(true);

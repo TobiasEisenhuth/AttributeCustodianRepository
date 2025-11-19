@@ -1,4 +1,6 @@
 import {
+  dec,
+  revisiting,
   setStatus,
   setStateChip,
   bytesToBase64,
@@ -52,7 +54,7 @@ async function grantFlow({ requester_id, ack_token, items, cleanup }) {
           provider_item_id: it.provider_item_id,
           requester_item_id: it.requester_item_id,
           kfrags_b64,
-        }, withTimeoutInit());
+        });
       }
 
       setStatus("Access granted. Acknowledging bundle…");
@@ -61,9 +63,8 @@ async function grantFlow({ requester_id, ack_token, items, cleanup }) {
         requester_id,
         max_created_at: ack_token?.max_created_at,
         max_request_id: ack_token?.max_request_id,
-      }, withTimeoutInit());
+      });
 
-      // Remove the rendered group & reset count
       cleanup();
       totalRows = 0;
 
@@ -77,62 +78,77 @@ async function grantFlow({ requester_id, ack_token, items, cleanup }) {
     }
   }
 
-export function wireUpInboundRequests({ api, store }) {
+async function loadInboundRequests(api, store) {
+  setStateChip("Loading…", "warn");
+  setStatus("Loading inbound solicitations…");
 
-  const panel = q('.panel[data-panel="requests"]');
-  const table = panel.querySelector("table");
-  const tbody = table?.querySelector("tbody");
-
-  const options = getCurrentOptions(store);
-
-  async function pullAndRender() {
-    if (!panel.isConnected) return false;
-
-    setStateChip("Loading…", "warn");
-    setStatus("Checking inbound requests…");
-    let res = null;
-
-    try {
-      res = await api.pullSolicitationBundle(withTimeoutInit());
-    } catch (e) {
-      setStateChip("Error", "err");
-      setStatus(e?.message || "Failed to load inbound requests.");
-      return false;
-    }
-
-    if (!panel.isConnected) return false;
-
-    if (!res?.has_any) {
-      totalRows = 0;
-      setCount(0);
-      tbody.appendChild(tdColspan("No inbound requests.", 2));
-      setStateChip("Idle", "muted");
-      setStatus("No inbound requests.");
-      return false;
-    }
-
-    renderBundleIntoTable({
-      table,
-      bundleJson: res,
-      options,
-      onGrant: ({ requester_id, ack_token, items, cleanup }) => grantFlow({ requester_id, ack_token, items, cleanup }),
-    });
-
-    const justAdded = (Array.isArray(res.bundle?.requests)
-      ? res.bundle.requests.reduce((acc, r) => acc + ((r.payload?.rows?.length) || 0), 0)
-      : 0);
-    totalRows = justAdded;  // we just replaced table; count what’s visible
-    setCount(totalRows);
-
-    setStateChip("Ready", "ok");
-    setStatus("Inbound request loaded.");
-    return true;
+  let bundle;
+  try {
+    bundle = await api.pullSolicitationBundle();
+  } catch (err) {
+    setStateChip("Error", "err");
+    setStatus(err?.message || "Failed to load inbound requests.");
   }
 
-  
+  if (!bundle.has_any) {
+    setStateChip("Idle", "muted");
+    setStatus("No inbound requests.");
+  }
 
-  pullAndRender().catch((e) => {
+  if (!store.good) {
     setStateChip("Error", "err");
-    setStatus(e?.message || "Failed to load inbound requests.");
-  });
+    setStatus("Store not good!");
+  }
+
+  const umbral = await loadUmbral();
+  if (!umbral) {
+    setStateChip("Error", "err");
+    setStatus("Umbral not available.", "err");
+    return;
+  }
+
+  const requests = store.ephemeral.provider.requests;
+
+  for (const element of bundle.solicitations) {
+
+    let request;
+    try {
+      const element_bytes = base64ToBytes(element.payload_b64);
+      const element_utf_8 = dec.decode(element_bytes);
+      request = JSON.parse(element_utf_8);
+    } catch (err) {
+      console.error("Failed to decode solicitation payload", err, request);
+      continue;
+    }
+
+    const items = [];
+    for (const item of request.items) {
+      items.push({
+        item_id: item.item_id,
+        item_name: item.item_name,
+        requester_public_key_b64: item.requester_public_key_b64,
+        value_example: item.value_example,
+        default_field: item.default_field,
+      })
+    }
+
+    requests.push({
+      request_id: element.request_id,
+      requester_id: element.requester_id,
+      info_string: request.info_string || "",
+      items: items,
+    });
+  }
+
+  setStateChip("Ready", "ok");
+  setStatus(`Loaded ${requests.length} inbound request(s).`);
+
+  // todo - remove for production
+  try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}
+}
+
+export async function wireUpInboundRequests({ api, store }) {
+  if (revisiting("wireUpInboundRequests")) return;
+
+  await loadInboundRequests(api, store);
 }

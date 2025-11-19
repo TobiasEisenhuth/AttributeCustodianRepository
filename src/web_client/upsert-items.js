@@ -81,7 +81,7 @@ export async function upsertItem({
   if (!valueStr)  return fail("Please provide a value.");
 
   // todo - ill formed user store is silent
-  const persistentItems = store.persistent.provider.items;
+  const providerItems = store.persistent.provider.items;
 
   let delegating_sk, delegating_pk, signing_sk, verifying_pk;
   let idx = -1, item_id;
@@ -95,14 +95,14 @@ export async function upsertItem({
 
   if (itemId) {
     item_id = itemId;
-    idx = persistentItems.findIndex(i => i?.item_id === itemId);
+    idx = providerItems.findIndex(i => i?.item_id === itemId);
     if (idx === -1) { return fail("itemId not found!") }
-    delegating_sk = umbral.SecretKey.fromBEBytes(base64ToBytes(persistentItems[idx].keys.secret_key_b64));
+    delegating_sk = umbral.SecretKey.fromBEBytes(base64ToBytes(providerItems[idx].keys.secret_key_b64));
     delegating_pk = delegating_sk.publicKey();
-    signing_sk = umbral.SecretKey.fromBEBytes(base64ToBytes(persistentItems[idx].keys.signing_key_b64));
+    signing_sk = umbral.SecretKey.fromBEBytes(base64ToBytes(providerItems[idx].keys.signing_key_b64));
     verifying_pk = signing_sk.publicKey();
   } else {
-    const existing = new Set(persistentItems.map(it => it?.item_id).filter(Boolean));
+    const existing = new Set(providerItems.map(it => it?.item_id).filter(Boolean));
     item_id = generateItemId(existing);
     delegating_sk = umbral.SecretKey.random();
     delegating_pk = delegating_sk.publicKey();
@@ -137,9 +137,9 @@ export async function upsertItem({
   };
 
   if (idx > -1) {
-    persistentItems[idx] = { ...persistentItems[idx], ...persistent_entry, updated_at: now };
+    providerItems[idx] = { ...providerItems[idx], ...persistent_entry, updated_at: now };
   } else {
-    persistentItems.push({...persistent_entry, created_at: now, updated_at: now });
+    providerItems.push({...persistent_entry, created_at: now, updated_at: now });
   }
 
   store.ephemeral.provider.values.set(item_id, valueStr);

@@ -48,10 +48,10 @@ async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000,
   );
 }
 
-// todo - true for production
+// todo - set to true for production
 const USE_CRYPTO = false;
 export async function packUserStoreToEnvelope(store, passkey) {
-  const {ephemeral, ...persistent} = store;
+  const { persistent } = store;
   const persistent_utf_8 = JSON.stringify(persistent);
   const persistent_bytes = enc.encode(persistent_utf_8);
 
@@ -117,8 +117,8 @@ export async function extractStoreFromEnvelope(envelopeB64, passkey = null ) {
   throw new Error(`Unsupported enc: ${envelope.enc}`);
 }
 
-export async function hydrateUserStore(api, store) {
-  if (revisiting('hydrateUserStore')) return;
+export async function hydrateUserState(api, store) {
+  if (revisiting('hydrateUserState')) return;
 
   setStateChip("Composing…");
   setStatus("Composing inventory…");
@@ -132,7 +132,6 @@ export async function hydrateUserStore(api, store) {
   try {
     const local_items = store.persistent?.provider?.items;
 
-    // Fetch server side inventory (crypto_bundle rows → via your SDK)
     let server_items = [];
     try {
       const res = await api.listMyItems();
@@ -140,18 +139,15 @@ export async function hydrateUserStore(api, store) {
     } catch (e) {
       setStateChip("Error", "err");
       setStatus(e?.message || "Failed to fetch items from server.", "err");
-      // Continue: we can still show local items as "(not on server)"
       server_items = [];
     }
 
-    // Build id sets to compare
     const local_ids  = new Set(local_items.map(i => i.item_id).filter(Boolean));
     const server_ids = new Set(server_items.map(i => i.item_id).filter(Boolean));
 
     const same_count = local_ids.size === server_ids.size;
     const ids_are_identical = same_count && [...server_ids].every(id => local_ids.has(id));
 
-    // Report state, but DO NOT early-return anymore
     if (!ids_are_identical) {
       const onlyLocal  = [...local_ids].filter(id => !server_ids.has(id)).length;
       const onlyServer = [...server_ids].filter(id => !local_ids.has(id)).length;
@@ -161,8 +157,6 @@ export async function hydrateUserStore(api, store) {
       setStateChip("Synced", "ok");
       setStatus("Inventory synced.", "ok");
     }
-
-    // Fast lookup of server bundles by item_id
     const serverById = new Map(server_items.map(x => [x.item_id, x]));
 
     const umbral = await loadUmbral();
@@ -172,15 +166,13 @@ export async function hydrateUserStore(api, store) {
       return;
     }
 
-    // Render every LOCAL item; if missing on server, mark it as such
     for (const entry of local_items) {
       const item_id   = entry.item_id;
       const item_name = entry.item_name;
 
-      const bundle = serverById.get(item_id); // may be undefined
+      const bundle = serverById.get(item_id);
       let plain_value = "";
       if (!bundle) {
-        // No server-side crypto bundle for this item
         plain_value = "(not on server)";
       } else {
         try {
@@ -196,28 +188,27 @@ export async function hydrateUserStore(api, store) {
         }
       }
 
-      // Mirror to ephemeral map for provider UX (inbound suggestions, etc.)
       store.ephemeral.provider.values.set(item_id, plain_value);
 
-      // Paint the row in the Personal table
       appendRowToGui(item_name, plain_value, item_id);
     }
 
-    // (Optional) If there are server-only items, you could surface a hint.
-    // We do not render them here since there is no local metadata/keys.
-
-    // If absolutely nothing to show, keep UI usable and clear status
     if (local_items.length === 0) {
       setStatus("No personal items yet. Use “Add Row” to create one.", "muted");
     }
 
   } finally {
-    // ALWAYS re-enable the Add Row button
     if (addBtn) addBtn.disabled = false;
-    // For debugging / dev
+    // todo - remove for production
     try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}
   }
 }
+
+let store = {
+  good: false,
+  persistent: {},
+  ephemeral: {},
+};
 
 export async function initUserStore({ api, passkey }) {
   if (revisiting('initUserStore')) return;
@@ -225,27 +216,32 @@ export async function initUserStore({ api, passkey }) {
   setStateChip('Loading…');
   setStatus('Loading from vault…');
 
-  let store;
+  let persisted;
   try {
     const { envelope_b64 } = await api.loadFromVault();
-    store = await extractStoreFromEnvelope(envelope_b64, passkey);
+    persisted = await extractStoreFromEnvelope(envelope_b64, passkey);
   } catch (err) {
     setStateChip("Error", "err");
     setStatus(err.message || "Failed to load from vault", "err");
     return;
   }
 
+
+  Object.assign(store, persisted);
+
   if (!store.persistent) store.persistent = {};
   if (!store.persistent.provider) store.persistent.provider = {}
   if (!Array.isArray(store.persistent.provider.items)) { store.persistent.provider.items = []; }
   if (!store.persistent.requester) store.persistent.requester = {};
   if (!Array.isArray(store.persistent.requester.items)) { store.persistent.requester.items = []; }
-
+ 
   store.ephemeral = {};
   store.ephemeral.provider = {};
   store.ephemeral.provider.values = new Map();
+  store.ephemeral.provider.requests = [];
 
-  await hydrateUserStore(api, store);
+  store.good = true;
+  await hydrateUserState(api, store);
 
   return store;
 }

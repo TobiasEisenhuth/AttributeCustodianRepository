@@ -89,7 +89,6 @@ function populateRequestsWidget(store) {
 
   container.innerHTML = '';
 
-  // Build provider options (filter to only items that have values)
   const providerOptions = [];
   for (const providerItem of store.persistent.provider.items) {
     const value = store.ephemeral.provider.values.get(providerItem.item_id);
@@ -101,7 +100,6 @@ function populateRequestsWidget(store) {
     }
   }
 
-  // Group requests by requester_id (they're already ordered)
   let currentRequesterId = null;
   let requesterCard = null;
   let requesterContent = null;

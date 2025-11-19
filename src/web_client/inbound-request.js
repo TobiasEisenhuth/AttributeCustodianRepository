@@ -109,20 +109,24 @@ async function loadInboundRequests(api, store) {
 
   const requests = store.ephemeral.provider.requests;
 
-  for (const element of bundle.solicitations) {
+  const existingIds = new Set(requests.map(it => it?.request_id).filter(Boolean));
 
-    let request;
+  for (const request of bundle.solicitations) {
+
+    let payload;
     try {
-      const element_bytes = base64ToBytes(element.payload_b64);
-      const element_utf_8 = dec.decode(element_bytes);
-      request = JSON.parse(element_utf_8);
+      const request_bytes = base64ToBytes(request.payload_b64);
+      const request_utf_8 = dec.decode(request_bytes);
+      payload = JSON.parse(request_utf_8);
     } catch (err) {
-      console.error("Failed to decode solicitation payload", err, request);
+      console.error("Failed to decode solicitation payload", err, payload);
       continue;
     }
 
+    if (existingIds.has(request.request_id)) continue;
+
     const items = [];
-    for (const item of request.items) {
+    for (const item of payload.items) {
       items.push({
         item_id: item.item_id,
         item_name: item.item_name,
@@ -133,15 +137,15 @@ async function loadInboundRequests(api, store) {
     }
 
     requests.push({
-      request_id: element.request_id,
-      requester_id: element.requester_id,
-      info_string: request.info_string || "",
+      request_id: request.request_id,
+      requester_id: request.requester_id,
+      info_string: payload.info_string || "",
       items: items,
     });
   }
 
   setStateChip("Ready", "ok");
-  setStatus(`Loaded ${requests.length} inbound request(s).`);
+  setStatus(`Loaded ${requests.length} inbound payload(s).`);
 
   // todo - remove for production
   try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}

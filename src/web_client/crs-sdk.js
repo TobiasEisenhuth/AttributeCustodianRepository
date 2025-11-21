@@ -74,10 +74,10 @@ export class CRSClient {
   pullSolicitationBundle(rest) {
     return this._fetch("/api/pull_solicitation_bundle", { body: {}, ...(rest||{}) });
   }
-  ackSolicitationBundle({ requester_id, max_created_at, max_request_id }, rest) {
-    return this._fetch("/api/ack_solicitation_bundle", {
-      body: { requester_id, max_created_at, max_request_id },
-      ...(rest||{}),
+  ackSolicitation(request_id, rest) {
+    return this._fetch("/api/ack_solicitation", {
+      body: { request_id },
+      ...(rest || {}),
     });
   }
 

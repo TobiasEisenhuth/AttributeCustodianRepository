@@ -17,6 +17,7 @@ let store = null;
 if (is_owner_tab) {
   initSaveLogic();
   store = await initUserStore({ api, passkey });
+  if (!store || !store.good) {console.error('Failed to initialize store');}
   await wireUpLogout({ api, store, passkey });
   await wireUpUnexpectedExit({api, store, passkey});
   await wireUpAddItemDialog({ api, store });
@@ -35,26 +36,3 @@ if (is_owner_tab) {
   if (document.body) document.body.appendChild(overlay);
   else window.addEventListener('DOMContentLoaded', () => document.body.appendChild(overlay), { once: true });
 }
-
-// // Only when the **last** tab closes, clear storage + logout.
-// // Non-last tabs do nothing, so they won’t kill the session of the owner tab.
-// let didClose = false;
-// function clearAndMaybeLogout() {
-//   if (didClose) return;
-//   didClose = true;
-
-//   try { bc && bc.postMessage({ t: "bye", id: tabId }); } catch {}
-
-//   // If BroadcastChannel unsupported, we can’t safely know last-tab. Be conservative: do nothing.
-//   if (!bc) return;
-
-//   // Last tab => clear + logout (keepalive)
-//   if (peers.size === 0) {
-//     try { sessionStorage.clear(); } catch {}
-//     try { api.logout({ keepalive: true }); } catch {}
-//   }
-// }
-
-// // Fire on real unloads (skip when BFCache persists the page)
-// window.addEventListener("pagehide", (e) => { if (!e.persisted) clearAndMaybeLogout(); });
-// window.addEventListener("beforeunload", clearAndMaybeLogout);

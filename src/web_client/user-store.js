@@ -47,7 +47,7 @@ export async function packUserStoreToEnvelope(store, passkey) {
     const envelope = {
       v: 1,
       enc: "none",
-      ct_b64: bytesToBase64(persistent_bytes),
+      plain_b64: bytesToBase64(persistent_bytes),
     };
     const envelope_bytes = enc.encode(JSON.stringify(envelope));
     return bytesToBase64(envelope_bytes);
@@ -85,7 +85,7 @@ export async function extractStoreFromEnvelope(envelopeB64, passkey = null ) {
   }
 
   if (envelope.enc === "none") {
-    const plain_text_bytes = base64ToBytes(envelope.ct_b64);
+    const plain_text_bytes = base64ToBytes(envelope.plain_b64);
     return JSON.parse(dec.decode(plain_text_bytes));
   }
 
@@ -205,7 +205,7 @@ export async function hydrateUserState(api, store) {
     }
 
     for (const id of onlyServerIds) {
-      const bundle = serverById.get(id);
+      // const bundle = serverById.get(id);
 
       const item_name   = "(mismatch: server-only item)";
       const plain_value = "(cipher present but no local metadata)";
@@ -224,42 +224,39 @@ export async function hydrateUserState(api, store) {
   }
 }
 
-let store = {
-  good: false,
-  persistent: {},
-  ephemeral: {},
-};
-
 export async function initUserStore({ api, passkey }) {
   if (revisiting('initUserStore')) return;
+
+  const store = {
+    good: false,
+    persistent: {},
+    ephemeral: {},
+  };
 
   setStateChip('Loading…');
   setStatus('Loading from vault…');
 
-  let persistedBranche;
-  try {
-    const { envelope_b64 } = await api.loadFromVault();
-    persistedBranche = await extractStoreFromEnvelope(envelope_b64, passkey);
-  } catch (err) {
-    setStateChip("Error", "err");
-    setStatus(err.message || "Failed to load from vault", "err");
-    return;
-  }
-
-  Object.assign(store.persistent, persistedBranche.persistent);
-
-  if (!store.persistent) store.persistent = {};
   if (!store.persistent.provider) store.persistent.provider = {}
   if (!Array.isArray(store.persistent.provider.items)) { store.persistent.provider.items = []; }
   if (!store.persistent.requester) store.persistent.requester = {};
   if (!Array.isArray(store.persistent.requester.items)) { store.persistent.requester.items = []; }
+
+  let origin;
+  try {
+    const { envelope_b64 } = await api.loadFromVault();
+    origin = await extractStoreFromEnvelope(envelope_b64, passkey);
+    store.persistent = origin;
+    store.good = true;
+  } catch (err) {
+    setStateChip("Error", "err");
+    setStatus(err.message || "Failed to load from vault", "err");
+  }
  
   store.ephemeral = {};
   store.ephemeral.provider = {};
   store.ephemeral.provider.values = new Map();
   store.ephemeral.provider.requests = [];
 
-  store.good = true;
   await hydrateUserState(api, store);
 
   return store;

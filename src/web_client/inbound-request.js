@@ -9,73 +9,72 @@ import {
 import { loadUmbral } from "/app/umbral-loader.js";
 
 async function grantFlow({ requester_id, ack_token, items, cleanup }) {
+  const providerItems = store?.persistent?.provider?.items;
+  if (!Array.isArray(providerItems)) {
+    setStateChip("Error", "err");
+    setStatus("No provider items found in persistent store.");
+    return;
+  }
 
-    const providerItems = store?.persistent?.provider?.items;
-    if (!Array.isArray(providerItems)) {
-      setStateChip("Error", "err");
-      setStatus("No provider items found in persistent store.");
-      return;
-    }
+  setStateChip("Granting…", "warn");
+  setStatus("Generating re-encryption keys…");
 
-    setStateChip("Granting…", "warn");
-    setStatus("Generating re-encryption keys…");
+  const umbral = await loadUmbral();
+  if (!umbral) {
+    setStateChip("Error", "err");
+    setStatus("Umbral not available.", "err");
+    return;
+  }
 
-    const umbral = await loadUmbral();
-    if (!umbral) {
-      setStateChip("Error", "err");
-      setStatus("Umbral not available.", "err");
-      return;
-    }
-
-    try {
-      for (const it of items) {
-        const pEntry = providerItems.find(event => event?.item_id === it.provider_item_id);
-        if (!pEntry?.keys?.secret_key_b64 || !pEntry?.keys?.signing_key_b64) {
-          throw new Error(`Missing keys for provider item ${it.provider_item_id}.`);
-        }
-
-        const delegating_sk = umbral.SecretKey.fromBEBytes(base64ToBytes(pEntry.keys.secret_key_b64));
-        const signing_sk    = umbral.SecretKey.fromBEBytes(base64ToBytes(pEntry.keys.signing_key_b64));
-        const signer        = new umbral.Signer(signing_sk);
-
-        const recv_pk_b     = base64ToBytes(it.requester_public_key_b64);
-        const receiving_pk  = umbral.PublicKey.fromCompressedBytes(recv_pk_b);
-
-        // 1-of-1 kfrags
-        const kfrags = umbral.generateKFrags(delegating_sk, receiving_pk, signer, 1, 1);
-        if (!Array.isArray(kfrags) || !kfrags.length) {
-          throw new Error("Failed to generate kfrags.");
-        }
-        const kfrags_b64 = kfrags.map(k => bytesToBase64(k.toBytes()));
-
-        await api.grantAccess({
-          requester_id,
-          provider_item_id: it.provider_item_id,
-          requester_item_id: it.requester_item_id,
-          kfrags_b64,
-        });
+  try {
+    for (const it of items) {
+      const pEntry = providerItems.find(event => event?.item_id === it.provider_item_id);
+      if (!pEntry?.keys?.secret_key_b64 || !pEntry?.keys?.signing_key_b64) {
+        throw new Error(`Missing keys for provider item ${it.provider_item_id}.`);
       }
 
-      setStatus("Access granted. Acknowledging bundle…");
+      const delegating_sk = umbral.SecretKey.fromBEBytes(base64ToBytes(pEntry.keys.secret_key_b64));
+      const signing_sk    = umbral.SecretKey.fromBEBytes(base64ToBytes(pEntry.keys.signing_key_b64));
+      const signer        = new umbral.Signer(signing_sk);
 
-      await api.ackSolicitationBundle({
+      const recv_pk_b     = base64ToBytes(it.requester_public_key_b64);
+      const receiving_pk  = umbral.PublicKey.fromCompressedBytes(recv_pk_b);
+
+      // 1-of-1 kfrags
+      const kfrags = umbral.generateKFrags(delegating_sk, receiving_pk, signer, 1, 1);
+      if (!Array.isArray(kfrags) || !kfrags.length) {
+        throw new Error("Failed to generate kfrags.");
+      }
+      const kfrags_b64 = kfrags.map(k => bytesToBase64(k.toBytes()));
+
+      await api.grantAccess({
         requester_id,
-        max_created_at: ack_token?.max_created_at,
-        max_request_id: ack_token?.max_request_id,
+        provider_item_id: it.provider_item_id,
+        requester_item_id: it.requester_item_id,
+        kfrags_b64,
       });
-
-      cleanup();
-      totalRows = 0;
-
-      setStateChip("Synced", "ok");
-      setStatus("Bundle acknowledged. Loading next (if any)…");
-
-      await pullAndRender();
-    } catch (err) {
-      setStateChip("Error", "err");
-      setStatus(err?.message || "Failed to grant/acknowledge bundle.");
     }
+
+    setStatus("Access granted. Acknowledging bundle…");
+
+    await api.ackSolicitationBundle({
+      requester_id,
+      max_created_at: ack_token?.max_created_at,
+      max_request_id: ack_token?.max_request_id,
+    });
+
+    cleanup();
+    totalRows = 0;
+
+    setStateChip("Synced", "ok");
+    setStatus("Bundle acknowledged. Loading next (if any)…");
+
+    await pullAndRender();
+  } catch (err) {
+    setStateChip("Error", "err");
+    setStatus(err?.message || "Failed to grant/acknowledge bundle.");
   }
+}
 
 export function updateProviderDatalist(store) {
   const validProviderIds = new Set();
@@ -119,7 +118,74 @@ function validateInput(input, datalist, warn = false) {
   input.dataset.itemId = match.dataset.itemId;
 }
 
-function populateRequestsWidget(store) {
+function removeRequestFromUI(requestId) {
+  const container = document.getElementById('requestsContainer');
+  if (!container) return;
+
+  // find the form for this request
+  const forms = container.querySelectorAll('form.request-form');
+  let targetForm = null;
+  for (const form of forms) {
+    if (form.dataset.requestId === requestId) {
+      targetForm = form;
+      break;
+    }
+  }
+  if (!targetForm) return;
+
+  const requestCard     = targetForm.closest('.request-card');
+  const requesterContent = targetForm.closest('.requester-content');
+  const requesterCard   = targetForm.closest('.requester-card');
+
+  if (requestCard) {
+    requestCard.remove();
+  }
+
+  // if requester has no more request cards, remove the whole requester section
+  if (requesterContent && !requesterContent.querySelector('.request-card')) {
+    if (requesterCard) {
+      requesterCard.remove();
+    }
+  }
+
+  // if container is now empty, show empty state
+  if (!container.querySelector('.requester-card')) {
+    container.innerHTML = '<div class="empty-state">No inbound requests at this time</div>';
+  }
+}
+
+async function handleDenyClick(event, store, api) {
+  const formEl = event.currentTarget.closest('form.request-form');
+  if (!formEl) return;
+
+  const requestId = formEl.dataset.requestId;
+
+  setStateChip("Sending…", "warn");
+  setStatus(`Denying request ${requestId}…`);
+
+  try {
+    await api.ackSolicitation(requestId);
+  } catch (err) {
+    setStateChip("Error", "err");
+    setStatus(err?.message || "Failed to deny request.", "err");
+    return;
+  }
+
+  // remove from local store
+  const list = store?.ephemeral?.provider?.requests;
+  if (Array.isArray(list)) {
+    const idx = list.findIndex(r => r.request_id === requestId);
+    if (idx !== -1) list.splice(idx, 1);
+  }
+
+  // clean up the DOM
+  removeRequestFromUI(requestId);
+
+  setStateChip("Ready", "ok");
+  setStatus(`Request ${requestId} denied.`);
+}
+
+function populateRequestsWidget(api, store) {
 
   const container = document.getElementById('requestsContainer');
   const inboundRequests = store.ephemeral.provider.requests;
@@ -241,7 +307,9 @@ function populateRequestsWidget(store) {
     denyBtn.type = 'button';
     denyBtn.className = 'btn btn-deny';
     denyBtn.textContent = 'Deny';
-    // Handler to be implemented later
+    denyBtn.addEventListener('click', (event) => {
+      handleDenyClick(event, store, api);
+    });
 
     buttonGroup.appendChild(approveBtn);
     buttonGroup.appendChild(denyBtn);
@@ -251,7 +319,6 @@ function populateRequestsWidget(store) {
     requesterContent.appendChild(requestCard);
   }
 
-  // Append the last requester card
   if (requesterCard && requesterContent) {
     requesterCard.appendChild(requesterContent);
     container.appendChild(requesterCard);
@@ -330,7 +397,7 @@ async function loadInboundRequests(api, store) {
   // todo - remove for production
   try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}
 
-  populateRequestsWidget(store); // todo - this is the right follow up but not in this function
+  populateRequestsWidget(api, store); // todo - this is the right follow up but not in this function
 }
 
 export async function wireUpInboundRequests({ api, store }) {

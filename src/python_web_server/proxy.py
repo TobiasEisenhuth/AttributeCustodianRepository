@@ -127,6 +127,19 @@ def init_db():
                     REFERENCES crypto_bundle(user_id, item_id) ON DELETE RESTRICT
             );
         """)
+        # aliases
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS requester_item_aliases (
+                provider_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                requester_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                alias_item_id TEXT,
+                canonical_item_id TEXT,
+                PRIMARY KEY (provider_id, requester_id, alias_item_id),
+                FOREIGN KEY (provider_id, requester_id, canonical_item_id) 
+                    REFERENCES grants(provider_id, requester_id, requester_item_id)
+                    ON DELETE CASCADE
+            );
+        """)
         # solicitations
         conn.execute("""
             CREATE TABLE IF NOT EXISTS solicitations (
@@ -660,28 +673,66 @@ def api_grant_access(request: Request, body: GrantAccessRequest):
     provider_id = request.state.user_id
 
     try:
-        kfrags_bytes = [b64decode(b) for b in body.kfrags_b64]
-    except Exception:
-        raise HTTPException(status_code=400, detail="bad_kfrags_b64")
-    kfrags_blob = msgpack.packb(kfrags_bytes, use_bin_type=True)
-
-    try:
         with get_conn() as conn:
-            conn.execute("""
-                INSERT INTO grants (provider_id, requester_id, provider_item_id, requester_item_id, kfrags_b)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (provider_id, requester_id, requester_item_id)
-                DO UPDATE SET
-                    provider_item_id = EXCLUDED.provider_item_id,
-                    kfrags_b            = EXCLUDED.kfrags_b
-            """,(
-                provider_id,
-                body.requester_id,
-                body.provider_item_id,
-                body.requester_item_id,
-                kfrags_blob,
-            ),)
-        return _ok()
+            cur = conn.execute(
+                """
+                SELECT requester_item_id
+                FROM grants
+                WHERE provider_id = %s
+                  AND requester_id = %s
+                  AND provider_item_id = %s
+                """,
+                (provider_id, body.requester_id, body.provider_item_id),
+            )
+            row = cur.fetchone()
+
+            if row is not None:
+                # Existing canonical grant for this provider_item_id
+                canonical_requester_item_id = row[0]
+                if canonical_requester_item_id != body.requester_item_id:
+                    conn.execute(
+                        """
+                        INSERT INTO requester_item_aliases (
+                            provider_id,
+                            requester_id,
+                            alias_item_id,
+                            canonical_item_id)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (provider_id, requester_id, alias_item_id) DO NOTHING
+                        """,
+                        (
+                            provider_id,
+                            body.requester_id,
+                            body.requester_item_id,
+                            canonical_requester_item_id,
+                        ),
+                    )
+            else:
+                # New grant for this provider_item_id: create a new canonical grant row.
+                try:
+                    kfrags_bytes = [b64decode(b) for b in body.kfrags_b64]
+                except Exception:
+                    raise HTTPException(status_code=400, detail="bad_kfrags_b64")
+                kfrags_blob = msgpack.packb(kfrags_bytes, use_bin_type=True)
+
+                conn.execute(
+                    """
+                    INSERT INTO grants (provider_id, requester_id, provider_item_id, requester_item_id, kfrags_b)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (provider_id, requester_id, requester_item_id)
+                    DO UPDATE SET
+                        provider_item_id = EXCLUDED.provider_item_id,
+                        kfrags_b = EXCLUDED.kfrags_b
+                    """,
+                    (
+                        provider_id,
+                        body.requester_id,
+                        body.provider_item_id,
+                        body.requester_item_id,
+                        kfrags_blob,
+                    ),
+                )
+            return _ok()
 
     except HTTPException:
         raise

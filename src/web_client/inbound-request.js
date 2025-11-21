@@ -5,7 +5,6 @@ import {
   setStateChip,
   bytesToBase64,
   base64ToBytes,
-  updateProviderDatalist,
 } from "/app/utils.js";
 import { loadUmbral } from "/app/umbral-loader.js";
 
@@ -30,7 +29,7 @@ async function grantFlow({ requester_id, ack_token, items, cleanup }) {
 
     try {
       for (const it of items) {
-        const pEntry = providerItems.find(e => e?.item_id === it.provider_item_id);
+        const pEntry = providerItems.find(event => event?.item_id === it.provider_item_id);
         if (!pEntry?.keys?.secret_key_b64 || !pEntry?.keys?.signing_key_b64) {
           throw new Error(`Missing keys for provider item ${it.provider_item_id}.`);
         }
@@ -78,21 +77,60 @@ async function grantFlow({ requester_id, ack_token, items, cleanup }) {
     }
   }
 
+export function updateProviderDatalist(store) {
+  const validProviderIds = new Set();
+  const datalist = document.getElementById('providerOptionsDatalist');
+  if (!datalist) return validProviderIds;
+
+  datalist.innerHTML = '';
+  
+  for (const providerItem of store.persistent.provider.items) {
+    const value = store.ephemeral.provider.values.get(providerItem.item_id);
+    if (value !== undefined && value !== null) {
+      const option = document.createElement('option');
+      option.dataset.itemId = providerItem.item_id;
+      option.value = value;
+      option.textContent = `${providerItem.item_name}: ${value}`;
+      datalist.appendChild(option);
+      validProviderIds.add(providerItem.item_id);
+    }
+  }
+
+  return validProviderIds;
+}
+
+function validateInput(input, datalist, warn = false) {
+  const options = Array.from(datalist.options);
+  const match = options.find(opt => opt.value === input.value);
+
+  if (input.value === '') {
+    input.style.borderColor = '';
+    delete input.dataset.itemId;
+    return;
+  }
+
+  if (!match) {
+    if (warn) input.style.borderColor = 'red';
+    delete input.dataset.itemId;
+    return;
+  }
+
+  input.style.borderColor = 'green';
+  input.dataset.itemId = match.dataset.itemId;
+}
+
 function populateRequestsWidget(store) {
 
-  updateProviderDatalist(store);
-
   const container = document.getElementById('requestsContainer');
-  const requests = store.ephemeral.provider.requests;
+  const inboundRequests = store.ephemeral.provider.requests;
   
-  if (!requests || requests.length === 0) {
-    container.innerHTML = '<div class="empty-state">No requests at this time</div>';
+  if (!inboundRequests || inboundRequests.length === 0) {
+    container.innerHTML = '<div class="empty-state">No inbound requests at this time</div>';
     return;
   }
 
   container.innerHTML = '';
 
-  // Create or update the shared datalist
   let datalist = document.getElementById('providerOptionsDatalist');
   if (!datalist) {
     datalist = document.createElement('datalist');
@@ -100,37 +138,17 @@ function populateRequestsWidget(store) {
     document.body.appendChild(datalist);
   }
 
-  // Build provider options
-  datalist.innerHTML = '';
-  const validProviderIds = new Set();
-  
-  for (const providerItem of store.persistent.provider.items) {
-    const value = store.ephemeral.provider.values.get(providerItem.item_id);
-    if (value !== undefined && value !== null) {
-      const option = document.createElement('option');
-      option.value = providerItem.item_id;
-      option.textContent = `${providerItem.item_name} -> ${value}`;
-      // Store display text as data attribute for validation
-      option.dataset.displayText = option.textContent;
-      datalist.appendChild(option);
-      validProviderIds.add(providerItem.item_id);
-    }
-  }
+  const validProviderIds = updateProviderDatalist(store);
 
-  let currentRequesterId = null;
-  let requesterCard = null;
-  let requesterContent = null;
+  let currentRequesterId, requesterCard, requesterContent;
 
-  for (const request of requests) {
-    // Start new requester card if requester_id changes
+  for (const request of inboundRequests) {
     if (request.requester_id !== currentRequesterId) {
-      // Append previous requester card if it exists
       if (requesterCard && requesterContent) {
         requesterCard.appendChild(requesterContent);
         container.appendChild(requesterCard);
       }
 
-      // Create new requester card
       currentRequesterId = request.requester_id;
       requesterCard = document.createElement('details');
       requesterCard.className = 'requester-card';
@@ -144,7 +162,6 @@ function populateRequestsWidget(store) {
       requesterContent.className = 'requester-content';
     }
 
-    // Create request card
     const requestCard = document.createElement('article');
     requestCard.className = 'request-card';
 
@@ -152,11 +169,11 @@ function populateRequestsWidget(store) {
     requestTitle.textContent = request.request_id;
     requestCard.appendChild(requestTitle);
 
-    // Create form
     const form = document.createElement('form');
     form.className = 'request-form';
     form.dataset.requesterId = request.requester_id;
     form.dataset.requestId = request.request_id;
+    form.addEventListener('submit', event => event.preventDefault());
 
     const fieldset = document.createElement('fieldset');
     
@@ -164,7 +181,6 @@ function populateRequestsWidget(store) {
     legend.textContent = request.info_string || 'Request Details';
     fieldset.appendChild(legend);
 
-    // Create form rows for each item
     request.items.forEach((item, index) => {
       const formRow = document.createElement('div');
       formRow.className = 'form-row';
@@ -183,41 +199,27 @@ function populateRequestsWidget(store) {
       input.name = `item-${item.item_id}`;
       input.setAttribute('list', 'providerOptionsDatalist');
       input.autocomplete = 'off';
-      
-      // Set placeholder
       if (item.value_example) {
-        input.placeholder = `e.g., ${item.value_example} (type to search, click to select)`;
+        input.placeholder = '< ' + item.value_example + ' >';
       } else {
         input.placeholder = 'Type to search, click to select';
       }
 
-      // Store the valid provider IDs for this input's validation
-      input.dataset.validIds = JSON.stringify([...validProviderIds]);
-
-      // Validation: only accept click selection or valid item_id
-      input.addEventListener('blur', function(e) {
-        validateInput(e.target, datalist);
+      input.addEventListener('blur', function(event) {
+        validateInput(event.target, datalist, true);
       });
 
-      input.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          validateInput(e.target, datalist);
-          e.target.blur();
+      input.addEventListener('keydown', function(event) {
+        if (event.key === 'Enter') {
+          validateInput(event.target, datalist, true);
+        }
+        if (event.key === 'Tab') {
+          validateInput(event.target, datalist, true);
         }
       });
 
-      // When user selects from datalist (click or arrow+enter on suggestion)
-      input.addEventListener('input', function(e) {
-        // Check if the current value matches an option's value (item_id)
-        const options = Array.from(datalist.options);
-        const match = options.find(opt => opt.value === e.target.value);
-        
-        if (match) {
-          // Valid selection - store the display text for showing
-          e.target.dataset.selectedDisplay = match.dataset.displayText;
-          e.target.value = match.dataset.displayText;
-        }
+      input.addEventListener('input', function(event) {
+        validateInput(event.target, datalist);
       });
 
       formRow.appendChild(input);
@@ -226,7 +228,6 @@ function populateRequestsWidget(store) {
 
     form.appendChild(fieldset);
 
-    // Create button group
     const buttonGroup = document.createElement('div');
     buttonGroup.className = 'button-group';
 
@@ -256,47 +257,6 @@ function populateRequestsWidget(store) {
     container.appendChild(requesterCard);
   }
 }
-
-/**
- * Validates input against datalist options
- * Clears input if value is not valid
- */
-function validateInput(input, datalist) {
-  const options = Array.from(datalist.options);
-  
-  // Check if input value matches any option's display text
-  const match = options.find(opt => opt.dataset.displayText === input.value);
-  
-  if (!match) {
-    // Invalid input - clear it
-    input.value = '';
-    delete input.dataset.selectedDisplay;
-  }
-}
-
-/**
- * Gets the selected provider item_id from an input field
- * Returns null if no valid selection
- */
-function getSelectedProviderId(input) {
-  if (!input.dataset.selectedDisplay || !input.value) {
-    return null;
-  }
-  
-  const datalist = document.getElementById('providerOptionsDatalist');
-  const options = Array.from(datalist.options);
-  const match = options.find(opt => opt.dataset.displayText === input.value);
-  
-  return match ? match.value : null;
-}
-
-// To get form data on approve:
-// const inputs = form.querySelectorAll('input[type="text"]');
-// inputs.forEach(input => {
-//   const requesterItemId = input.closest('.form-row').dataset.requesterItemId;
-//   const providerItemId = getSelectedProviderId(input);
-//   console.log(`Map ${requesterItemId} -> ${providerItemId}`);
-// });
 
 async function loadInboundRequests(api, store) {
   setStateChip("Loading…", "warn");
@@ -370,7 +330,7 @@ async function loadInboundRequests(api, store) {
   // todo - remove for production
   try { sessionStorage.setItem('crs:store', JSON.stringify(store)); } catch {}
 
-  populateRequestsWidget(store);
+  populateRequestsWidget(store); // todo - this is the right follow up but not in this function
 }
 
 export async function wireUpInboundRequests({ api, store }) {

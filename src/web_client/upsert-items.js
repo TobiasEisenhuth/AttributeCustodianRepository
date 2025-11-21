@@ -11,8 +11,8 @@ import {
   revisiting,
   setStateChip,
   setStatus,
-  updateProviderDatalist,
 } from "/app/utils.js";
+import { updateProviderDatalist } from "/app/inbound-request.js";
 
 export function appendRowToGui(itemName, valueStr, itemId) {
   const panel = document.querySelector('.panel[data-panel="personal"]');

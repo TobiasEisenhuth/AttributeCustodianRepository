@@ -65,24 +65,6 @@ export function fail(message, tone = "err") {
   setStatus(message, tone);
 }
 
-export function updateProviderDatalist(store) {
-  const datalist = document.getElementById('providerOptionsDatalist');
-  if (!datalist) return;
-
-  datalist.innerHTML = '';
-  
-  for (const providerItem of store.persistent.provider.items) {
-    const value = store.ephemeral.provider.values.get(providerItem.item_id);
-    if (value !== undefined && value !== null) {
-      const option = document.createElement('option');
-      option.value = providerItem.item_id;
-      option.textContent = `${providerItem.item_name} -> ${value}`;
-      option.dataset.displayText = option.textContent;
-      datalist.appendChild(option);
-    }
-  }
-}
-
 export function initUser() {
   if (revisiting('initUser')) return;
 

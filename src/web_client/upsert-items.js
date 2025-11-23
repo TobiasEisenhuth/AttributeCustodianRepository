@@ -14,7 +14,28 @@ import {
 } from "/app/utils.js";
 import { updateProviderDatalist } from "/app/inbound-request.js";
 
-function showEraseBlockedOverlay(grants) {
+export async function revokeGrant(api, grant) {
+  return api.revokeAccess({
+    requester_id: grant.requester_id,
+    provider_item_id: grant.provider_item_id,
+  });
+}
+
+function removeLocalItem(store, itemId, tr) {
+  const items = store?.persistent?.provider?.items;
+  if (Array.isArray(items)) {
+    const idx = items.findIndex(it => it.item_id === itemId);
+    if (idx !== -1) items.splice(idx, 1);
+  }
+
+  store?.ephemeral?.provider?.values?.delete(itemId);
+
+  if (tr && tr.parentNode) {
+    tr.parentNode.removeChild(tr);
+  }
+}
+
+function showEraseBlockedOverlay(api, store, itemId, tr, grants) {
   const old = document.getElementById("erase-blocked-overlay");
   if (old) old.remove();
 
@@ -52,35 +73,92 @@ function showEraseBlockedOverlay(grants) {
   }
 
   const hint = document.createElement("p");
-  hint.textContent = "Close this dialog and revoke those grants first.";
+  hint.textContent = "You can keep the grants and item, or remove them.";
   hint.style.fontSize = "0.9rem";
   hint.style.color = "#666";
+
+  const buttonRow = document.createElement("div");
+  buttonRow.style.display = "flex";
+  buttonRow.style.justifyContent = "flex-end";
+  buttonRow.style.gap = "8px";
+  buttonRow.style.marginTop = "16px";
+
+  const keepBtn = document.createElement("button");
+  keepBtn.type = "button";
+  keepBtn.className = "btn";
+  keepBtn.textContent = "Keep grant(s) and item";
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "btn primary";
+  removeBtn.textContent = "Remove grant(s) and item";
+
+  keepBtn.addEventListener("click", () => {
+    backdrop.remove();
+    setStateChip("Ready", "muted");
+    setStatus("Item kept; grants unchanged.", "muted");
+  });
+
+  removeBtn.addEventListener("click", async () => {
+    keepBtn.disabled = true;
+    removeBtn.disabled = true;
+
+    try {
+      setStateChip("Revoking…", "warn");
+      setStatus("Revoking grants…");
+
+      for (const g of grants) {
+        try {
+          await revokeGrant(api, g);
+        } catch (err) {
+          setStateChip("Error", "err");
+          setStatus(err?.message || "Failed to revoke one of the grants.", "err");
+          return;
+        }
+      }
+
+      setStateChip("Erasing…", "warn");
+      setStatus("Erasing item…");
+
+      try {
+        await api.eraseItem(itemId);
+      } catch (err) {
+        if (err.status === 409) {
+          setStateChip("Error", "err");
+          setStatus("Still blocked by grants after revocation attempt.", "err");
+          return;
+        }
+        if (err.status === 404 && err.data?.detail === "item_not_found") {
+          setStateChip("Error", "err");
+          setStatus("Item not found on server. Removing local copy.", "err");
+        } else {
+          setStateChip("Error", "err");
+          setStatus(err?.message || "Failed to erase item after revoking grants.", "err");
+          return;
+        }
+      }
+
+      removeLocalItem(store, itemId, tr);
+
+      setStateChip("Ready", "ok");
+      setStatus("Grants and item removed.");
+
+    } finally {
+      backdrop.remove();
+    }
+  });
+
+  buttonRow.appendChild(keepBtn);
+  buttonRow.appendChild(removeBtn);
 
   box.appendChild(title);
   box.appendChild(msg);
   box.appendChild(list);
   box.appendChild(hint);
+  box.appendChild(buttonRow);
   backdrop.appendChild(box);
 
-  backdrop.addEventListener("click", (e) => {
-    if (e.target === backdrop) backdrop.remove();
-  });
-
   document.body.appendChild(backdrop);
-}
-
-function removeLocalItem(store, itemId, tr) {
-  const items = store?.persistent?.provider?.items;
-  if (Array.isArray(items)) {
-    const idx = items.findIndex(it => it.item_id === itemId);
-    if (idx !== -1) items.splice(idx, 1);
-  }
-
-  store?.ephemeral?.provider?.values?.delete(itemId);
-
-  if (tr && tr.parentNode) {
-    tr.parentNode.removeChild(tr);
-  }
 }
 
 async function handleEraseItemClick(api, store, itemId, tr) {
@@ -102,7 +180,12 @@ async function handleEraseItemClick(api, store, itemId, tr) {
         Array.isArray(err.data.grants)) {
       setStateChip("Blocked", "warn");
       setStatus("Item is used in one or more grants.", "warn");
-      showEraseBlockedOverlay(err.data.grants);
+      showEraseBlockedOverlay(
+        api,
+        store,
+        itemId,
+        tr,
+        err.data.grants);
       return;
     }
 

@@ -641,32 +641,44 @@ def api_erase_item(request: Request, body: EraseItemRequest):
 
     try:
         with get_conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT provider_id, requester_id, provider_item_id, requester_item_id
+                FROM grants
+                WHERE provider_id = %s AND provider_item_id = %s
+                ORDER BY requester_id, requester_item_id
+                """,
+                (user_id, body.item_id),
+            ).fetchall()
+
+            if rows:
+                grants = [
+                    {
+                        "provider_id": str(r[0]),
+                        "requester_id": str(r[1]),
+                        "provider_item_id": r[2],
+                        "requester_item_id": r[3],
+                    }
+                    for r in rows
+                ]
+                return JSONResponse(
+                    {"error": "grants_exist", "grants": grants},
+                    status_code=409,
+                )
+
             cur = conn.execute(
                 "DELETE FROM crypto_bundle WHERE user_id=%s AND item_id=%s",
                 (user_id, body.item_id),
             )
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="item_not_found")
+
             return _ok()
 
-    except psycopg.errors.ForeignKeyViolation:
-        with get_conn() as conn:
-            rows = conn.execute("""
-                SELECT DISTINCT requester_id
-                FROM grants
-                WHERE provider_id=%s AND provider_item_id=%s
-                ORDER BY requester_id
-            """,(user_id,body.item_id),
-            ).fetchall()
-        requesters = [r[0] for r in rows]
-        return JSONResponse(
-            {"error": "grants_exist", "requester_ids": requesters},
-            status_code=409,
-        )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="internal_error")
 
 @app.post("/api/grant_access")
 def api_grant_access(request: Request, body: GrantAccessRequest):

@@ -14,7 +14,113 @@ import {
 } from "/app/utils.js";
 import { updateProviderDatalist } from "/app/inbound-request.js";
 
-export function appendRowToGui(itemName, valueStr, itemId) {
+function showEraseBlockedOverlay(grants) {
+  const old = document.getElementById("erase-blocked-overlay");
+  if (old) old.remove();
+
+  const backdrop = document.createElement("div");
+  backdrop.id = "erase-blocked-overlay";
+  backdrop.style.position = "fixed";
+  backdrop.style.inset = "0";
+  backdrop.style.background = "rgba(0,0,0,0.35)";
+  backdrop.style.display = "flex";
+  backdrop.style.alignItems = "center";
+  backdrop.style.justifyContent = "center";
+  backdrop.style.zIndex = "2000";
+
+  const box = document.createElement("div");
+  box.style.background = "#fff";
+  box.style.border = "1px solid #ddd";
+  box.style.borderRadius = "8px";
+  box.style.padding = "16px";
+  box.style.maxWidth = "480px";
+  box.style.width = "min(480px, 92vw)";
+
+  const title = document.createElement("h3");
+  title.textContent = "Cannot erase item";
+  title.style.marginTop = "0";
+
+  const msg = document.createElement("p");
+  msg.textContent = "This item is referenced by existing grants:";
+
+  const list = document.createElement("ul");
+  for (const g of grants) {
+    const li = document.createElement("li");
+    li.textContent =
+      `requester_id=${g.requester_id}, requester_item_id=${g.requester_item_id}`;
+    list.appendChild(li);
+  }
+
+  const hint = document.createElement("p");
+  hint.textContent = "Close this dialog and revoke those grants first.";
+  hint.style.fontSize = "0.9rem";
+  hint.style.color = "#666";
+
+  box.appendChild(title);
+  box.appendChild(msg);
+  box.appendChild(list);
+  box.appendChild(hint);
+  backdrop.appendChild(box);
+
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) backdrop.remove();
+  });
+
+  document.body.appendChild(backdrop);
+}
+
+function removeLocalItem(store, itemId, tr) {
+  const items = store?.persistent?.provider?.items;
+  if (Array.isArray(items)) {
+    const idx = items.findIndex(it => it.item_id === itemId);
+    if (idx !== -1) items.splice(idx, 1);
+  }
+
+  store?.ephemeral?.provider?.values?.delete(itemId);
+
+  if (tr && tr.parentNode) {
+    tr.parentNode.removeChild(tr);
+  }
+}
+
+async function handleEraseItemClick(api, store, itemId, tr) {
+  if (!itemId) return;
+
+  setStateChip("Erasing…", "warn");
+  setStatus("Erasing item…");
+
+  try {
+    await api.eraseItem(itemId);
+
+    removeLocalItem(store, itemId, tr);
+
+    setStateChip("Ready", "ok");
+    setStatus("Item erased.");
+  } catch (err) {
+    if (err.status === 409 &&
+        err.data?.error === "grants_exist" &&
+        Array.isArray(err.data.grants)) {
+      setStateChip("Blocked", "warn");
+      setStatus("Item is used in one or more grants.", "warn");
+      showEraseBlockedOverlay(err.data.grants);
+      return;
+    }
+
+    if (err.status === 404 && err.data?.detail === "item_not_found") {
+      setStateChip("Error", "err");
+      setStatus("Item not found on server. Removing local copy.", "err");
+      removeLocalItem(store, itemId, tr);
+      return;
+    }
+
+    setStateChip("Error", "err");
+    setStatus(err?.message || "Failed to erase item.", "err");
+    return;
+  }
+}
+
+
+export function appendRowToGui(api, store, itemName, valueStr, itemId) {
   const panel = document.querySelector('.panel[data-panel="personal"]');
   const tbody = panel?.querySelector("tbody");
   if (!tbody) return;
@@ -26,7 +132,24 @@ export function appendRowToGui(itemName, valueStr, itemId) {
   { const { wrapper } = makePersonalCell(itemName, "Item Name"); td1.appendChild(wrapper); }
 
   const td2 = document.createElement("td");
-  { const { wrapper } = makePersonalCell(valueStr, "Value"); td2.appendChild(wrapper); }
+  {
+    const { wrapper } = makePersonalCell(valueStr, "Value");
+    td2.appendChild(wrapper);
+
+    if (api && store && itemId) {
+      const eraseBtn = document.createElement("button");
+      eraseBtn.type = "button";
+      eraseBtn.className = "btn btn-erase";
+      eraseBtn.textContent = "Erase";
+      eraseBtn.style.marginLeft = "0.5rem";
+
+      eraseBtn.addEventListener("click", () => {
+        void handleEraseItemClick(api, store, itemId, tr);
+      });
+
+      td2.appendChild(eraseBtn);
+    }
+  }
 
   tr.appendChild(td1);
   tr.appendChild(td2);
@@ -214,7 +337,7 @@ export function wireUpAddItemDialog({ api, store }) {
       if (!valueStr)  return fail('Please provide a value.');
 
       const itemId = await upsertItem({itemName, valueStr, api, store, setStatus, setStateChip});
-      appendRowToGui(itemName, valueStr, itemId);
+      appendRowToGui(api, store, itemName, valueStr, itemId);
       closeDialog();
     } catch (err) {
       console.error(err);

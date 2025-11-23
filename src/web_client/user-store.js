@@ -1,11 +1,7 @@
 import { loadUmbral } from "/app/umbral-loader.js";
 import {
-  nowIso,
   enc,
   dec,
-  fail,
-  normalizeText,
-  generateItemId,
   bytesToBase64,
   revisiting,
   setStateChip,
@@ -201,16 +197,15 @@ export async function hydrateUserState(api, store) {
         ? `${item_name} (mismatch)`
         : item_name;
 
-      appendRowToGui(label, plain_value, item_id);
+      appendRowToGui(api, store, label, plain_value, item_id);
     }
 
     for (const id of onlyServerIds) {
-      // const bundle = serverById.get(id);
 
       const item_name   = "(mismatch: server-only item)";
       const plain_value = "(cipher present but no local metadata)";
 
-      appendRowToGui(item_name, plain_value, id);
+      appendRowToGui(api, store, item_name, plain_value, id);
     }
 
     if (local_items.length === 0 && onlyServerIds.length === 0) {

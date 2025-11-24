@@ -114,7 +114,7 @@ function readForm(tableEl) {
     if (value) item.value_example = value;
     if (deflt) item.default_field = deflt;
 
-    inputs.push( item );
+    inputs.push(item);
   }
 
   return { info, provider_id, inputs };
@@ -159,7 +159,7 @@ export function wireUpRequestBuilder({ api, store }) {
 
     try {
       const { info, provider_id, inputs } = readForm(table);
-      if (!info)      throw new Error("Please fill Info String.");
+      if (!info) throw new Error("Please fill Info String.");
       if (!provider_id) throw new Error("Please fill Addressee.");
       if (inputs.length === 0) throw new Error("Please add at least one item.");
 
@@ -167,10 +167,18 @@ export function wireUpRequestBuilder({ api, store }) {
       setStatus("Generating keys and building solicitation…");
 
       const created_at = nowIso();
-      const items = [];
 
-      const requesterItems = store.persistent.requester.items;
-      const existing = new Set(requesterItems.map(it => it?.item_id).filter(Boolean));
+      const requesterByProvider = store.persistent.requester.items;
+      const existing = new Set();
+      for (const arr of Object.values(requesterByProvider)) {
+        if (!Array.isArray(arr)) continue;
+        for (const it of arr) {
+          if (it?.item_id) existing.add(it.item_id);
+        }
+      }
+
+      const stagedNewItems = [];   // for persistent store
+      const itemsForRequest = [];  // for the wire
 
       for (const item of inputs) {
         const item_id = generateItemId(existing);
@@ -179,15 +187,15 @@ export function wireUpRequestBuilder({ api, store }) {
         const sk = umbral.SecretKey.random();
         const pk = sk.publicKey();
 
-        requesterItems.push({
-          item_id: item_id,
+        stagedNewItems.push({
+          item_id,
           item_name: item.item_name,
           keys: { secret_key_b64: bytesToBase64(sk.toBEBytes()) },
           last_touched: created_at,
         });
 
-        items.push({
-          item_id: item_id,
+        itemsForRequest.push({
+          item_id,
           item_name: item.item_name,
           requester_public_key_b64: bytesToBase64(pk.toCompressedBytes()),
           value_example: item.value_example,
@@ -195,16 +203,31 @@ export function wireUpRequestBuilder({ api, store }) {
         });
       }
 
-      const request = { info_string: info, items };
+      const request = { info_string: info, items: itemsForRequest };
       const request_bytes = enc.encode(JSON.stringify(request));
       const request_b64 = bytesToBase64(request_bytes);
 
       setStateChip("Sending…", "warn");
       setStatus("Pushing solicitation to server…");
-      await api.pushSolicitation(
-        provider_id,
-        request_b64
-      );
+
+      let res;
+      try {
+        res = await api.pushSolicitation(provider_id, request_b64);
+      } catch (err) {
+        if (err.status === 400 && err.data?.detail === "self_request_forbidden") {
+          throw new Error("You cannot send a request to yourself.");
+        }
+        throw err;
+      }
+
+      let requesterItems = requesterByProvider[provider_id];
+      if (!Array.isArray(requesterItems)) {
+        requesterItems = [];
+        requesterByProvider[provider_id] = requesterItems;
+      }
+      for (const entry of stagedNewItems) {
+        requesterItems.push(entry);
+      }
 
       needsSave(true);
       resetBuilderTable(table);

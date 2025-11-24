@@ -220,7 +220,7 @@ export async function hydrateUserState(api, store) {
 }
 
 export async function initUserStore({ api, passkey }) {
-  if (revisiting('initUserStore')) return;
+  if (revisiting("initUserStore")) return;
 
   const store = {
     good: false,
@@ -228,31 +228,45 @@ export async function initUserStore({ api, passkey }) {
     ephemeral: {},
   };
 
-  setStateChip('Loading…');
-  setStatus('Loading from vault…');
+  setStateChip("Loading…");
+  setStatus("Loading from vault…");
 
-  if (!store.persistent.provider) store.persistent.provider = {}
-  if (!Array.isArray(store.persistent.provider.items)) { store.persistent.provider.items = []; }
-  if (!store.persistent.requester) store.persistent.requester = {};
-  if (!Array.isArray(store.persistent.requester.items)) { store.persistent.requester.items = []; }
-
-  let origin;
   try {
     const { envelope_b64 } = await api.loadFromVault();
-    origin = await extractStoreFromEnvelope(envelope_b64, passkey);
-    store.persistent = origin;
-    store.good = true;
+    const origin = await extractStoreFromEnvelope(envelope_b64, passkey);
+    if (origin && typeof origin === "object") {
+      store.persistent = origin;
+      store.good = true;
+    }
   } catch (err) {
     setStateChip("Error", "err");
     setStatus(err.message || "Failed to load from vault", "err");
   }
- 
-  store.ephemeral = {};
-  store.ephemeral.provider = {};
-  store.ephemeral.provider.values = new Map();
-  store.ephemeral.provider.requests = [];
+
+  if (!store.persistent.provider || typeof store.persistent.provider !== "object") {
+    store.persistent.provider = {};
+  }
+  if (!Array.isArray(store.persistent.provider.items)) {
+    store.persistent.provider.items = [];
+  }
+  if (!store.persistent.requester || typeof store.persistent.requester !== "object") {
+    store.persistent.requester = {};
+  }
+
+  // todo - remove for production
+  if (Array.isArray(store.persistent.requester.items)) delete store.persistent.requester.items;
+
+  if (!store.persistent.requester.items || typeof store.persistent.requester.items !== "object") {
+    store.persistent.requester.items = {};
+  }
+
+  store.ephemeral = {
+    provider: {
+      values: new Map(),
+      requests: [],
+    },
+  };
 
   await hydrateUserState(api, store);
-
   return store;
 }

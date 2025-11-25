@@ -162,7 +162,12 @@ def init_db():
 
 # =================== AUTH (email + password) ===================
 
-SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60*5)))  # default 5 minutes
+SERVER_SESSION_TTL_SECONDS = int(os.getenv("SERVER_SESSION_TTL_SECONDS", str(60*5))) # default 5 minutes
+assert SERVER_SESSION_TTL_SECONDS >= 300, "Sessions shorter than 5 min, are impractical."
+
+# The server session has to survive both cookie and client, while the cookie has to survive the client too.
+COOKIE_SESSION_TTL_SECONDS = int(0.9 * SERVER_SESSION_TTL_SECONDS)
+CLIENT_SESSION_TTL_SECONDS = int(0.8 * SERVER_SESSION_TTL_SECONDS)
 
 # Argon2id parameters (balanced & modern)
 ph = PasswordHasher(
@@ -185,7 +190,7 @@ def set_session_cookie(resp: Response, req: Request, token: str) -> None:
         samesite="strict",
         secure=True,
         path="/",
-        max_age=SESSION_TTL_SECONDS,
+        max_age=COOKIE_SESSION_TTL_SECONDS,
     )
 
 def clear_session_cookie(resp: Response, req: Request) -> None:
@@ -214,6 +219,7 @@ def create_user(email: EmailStr, password: Password) -> UUID:
 
 def create_session(user_id: UUID, req: Request) -> str:
     token = secrets.token_urlsafe(32)
+    expires_at = now_utc() + timedelta(seconds=SERVER_SESSION_TTL_SECONDS)
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -239,19 +245,29 @@ def create_session(user_id: UUID, req: Request) -> str:
             cur.execute(
                 """
                 INSERT INTO sessions (user_id, token, expires_at)
-                VALUES (%s, %s, now() + interval '5 minutes')
+                VALUES (%s, %s, %s)
                 """,
-                (user_id, token)
+                (user_id, token, expires_at)
             )
 
     return token
 
-def refresh_session_expiry(token: str) -> None:
+def refresh_session_expiry(request: Request, response: Response) -> None:
+    cookies = request.cookies or {}
+    token = cookies.get("__Host-session")
     if not token:
         return
-    new_exp = now_utc() + timedelta(seconds=SESSION_TTL_SECONDS)
+
+    new_exp = now_utc() + timedelta(seconds=SERVER_SESSION_TTL_SECONDS)
     with get_conn() as conn:
-        conn.execute("UPDATE sessions SET expires_at=%s WHERE token=%s", (new_exp, token))
+        cur = conn.execute(
+            "UPDATE sessions SET expires_at=%s WHERE token=%s",
+            (new_exp, token),
+        )
+        if cur.rowcount == 0:
+            return
+
+    set_session_cookie(response, request, token)
 
 def get_user_by_email(email: EmailStr) -> Optional[dict]:
     with get_conn() as conn:
@@ -404,9 +420,9 @@ async def gatekeeper(request: Request, call_next):
         if not logged_in:
             return JSONResponse({"error": "not_authenticated"}, status_code=401)
         request.state.user_id = user_id
-        token = (request.cookies or {}).get("__Host-session")
-        refresh_session_expiry(token)
-        return await call_next(request)
+        response = await call_next(request)
+        refresh_session_expiry(request, response)
+        return response
 
     # default to login page or dashboard depending on session or nah
     if path == "/":
@@ -426,10 +442,7 @@ async def gatekeeper(request: Request, call_next):
             return RedirectResponse(LOGIN_PAGE, status_code=303)
         return JSONResponse({"error": "not_authenticated"}, status_code=401)
 
-    # if we can't serve it ... dashboard it is
     response = await call_next(request)
-    # if response.status_code == 404 and request.method in ("GET", "HEAD"):
-    #     return RedirectResponse(DASHBOARD_PAGE, status_code=303)
     return response
 
 # =================== CRS API ===================
@@ -479,7 +492,7 @@ def auth_logout(req: Request):
 
 @app.post("/api/refresh_session_ttl")
 def api_refresh_session_ttl(req: Request):
-    return {"ttl_seconds": SESSION_TTL_SECONDS}
+    return {"ttl_seconds": CLIENT_SESSION_TTL_SECONDS}
 
 # ------------------- user vaults ---------------------
 

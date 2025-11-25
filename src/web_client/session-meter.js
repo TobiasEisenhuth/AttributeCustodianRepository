@@ -3,35 +3,29 @@ import { revisiting } from "/app/utils.js"
 export function initSessionMeter({ api, onTimeout } = {}) {
   if (revisiting("initSessionMeter")) return;
 
-  const BUFFER_SECONDS = 60;
+  const GREEN_MIN_RATIO  = 0.25;
+  const ORANGE_MIN_RATIO = 0.15;
+
   let meter = null;
   let refreshBtn = null;
 
-  let ttlSeconds = null;
   let displayTotal = null;
   let lastTouchMs = null;
   let intervalId = null;
 
   function applyMeterRanges() {
-    if (!displayTotal) return;
+    if (!displayTotal || !meter) return;
 
-    if (displayTotal >= 120) {
-      meter.low = 60;
-      meter.high = 120;
-      meter.optimum = displayTotal;
-    } else if (displayTotal > 60) {
-      meter.low = 60;
-      meter.high = displayTotal;
-      meter.optimum = displayTotal;
-    } else {
-      meter.removeAttribute("low");
-      meter.removeAttribute("high");
-      meter.optimum = displayTotal;
-    }
+    const orangeStart = Math.round(displayTotal * ORANGE_MIN_RATIO);
+    const greenStart  = Math.round(displayTotal * GREEN_MIN_RATIO);
+
+    meter.low = orangeStart;
+    meter.high = greenStart;
+    meter.optimum = displayTotal;
   }
 
   function updateMeter() {
-    if (!displayTotal || !lastTouchMs) return;
+    if (!displayTotal || !lastTouchMs || !meter) return;
 
     const elapsed = (Date.now() - lastTouchMs) / 1000;
     let remaining = Math.round(displayTotal - elapsed);
@@ -40,9 +34,7 @@ export function initSessionMeter({ api, onTimeout } = {}) {
       remaining = 0;
       meter.value = 0;
       stopTimer();
-      if (typeof onTimeout === "function") {
-        onTimeout();
-      }
+      if (typeof onTimeout === "function") onTimeout();
       return;
     }
 
@@ -63,7 +55,7 @@ export function initSessionMeter({ api, onTimeout } = {}) {
   }
 
   function handleSessionTouched() {
-    if (!displayTotal) return;
+    if (!displayTotal || !meter) return;
     lastTouchMs = Date.now();
     meter.value = displayTotal;
   }
@@ -78,10 +70,7 @@ export function initSessionMeter({ api, onTimeout } = {}) {
         return;
       }
 
-      ttlSeconds = t;
-      displayTotal = ttlSeconds > BUFFER_SECONDS
-        ? ttlSeconds - BUFFER_SECONDS
-        : ttlSeconds;
+      displayTotal = t;
 
       meter.min = 0;
       meter.max = displayTotal;
@@ -129,4 +118,3 @@ export function initSessionMeter({ api, onTimeout } = {}) {
     stop: () => stopTimer(),
   };
 }
-

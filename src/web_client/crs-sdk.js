@@ -1,10 +1,11 @@
-// crs-sdk.js (ESM)
 export class CRSClient {
-  /**
-   * @param {string} base Base URL (default same-origin, e.g. "")
-   */
   constructor(base = "") {
     this.base = base;
+    this._onSessionTouched = null;
+  }
+
+  setSessionTouchedCallback(fn) {
+    this._onSessionTouched = (typeof fn === "function") ? fn : null;
   }
 
   async _fetch(path, opts = {}) {
@@ -23,6 +24,14 @@ export class CRSClient {
     let data = null;
     try { data = await res.json(); } catch {}
 
+    if (this._onSessionTouched) {
+      try {
+        this._onSessionTouched();
+      } catch (e) {
+        console.error("Session touched callback threw", e);
+      }
+    }
+
     if (!res.ok) {
       let msg = data?.detail || data?.error || `HTTP ${res.status}`;
       if (Array.isArray(data?.detail)) {
@@ -33,6 +42,7 @@ export class CRSClient {
       err.data = data;
       throw err;
     }
+
     return data;
   }
 
@@ -67,9 +77,10 @@ export class CRSClient {
   // ---------- Post Office (Solicitations) ----------
   pushSolicitation(provider_id, payload_b64, rest) {
     return this._fetch("/api/push_solicitation", {
-      method: "PUT", 
+      method: "PUT",
       body: { provider_id, payload_b64 },
-      ...(rest||{}) });
+      ...(rest||{}),
+    });
   }
   pullSolicitationBundle(rest) {
     return this._fetch("/api/pull_solicitation_bundle", { body: {}, ...(rest||{}) });
@@ -92,9 +103,16 @@ export class CRSClient {
     return this._fetch("/api/grant_access", { body: b, ...(rest||{}) });
   }
   revokeAccess({ requester_id, provider_item_id }, rest) {
-    return this._fetch("/api/revoke_access", { body: { requester_id, provider_item_id }, ...(rest||{}) });
+    return this._fetch("/api/revoke_access", {
+      body: { requester_id, provider_item_id },
+      ...(rest||{}),
+    });
   }
   requestItem(b, rest) {
     return this._fetch("/api/request_item", { body: b, ...(rest||{}) });
+  }
+
+  refreshSessionTTL(rest) {
+    return this._fetch("/api/refresh_session_ttl", { ...(rest || {}) });
   }
 }

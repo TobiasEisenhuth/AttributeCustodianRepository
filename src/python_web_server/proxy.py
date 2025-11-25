@@ -477,6 +477,10 @@ def auth_logout(req: Request):
     clear_session_cookie(resp, req)
     return resp
 
+@app.post("/api/refresh_session_ttl")
+def api_refresh_session_ttl(req: Request):
+    return {"ttl_seconds": SESSION_TTL_SECONDS}
+
 # ------------------- user vaults ---------------------
 
 MAX_VAULT_BYTES = int(os.getenv("MAX_VAULT_BYTES", str(3 * 1024 * 1024)))  # 3 MiB default

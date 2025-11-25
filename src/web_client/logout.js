@@ -27,6 +27,8 @@ export function wireUpLogout({ api, store, passkey }) {
 
   const btn = document.querySelector('[data-action="logout"]');
   btn.addEventListener("click", () => logout(api, store, passkey));
+
+  return logout;
 }
 
 export function wireUpUnexpectedExit({ api, store, passkey }) {

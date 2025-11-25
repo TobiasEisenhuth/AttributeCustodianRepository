@@ -4,16 +4,53 @@ import {
   bytesToBase64,
   base64ToBytes,
   dec,
+  revisiting,
 } from "/app/utils.js";
 import { loadUmbral } from "/app/umbral-loader.js";
+import { needsSave } from "/app/save.js";
 
-/* ------------- DOM helpers ------------- */
 const q = (sel, root = document) => root.querySelector(sel);
 
-/* ------------- Entry point ------------- */
+let ctrlDown = false;
+const forgetButtons = new Set();
+let ctrlListenersAttached = false;
+
+function ensureCtrlTracking() {
+  if (ctrlListenersAttached) return;
+  ctrlListenersAttached = true;
+
+  const refreshAllForgetButtons = () => {
+    for (const btn of forgetButtons) {
+      if (ctrlDown) {
+        btn.style.backgroundColor = "coral";
+      } else {
+        btn.style.backgroundColor = "gray";
+      }
+    }
+  };
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Control" && !ctrlDown) {
+      ctrlDown = true;
+      refreshAllForgetButtons();
+    }
+  });
+
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "Control") {
+      ctrlDown = false;
+      refreshAllForgetButtons();
+    }
+  });
+
+  window.addEventListener("blur", () => {
+    ctrlDown = false;
+    refreshAllForgetButtons();
+  });
+}
 
 export function wireUpQueryItems({ api, store }) {
-  // If the store isn't loaded/usable, don't wire anything.
+  if (revisiting("wireUpQueryItems")) return;
   if (!store || !store.good) return;
 
   const panel = q('.panel[data-panel="query-form"]');
@@ -22,18 +59,10 @@ export function wireUpQueryItems({ api, store }) {
   const table = panel.querySelector("table.data-table");
   if (!table) return;
 
+  ensureCtrlTracking();
   buildGrantedItemsTable({ table, api, store });
 }
 
-/**
- * Build a table like:
- *
- *  ProviderID (header row)
- *    item_name        [Click to decrypt]
- *    item_name        [Click to decrypt]
- *
- * Items are grouped by provider_id from store.persistent.requester.items.
- */
 function buildGrantedItemsTable({ table, api, store }) {
   table.innerHTML = "";
 
@@ -61,7 +90,7 @@ function buildGrantedItemsTable({ table, api, store }) {
   }
 
   const providerIds = Object.keys(byProvider)
-    .filter(id => Array.isArray(byProvider[id]) && byProvider[id].length > 0)
+    .filter((id) => Array.isArray(byProvider[id]) && byProvider[id].length > 0)
     .sort();
 
   if (providerIds.length === 0) {
@@ -73,7 +102,6 @@ function buildGrantedItemsTable({ table, api, store }) {
     const items = byProvider[providerId];
     if (!Array.isArray(items) || items.length === 0) continue;
 
-    // Provider row
     const prow = document.createElement("tr");
     prow.className = "provider-row";
     prow.dataset.providerId = providerId;
@@ -87,7 +115,6 @@ function buildGrantedItemsTable({ table, api, store }) {
     prow.appendChild(pcell);
     tbody.appendChild(prow);
 
-    // Item rows are initially collapsed
     for (const it of items) {
       const irow = document.createElement("tr");
       irow.className = "provider-item-row";
@@ -100,29 +127,58 @@ function buildGrantedItemsTable({ table, api, store }) {
 
       const valueCell = document.createElement("td");
 
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "btn";
-      btn.textContent = "Click to decrypt";
+      const decryptBtn = document.createElement("button");
+      decryptBtn.type = "button";
+      decryptBtn.className = "btn";
+      decryptBtn.textContent = "Click to decrypt";
 
-      btn.addEventListener("click", () => {
+      decryptBtn.style.backgroundColor = "CornflowerBlue";
+
+      decryptBtn.addEventListener("click", () => {
         handleDecryptClick({
           api,
           store,
           providerId,
           requesterItemId: it.item_id,
-          valueCell,
-          button: btn,
+          button: decryptBtn,
         });
       });
 
-      valueCell.appendChild(btn);
+      const forgetBtn = document.createElement("button");
+      forgetBtn.type = "button";
+      forgetBtn.className = "btn";
+      forgetBtn.textContent = "Forget";
+      forgetBtn.style.marginLeft = "0.5rem";
+
+      forgetButtons.add(forgetBtn);
+      if (ctrlDown) {
+        forgetBtn.style.backgroundColor = "coral";
+      } else {
+        forgetBtn.style.backgroundColor = "gray";
+      }
+
+      forgetBtn.addEventListener("click", (ev) => {
+        if (!ev.ctrlKey || ev.button !== 0) {
+          return;
+        }
+
+        handleForgetRequesterItem({
+          store,
+          providerId,
+          requesterItemId: it.item_id,
+          row: irow,
+          table,
+          forgetBtn,
+        });
+      });
+
+      valueCell.appendChild(decryptBtn);
+      valueCell.appendChild(forgetBtn);
       irow.appendChild(nameCell);
       irow.appendChild(valueCell);
       tbody.appendChild(irow);
     }
 
-    // Toggle item rows when provider row is clicked
     prow.addEventListener("click", () => {
       const isOpen = prow.dataset.open === "1";
       prow.dataset.open = isOpen ? "0" : "1";
@@ -130,7 +186,7 @@ function buildGrantedItemsTable({ table, api, store }) {
       const rows = tbody.querySelectorAll(
         `tr.provider-item-row[data-provider-id="${providerId}"]`
       );
-      rows.forEach(r => {
+      rows.forEach((r) => {
         r.style.display = isOpen ? "none" : "";
       });
     });
@@ -144,7 +200,6 @@ async function handleDecryptClick({
   store,
   providerId,
   requesterItemId,
-  valueCell,
   button,
 }) {
   if (!store || !store.good) {
@@ -157,13 +212,13 @@ async function handleDecryptClick({
   const items = byProvider?.[providerId];
 
   if (!Array.isArray(items)) {
-    valueCell.textContent = "(missing requester metadata)";
+    button.textContent = "(missing requester metadata)";
     return;
   }
 
-  const entry = items.find(it => it.item_id === requesterItemId);
+  const entry = items.find((it) => it.item_id === requesterItemId);
   if (!entry || !entry.keys || !entry.keys.secret_key_b64) {
-    valueCell.textContent = "(missing key)";
+    button.textContent = "(missing key)";
     return;
   }
 
@@ -174,7 +229,7 @@ async function handleDecryptClick({
   const umbral = await loadUmbral();
   if (!umbral) {
     button.disabled = false;
-    valueCell.textContent = "(Umbral unavailable)";
+    button.textContent = "(Umbral unavailable)";
     setStateChip("Error", "err");
     setStatus("Umbral not available.", "err");
     return;
@@ -201,11 +256,11 @@ async function handleDecryptClick({
       );
     } catch (e) {
       if (e?.status === 404 && e?.data?.detail === "grant_not_found") {
-        valueCell.textContent = "(not granted)";
+        button.textContent = "(not granted)";
       } else if (e?.status === 404 && e?.data?.detail === "item_not_found") {
-        valueCell.textContent = "(item unavailable)";
+        button.textContent = "(item unavailable)";
       } else {
-        valueCell.textContent = "(request failed)";
+        button.textContent = "(request failed)";
       }
       return;
     }
@@ -233,7 +288,7 @@ async function handleDecryptClick({
     });
 
     if (!vcfrags.length) {
-      valueCell.textContent = "(no reencrypt fragments)";
+      button.textContent = "(no reencrypt fragments)";
       setStateChip("Error", "err");
       setStatus("No re-encryption fragments returned.", "err");
       return;
@@ -248,17 +303,74 @@ async function handleDecryptClick({
     );
     const plainText = dec.decode(ptBytes);
 
-    valueCell.textContent = plainText;
+    button.textContent = plainText;
     setStateChip("Done", "ok");
     setStatus("Item decrypted.", "ok");
   } catch (err) {
     console.error("decryptReencrypted failed", err);
-    valueCell.textContent = "(decrypt failed)";
+    button.textContent = "(decrypt failed)";
     setStateChip("Error", "err");
     setStatus(err?.message || "Failed to decrypt item.", "err");
   } finally {
     button.disabled = false;
   }
+}
+
+/* ------------- Forget handler ------------- */
+
+function handleForgetRequesterItem({
+  store,
+  providerId,
+  requesterItemId,
+  row,
+  table,
+  forgetBtn,
+}) {
+  const byProvider = store?.persistent?.requester?.items;
+  if (!byProvider || typeof byProvider !== "object") return;
+
+  const items = byProvider[providerId];
+  if (!Array.isArray(items)) return;
+
+  const idx = items.findIndex((it) => it.item_id === requesterItemId);
+  if (idx === -1) return;
+
+  items.splice(idx, 1);
+
+  if (row && row.parentNode) {
+    row.parentNode.removeChild(row);
+  }
+
+  if (forgetBtn) {
+    forgetButtons.delete(forgetBtn);
+  }
+
+  if (items.length === 0) {
+    delete byProvider[providerId];
+
+    const tbody = table.querySelector("tbody");
+    if (tbody) {
+      const providerRow = tbody.querySelector(
+        `tr.provider-row[data-provider-id="${providerId}"]`
+      );
+      if (providerRow && providerRow.parentNode) {
+        providerRow.parentNode.removeChild(providerRow);
+      }
+
+      const leftoverItemRows = tbody.querySelectorAll(
+        `tr.provider-item-row[data-provider-id="${providerId}"]`
+      );
+      leftoverItemRows.forEach((r) => r.parentNode && r.parentNode.removeChild(r));
+
+      const anyProviderRows = tbody.querySelector("tr.provider-row");
+      if (!anyProviderRows) {
+        tbody.innerHTML = "";
+        appendEmptyRow(tbody, "No granted items yet.");
+      }
+    }
+  }
+
+  needsSave(true);
 }
 
 /* ------------- Small helper ------------- */

@@ -21,6 +21,7 @@
       <h2 class="column-title">Navigation</h2>
       <div class="column-content">
         <button type="button" class="btn nav-btn" data-action="nav-view" data-view="share" aria-current="page">Share Item</button>
+        <button type="button" class="btn nav-btn" data-action="nav-view" data-view="overview">Overview</button>
         <button type="button" class="btn nav-btn" data-action="nav-view" data-view="builder">Request Builder</button>
         <button type="button" class="btn nav-btn" data-action="nav-view" data-view="query">Fetch Request</button>
 
@@ -92,6 +93,45 @@
       <h2 class="column-title">Inbound Requests</h2>
       <div class="table-scroll" id="requestsContainer">
         <div class="empty-state">No requests at this time</div>
+      </div>
+    </section>
+
+    <!-- Overview panel (provider role) -->
+    <section class="column panel" data-view="overview" data-slot="span" data-panel="overview" hidden inert>
+      <h2 class="column-title">Overview</h2>
+      <div class="column-content">
+        <div class="panel-toolbar">
+          <span class="muted">Group by:</span>
+          <button
+            type="button"
+            class="btn overview-mode-btn"
+            data-mode="by-item"
+            aria-pressed="true"
+          >
+            By Item
+          </button>
+          <button
+            type="button"
+            class="btn overview-mode-btn"
+            data-mode="by-requester"
+            aria-pressed="false"
+          >
+            By Requester
+          </button>
+        </div>
+
+        <div class="table-scroll">
+          <table class="data-table" aria-label="Grants overview table">
+            <thead>
+              <tr>
+                <th scope="col" data-overview-col="primary">Item / Requester</th>
+                <th scope="col" data-overview-col="secondary">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
 

@@ -73,6 +73,9 @@ export class CRSClient {
   listMyItems(rest) {
     return this._fetch("/api/list_my_items", { method: "GET", ...(rest||{}) });
   }
+  listMyGrants(rest) {
+    return this._fetch("/api/list_my_grants", { method: "GET", ...(rest || {}) });
+  }
 
   // ---------- Post Office (Solicitations) ----------
   pushSolicitation(provider_id, payload_b64, rest) {

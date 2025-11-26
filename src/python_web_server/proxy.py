@@ -926,6 +926,31 @@ def api_list_my_items(request: Request):
     ]
     return {"items": items}
 
+@app.get("/api/list_my_grants")
+def api_list_my_grants(request: Request):
+    provider_id = request.state.user_id
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT requester_id, provider_item_id, requester_item_id
+            FROM grants
+            WHERE provider_id = %s
+            ORDER BY provider_item_id, requester_id, requester_item_id
+            """,
+            (provider_id,),
+        ).fetchall()
+
+    grants = [
+        {
+            "requester_id": str(row[0]),
+            "provider_item_id": row[1],
+            "requester_item_id": row[2],
+        }
+        for row in rows
+    ]
+
+    return {"grants": grants}
 
 # =================== Application ===================
 

@@ -9,6 +9,7 @@ import { wireUpRequestBuilder } from "/app/request-builder.js";
 import { wireUpInboundRequests } from "/app/inbound-request.js";
 import { wireUpQueryItems } from "/app/fetch-items.js";
 import { wireUpLogout, wireUpUnexpectedExit } from "/app/logout.js";
+import { wireUpOverview } from "/app/overview.js";
 
 const { is_owner_tab, passkey } = initUser();
 const api = new CRSClient();
@@ -38,6 +39,7 @@ if (is_owner_tab) {
   await wireUpInboundRequests({ api, store });
   await wireUpRequestBuilder({ api, store });
   await wireUpQueryItems({ api, store });
+  await wireUpOverview({ api, store });
 } else {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay open";

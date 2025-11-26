@@ -15,6 +15,10 @@ let ctrlDown = false;
 const forgetButtons = new Set();
 let ctrlListenersAttached = false;
 
+let currentApi = null;
+let currentStore = null;
+let currentTable = null;
+
 function ensureCtrlTracking() {
   if (ctrlListenersAttached) return;
   ctrlListenersAttached = true;
@@ -59,12 +63,26 @@ export function wireUpQueryItems({ api, store }) {
   const table = panel.querySelector("table.data-table");
   if (!table) return;
 
+  currentApi = api;
+  currentStore = store;
+  currentTable = table;
+
   ensureCtrlTracking();
   buildGrantedItemsTable({ table, api, store });
 }
 
+window.addEventListener("requester-items-updated", () => {
+  if (!currentApi || !currentStore || !currentTable) return;
+  buildGrantedItemsTable({
+    table: currentTable,
+    api: currentApi,
+    store: currentStore,
+  });
+});
+
 function buildGrantedItemsTable({ table, api, store }) {
   table.innerHTML = "";
+  forgetButtons.clear();
 
   const thead = document.createElement("thead");
   const tbody = document.createElement("tbody");

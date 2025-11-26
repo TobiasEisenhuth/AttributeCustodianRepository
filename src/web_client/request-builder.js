@@ -150,14 +150,14 @@ export function wireUpRequestBuilder({ api, store }) {
     applyBtn.dataset.busy = "1";
     applyBtn.disabled = true;
 
-    const umbral = await loadUmbral();
-    if (!umbral) {
-      setStateChip("Error", "err");
-      setStatus("Umbral not available.", "err");
-      return;
-    }
-
     try {
+      const umbral = await loadUmbral();
+      if (!umbral) {
+        setStateChip("Error", "err");
+        setStatus("Umbral not available.", "err");
+        return;
+      }
+
       const { info, provider_id, inputs } = readForm(table);
       if (!info) throw new Error("Please fill Info String.");
       if (!provider_id) throw new Error("Please fill Addressee.");
@@ -236,6 +236,8 @@ export function wireUpRequestBuilder({ api, store }) {
       for (const entry of stagedNewItems) {
         requesterItems.push(entry);
       }
+
+      window.dispatchEvent(new Event("requester-items-updated"));
 
       needsSave(true);
       resetBuilderTable(table);

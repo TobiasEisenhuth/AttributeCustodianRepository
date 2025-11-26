@@ -34,7 +34,9 @@ export function wireUpOverview({ api, store }) {
     });
   }
 
-  async function renderOverview() {
+  async function renderOverview(options = {}) {
+    const { focusItemId = null, focusRequesterId = null } = options || {};
+
     tbody.innerHTML = "";
 
     let res;
@@ -72,7 +74,7 @@ export function wireUpOverview({ api, store }) {
 
       let valueStr = undefined;
       if (providerValues && typeof providerValues.get === "function") {
-        const raw = providerValues.get(itemId);  // <- Map lookup
+        const raw = providerValues.get(itemId);  // Map lookup
         if (raw !== undefined && raw !== null) {
           valueStr = String(raw);               // plain_value -> string
         }
@@ -91,10 +93,35 @@ export function wireUpOverview({ api, store }) {
       return;
     }
 
+    // Jump helpers (used by ctrl+click in child rows)
+    const jumpToRequester = (requesterId) => {
+      if (!requesterId) return;
+      currentMode = "by-requester";
+      updateModeButtonState();
+      renderOverview({ focusRequesterId: requesterId }).catch((err) =>
+        console.error("Overview render failed on jumpToRequester", err)
+      );
+    };
+
+    const jumpToItem = (itemId) => {
+      if (!itemId) return;
+      currentMode = "by-item";
+      updateModeButtonState();
+      renderOverview({ focusItemId: itemId }).catch((err) =>
+        console.error("Overview render failed on jumpToItem", err)
+      );
+    };
+
     if (currentMode === "by-requester") {
-      renderByRequester(tbody, grants);
+      renderByRequester(tbody, grants, { onJumpToItem: jumpToItem });
+      if (focusRequesterId) {
+        focusAndExpandRequesterRow(tbody, focusRequesterId);
+      }
     } else {
-      renderByItem(tbody, grants);
+      renderByItem(tbody, grants, { onJumpToRequester: jumpToRequester });
+      if (focusItemId) {
+        focusAndExpandItemRow(tbody, focusItemId);
+      }
     }
   }
 
@@ -146,7 +173,8 @@ export function wireUpOverview({ api, store }) {
 
 /* ---------- Mode: By Item ---------- */
 
-function renderByItem(tbody, grants) {
+function renderByItem(tbody, grants, opts = {}) {
+  const { onJumpToRequester } = opts || {};
   const byItem = new Map();
 
   for (const g of grants) {
@@ -209,6 +237,7 @@ function renderByItem(tbody, grants) {
       const row = document.createElement("tr");
       row.className = "overview-item-grant-row";
       row.dataset.itemId = group.itemId;
+      row.dataset.requesterId = g.requester_id;
       row.style.display = "none";
 
       const primary = document.createElement("td");
@@ -223,6 +252,16 @@ function renderByItem(tbody, grants) {
       row.appendChild(primary);
       row.appendChild(secondary);
       tbody.appendChild(row);
+
+      // Ctrl+click on requester -> jump to "By Requester" for that requester
+      row.addEventListener("click", (ev) => {
+        if (!(ev.ctrlKey && ev.button === 0)) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof onJumpToRequester === "function") {
+          onJumpToRequester(g.requester_id);
+        }
+      });
     }
 
     prow.style.cursor = "pointer";
@@ -244,7 +283,8 @@ function renderByItem(tbody, grants) {
 
 /* ---------- Mode: By Requester ---------- */
 
-function renderByRequester(tbody, grants) {
+function renderByRequester(tbody, grants, opts = {}) {
+  const { onJumpToItem } = opts || {};
   const byRequester = new Map();
 
   for (const g of grants) {
@@ -302,6 +342,7 @@ function renderByRequester(tbody, grants) {
       const row = document.createElement("tr");
       row.className = "overview-requester-grant-row";
       row.dataset.requesterId = group.requesterId;
+      row.dataset.itemId = g.provider_item_id;
       row.style.display = "none";
 
       const primary = document.createElement("td");
@@ -316,6 +357,16 @@ function renderByRequester(tbody, grants) {
       row.appendChild(primary);
       row.appendChild(secondary);
       tbody.appendChild(row);
+
+      // Ctrl+click on item -> jump to "By Item" for that item
+      row.addEventListener("click", (ev) => {
+        if (!(ev.ctrlKey && ev.button === 0)) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (typeof onJumpToItem === "function") {
+          onJumpToItem(g.provider_item_id);
+        }
+      });
     }
 
     prow.style.cursor = "pointer";
@@ -347,6 +398,64 @@ function updateRequesterRowLabel(prow, nameCell) {
   const arrow = prow.dataset.open === "1" ? "▼" : "▶";
   const base  = nameCell.dataset.labelBase || "";
   nameCell.textContent = `${arrow} ${base}`;
+}
+
+/* ---------- Focus & expand helpers ---------- */
+
+function focusAndExpandItemRow(tbody, itemId) {
+  if (!itemId) return;
+  const prow = tbody.querySelector(
+    `tr.overview-item-row[data-item-id="${itemId}"]`
+  );
+  if (!prow) return;
+
+  const nameCell = prow.querySelector("td");
+  prow.dataset.open = "1";
+
+  const rows = tbody.querySelectorAll(
+    `tr.overview-item-grant-row[data-item-id="${itemId}"]`
+  );
+  rows.forEach((r) => {
+    r.style.display = "";
+  });
+
+  if (nameCell) {
+    updateItemRowLabel(prow, nameCell);
+  }
+
+  if (!prow.hasAttribute("tabindex")) {
+    prow.setAttribute("tabindex", "-1");
+  }
+  prow.focus({ preventScroll: false });
+  prow.scrollIntoView({ block: "nearest" });
+}
+
+function focusAndExpandRequesterRow(tbody, requesterId) {
+  if (!requesterId) return;
+  const prow = tbody.querySelector(
+    `tr.overview-requester-row[data-requester-id="${requesterId}"]`
+  );
+  if (!prow) return;
+
+  const nameCell = prow.querySelector("td");
+  prow.dataset.open = "1";
+
+  const rows = tbody.querySelectorAll(
+    `tr.overview-requester-grant-row[data-requester-id="${requesterId}"]`
+  );
+  rows.forEach((r) => {
+    r.style.display = "";
+  });
+
+  if (nameCell) {
+    updateRequesterRowLabel(prow, nameCell);
+  }
+
+  if (!prow.hasAttribute("tabindex")) {
+    prow.setAttribute("tabindex", "-1");
+  }
+  prow.focus({ preventScroll: false });
+  prow.scrollIntoView({ block: "nearest" });
 }
 
 /* ---------- Small helper ---------- */

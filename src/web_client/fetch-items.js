@@ -132,8 +132,6 @@ function buildGrantedItemsTable({ table, api, store }) {
       decryptBtn.className = "btn";
       decryptBtn.textContent = "Click to decrypt";
 
-      decryptBtn.style.backgroundColor = "CornflowerBlue";
-
       decryptBtn.addEventListener("click", () => {
         handleDecryptClick({
           api,
@@ -157,12 +155,13 @@ function buildGrantedItemsTable({ table, api, store }) {
         forgetBtn.style.backgroundColor = "gray";
       }
 
-      forgetBtn.addEventListener("click", (ev) => {
+      forgetBtn.addEventListener("click", async (ev) => {
         if (!ev.ctrlKey || ev.button !== 0) {
           return;
         }
 
-        handleForgetRequesterItem({
+        await handleForgetRequesterItem({
+          api,
           store,
           providerId,
           requesterItemId: it.item_id,
@@ -306,6 +305,11 @@ async function handleDecryptClick({
     button.textContent = plainText;
     setStateChip("Done", "ok");
     setStatus("Item decrypted.", "ok");
+
+    if (entry.request_id) {
+      delete entry.request_id;
+      needsSave(true);
+    }
   } catch (err) {
     console.error("decryptReencrypted failed", err);
     button.textContent = "(decrypt failed)";
@@ -318,7 +322,8 @@ async function handleDecryptClick({
 
 /* ------------- Forget handler ------------- */
 
-function handleForgetRequesterItem({
+async function handleForgetRequesterItem({
+  api,
   store,
   providerId,
   requesterItemId,
@@ -334,6 +339,71 @@ function handleForgetRequesterItem({
 
   const idx = items.findIndex((it) => it.item_id === requesterItemId);
   if (idx === -1) return;
+
+  const entry = items[idx];
+
+  forgetBtn.disabled = true;
+
+  if (entry.request_id) {
+    setStateChip("Checking…", "warn");
+    setStatus("Verifying that the request has been processed…", "warn");
+
+    try {
+      const resp = await api.checkSolicitationStatus(entry.request_id);
+      const pending = !!resp?.pending;
+
+      if (pending) {
+        setStateChip("Pending", "warn");
+        setStatus(
+          "This item is part of a pending request. Try again after the provider has processed it.",
+          "warn"
+        );
+        forgetBtn.disabled = false;
+        return;
+      }
+    } catch (err) {
+      if (err?.status === 404) {
+        console.info(
+          "Solicitation not found for request_id; treating as processed.",
+          entry.request_id
+        );
+      } else {
+        console.error("Failed to check solicitation status", err);
+        setStateChip("Error", "err");
+        setStatus(
+          "Could not verify whether the request was processed. Not deleting.",
+          "err"
+        );
+        forgetBtn.disabled = false;
+        return;
+      }
+    }
+  }
+
+  setStateChip("Revoking…", "warn");
+  setStatus("Revoking grant on server…", "warn");
+  try {
+    await api.dismissGrant({
+      provider_id: providerId,
+      requester_item_id: requesterItemId,
+    });
+  } catch (err) {
+    if (err?.status === 404 && err?.data?.detail === "grant_not_found") {
+      console.info(
+        "Grant not found on server when dismissing; treating as already revoked.",
+        { providerId, requesterItemId }
+      );
+    } else {
+      console.error("Failed to dismiss grant on server", err);
+      setStateChip("Error", "err");
+      setStatus(
+        "Could not revoke grant on server. Not deleting locally.",
+        "err"
+      );
+      forgetBtn.disabled = false;
+      return;
+    }
+  }
 
   items.splice(idx, 1);
 
@@ -371,6 +441,9 @@ function handleForgetRequesterItem({
   }
 
   needsSave(true);
+  setStateChip("Forgotten", "ok");
+  setStatus("Item removed and grant revoked.", "ok");
+  forgetBtn.disabled = false;
 }
 
 /* ------------- Small helper ------------- */

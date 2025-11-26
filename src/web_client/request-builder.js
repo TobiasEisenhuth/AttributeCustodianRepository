@@ -192,6 +192,7 @@ export function wireUpRequestBuilder({ api, store }) {
           item_name: item.item_name,
           keys: { secret_key_b64: bytesToBase64(sk.toBEBytes()) },
           last_touched: created_at,
+          // request_id will be attached after server responds
         });
 
         itemsForRequest.push({
@@ -218,6 +219,13 @@ export function wireUpRequestBuilder({ api, store }) {
           throw new Error("You cannot send a request to yourself.");
         }
         throw err;
+      }
+
+      const request_id = res?.request_id;
+      if (request_id) {
+        for (const entry of stagedNewItems) {
+          entry.request_id = request_id;
+        }
       }
 
       let requesterItems = requesterByProvider[provider_id];

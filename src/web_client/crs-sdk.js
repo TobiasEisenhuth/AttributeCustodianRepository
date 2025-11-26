@@ -24,7 +24,7 @@ export class CRSClient {
     let data = null;
     try { data = await res.json(); } catch {}
 
-    if (this._onSessionTouched) {
+    if (this._onSessionTouched && path.startsWith("/api/") && res.ok) {
       try {
         this._onSessionTouched();
       } catch (e) {
@@ -93,6 +93,7 @@ export class CRSClient {
   }
 
   // ---------- CRS (PRE) ----------
+  // provider role
   upsertItem(b, rest) {
     return this._fetch("/api/upsert_item", { body: b, ...(rest||{}) });
   }
@@ -108,8 +109,21 @@ export class CRSClient {
       ...(rest||{}),
     });
   }
+  // requester role
   requestItem(b, rest) {
     return this._fetch("/api/request_item", { body: b, ...(rest||{}) });
+  }
+  checkSolicitationStatus(request_id, rest) {
+    return this._fetch("/api/solicitation_status", {
+      body: { request_id },
+      ...(rest || {}),
+    });
+  }
+  dismissGrant({ provider_id, requester_item_id }, rest) {
+    return this._fetch("/api/dismiss_grant", {
+      body: { provider_id, requester_item_id },
+      ...(rest || {}),
+    });
   }
 
   refreshSessionTTL(rest) {

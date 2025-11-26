@@ -48,8 +48,8 @@ from common import (
     LoginRequest, Password,
     UpsertItemRequest, EraseItemRequest,
     GrantAccessRequest, RevokeAccessRequest,
-    RequestItemRequest,
-    SaveToVaultRequest,
+    RequestItemRequest, DismissGrantRequest,
+    SaveToVaultRequest, SolicitationStatusRequest,
     PushSolicitationRequest, PullSolicitationBundleRequest, AckSolicitationRequest
 )
 
@@ -848,6 +848,59 @@ def api_request_item(request: Request, body: RequestItemRequest):
         "delegating_pk_b64": _transport_safe_b_string(spk_b),
         "verifying_pk_b64": _transport_safe_b_string(svk_b),
     }
+
+@app.post("/api/dismiss_grant")
+def api_dismiss_grant(request: Request, body: DismissGrantRequest):
+    requester_id = request.state.user_id
+
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT canonical_item_id
+            FROM requester_item_aliases
+            WHERE provider_id = %s
+              AND requester_id = %s
+              AND alias_item_id = %s
+            """,
+            (body.provider_id, requester_id, body.requester_item_id),
+        ).fetchone()
+
+        effective_requester_item_id = row[0] if row else body.requester_item_id
+
+        cur = conn.execute(
+            """
+            DELETE FROM grants
+            WHERE provider_id = %s
+              AND requester_id = %s
+              AND requester_item_id = %s
+            """,
+            (body.provider_id, requester_id, effective_requester_item_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="grant_not_found")
+
+    return _ok()
+
+
+@app.post("/api/solicitation_status")
+def api_solicitation_status(request: Request, body: SolicitationStatusRequest):
+    requester_id = request.state.user_id
+
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM solicitations
+            WHERE request_id = %s
+              AND requester_id = %s
+            """,
+            (body.request_id, requester_id),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    return {"pending": True}
 
 @app.get("/api/list_my_items")
 def api_list_my_items(request: Request):

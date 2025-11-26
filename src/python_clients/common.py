@@ -36,6 +36,10 @@ class RequestItemRequest(BaseModel):
     requester_item_id: str
     requester_public_key_b64: str
 
+class DismissGrantRequest(BaseModel):
+    provider_id: UUID
+    requester_item_id: str
+
 class SaveToVaultRequest(BaseModel):
     envelope_b64: str
 
@@ -45,6 +49,9 @@ class PushSolicitationRequest(BaseModel):
 
 class PullSolicitationBundleRequest(BaseModel):
     pass
+
+class SolicitationStatusRequest(BaseModel):
+    request_id: UUID
 
 class AckSolicitationRequest(BaseModel):
     request_id: UUID

@@ -48,7 +48,7 @@ from common import (
     LoginRequest, Password,
     UpsertItemRequest, EraseItemRequest,
     GrantAccessRequest, RevokeAccessRequest,
-    RequestItemRequest, DismissGrantRequest,
+    ResolveRequesterItemRequest, RequestItemRequest, DismissGrantRequest,
     SaveToVaultRequest, SolicitationStatusRequest,
     PushSolicitationRequest, PullSolicitationBundleRequest, AckSolicitationRequest
 )
@@ -809,23 +809,54 @@ def api_revoke_access(request: Request, body: RevokeAccessRequest):
 
     return _ok()
 
+@app.post("/api/resolve_requester_item_id")
+def api_resolve_requester_item_id(request: Request, body: ResolveRequesterItemRequest):
+    requester_id = request.state.user_id
+
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT canonical_item_id
+            FROM requester_item_aliases
+            WHERE provider_id = %s
+              AND requester_id = %s
+              AND alias_item_id = %s
+            """,
+            (body.provider_id, requester_id, body.requester_item_id),
+        ).fetchone()
+
+    if not row:
+        return {
+            "is_alias": False,
+            "canonical_requester_item_id": body.requester_item_id,
+        }
+
+    canonical_item_id = row[0]
+    return {
+        "is_alias": True,
+        "canonical_requester_item_id": canonical_item_id,
+    }
+
 @app.post("/api/request_item")
 def api_request_item(request: Request, body: RequestItemRequest):
     requester_id = request.state.user_id
 
     try:
-        requester_pk = PublicKey.from_compressed_bytes(b64decode(body.requester_public_key_b64))
+        requester_pk = PublicKey.from_compressed_bytes(
+            b64decode(body.requester_public_key_b64)
+        )
     except Exception:
         raise HTTPException(status_code=400, detail="bad_requester_public_key")
 
     with get_conn() as conn:
-        grant_row = conn.execute("""
+        grant_row = conn.execute(
+            """
             SELECT provider_item_id, kfrags_b
             FROM grants
             WHERE provider_id=%s
               AND requester_id=%s
               AND requester_item_id=%s
-        """,
+            """,
             (body.provider_id, requester_id, body.requester_item_id),
         ).fetchone()
 
@@ -837,11 +868,12 @@ def api_request_item(request: Request, body: RequestItemRequest):
     kfrags: List[KeyFrag] = [KeyFrag.from_bytes(b) for b in kfrag_bytes_list]
 
     with get_conn() as conn:
-        bundle_row = conn.execute("""
+        bundle_row = conn.execute(
+            """
             SELECT capsule, ciphertext, provider_public_key, provider_verifying_key
             FROM crypto_bundle
             WHERE user_id=%s AND item_id=%s
-        """,
+            """,
             (body.provider_id, provider_item_id),
         ).fetchone()
 

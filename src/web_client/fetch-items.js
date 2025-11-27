@@ -235,7 +235,23 @@ async function handleDecryptClick({
     return;
   }
 
-  const entry = items.find((it) => it.item_id === requesterItemId);
+  let effectiveItemId = requesterItemId;
+  try {
+    const aliasResp = await api.resolveRequesterItemId({
+      provider_id: providerId,
+      requester_item_id: requesterItemId,
+    });
+    if (aliasResp && aliasResp.canonical_requester_item_id) {
+      effectiveItemId = aliasResp.canonical_requester_item_id;
+    }
+  } catch (e) {
+    console.warn("resolveRequesterItemId failed; using original id", e);
+  }
+
+  let entry =
+    items.find((it) => it.item_id === effectiveItemId) ||
+    items.find((it) => it.item_id === requesterItemId);
+
   if (!entry || !entry.keys || !entry.keys.secret_key_b64) {
     button.textContent = "(missing key)";
     return;
@@ -268,7 +284,7 @@ async function handleDecryptClick({
       resp = await api.requestItem(
         {
           provider_id: providerId,
-          requester_item_id: requesterItemId,
+          requester_item_id: effectiveItemId,
           requester_public_key_b64,
         },
         { signal: AbortSignal.timeout?.(15000) }

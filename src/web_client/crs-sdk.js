@@ -113,6 +113,9 @@ export class CRSClient {
     });
   }
   // requester role
+  resolveRequesterItemId(b, rest) {
+    return this._fetch("/api/resolve_requester_item_id", { body: b, ...(rest||{}) });
+  }
   requestItem(b, rest) {
     return this._fetch("/api/request_item", { body: b, ...(rest||{}) });
   }

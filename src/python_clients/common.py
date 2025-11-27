@@ -31,6 +31,10 @@ class RevokeAccessRequest(BaseModel):
     requester_id: UUID
     provider_item_id: str
 
+class ResolveRequesterItemRequest(BaseModel):
+    provider_id: UUID
+    requester_item_id: str
+
 class RequestItemRequest(BaseModel):
     provider_id: UUID
     requester_item_id: str

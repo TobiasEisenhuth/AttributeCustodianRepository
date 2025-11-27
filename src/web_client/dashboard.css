@@ -238,3 +238,7 @@ input[type="text"][readonly] { cursor: default; }
 #app-statusbar .spacer {
   flex: 1;
 }
+
+.overview-highlight {
+  background-color: rgba(255, 165, 0, 0.12); /* subtle orange-ish */
+}

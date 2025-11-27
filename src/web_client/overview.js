@@ -351,8 +351,7 @@ function renderByRequester(tbody, grants, opts = {}) {
       primary.style.paddingLeft = "1.5rem";
 
       const secondary = document.createElement("td");
-      // Here the valueStr lives naturally next to the item name
-      secondary.textContent = g.provider_valueStr || "";
+      secondary.textContent = g.provider_item_id || "";
 
       row.appendChild(primary);
       row.appendChild(secondary);
@@ -400,7 +399,14 @@ function updateRequesterRowLabel(prow, nameCell) {
   nameCell.textContent = `${arrow} ${base}`;
 }
 
-/* ---------- Focus & expand helpers ---------- */
+/* ---------- Focus & expand helpers with highlight ---------- */
+
+function clearOverviewHighlight(tbody) {
+  const prev = tbody.querySelector("tr.overview-highlight");
+  if (prev) {
+    prev.classList.remove("overview-highlight");
+  }
+}
 
 function focusAndExpandItemRow(tbody, itemId) {
   if (!itemId) return;
@@ -422,6 +428,9 @@ function focusAndExpandItemRow(tbody, itemId) {
   if (nameCell) {
     updateItemRowLabel(prow, nameCell);
   }
+
+  clearOverviewHighlight(tbody);
+  prow.classList.add("overview-highlight");
 
   if (!prow.hasAttribute("tabindex")) {
     prow.setAttribute("tabindex", "-1");
@@ -450,6 +459,9 @@ function focusAndExpandRequesterRow(tbody, requesterId) {
   if (nameCell) {
     updateRequesterRowLabel(prow, nameCell);
   }
+
+  clearOverviewHighlight(tbody);
+  prow.classList.add("overview-highlight");
 
   if (!prow.hasAttribute("tabindex")) {
     prow.setAttribute("tabindex", "-1");

@@ -4,9 +4,21 @@
 
 html, body { height: 100%; }
 
+html {
+  font-size: 14px; /* or 15/16 if you want larger */
+}
+
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  font-family:
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    "Liberation Mono",
+    "Courier New",
+    monospace;
   line-height: 1.4;
   display: flex;
   flex-direction: column;
@@ -200,6 +212,13 @@ input[type="text"][readonly] { cursor: default; }
 .page-meter {
   margin-bottom: 5vh;
   padding-inline: clamp(1rem, 4vw, 2.5rem);
+}
+
+.page-meter-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  /*margin-bottom: 2vh;*/
 }
 
 .page-meter meter {

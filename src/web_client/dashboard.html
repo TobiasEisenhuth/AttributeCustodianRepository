@@ -12,8 +12,14 @@
 <body>
 
   <div class="page-meter">
+    <div class="page-meter-header">
+      <span class="muted meter-hint">Auto-Save & Auto-Log-Out</span>
+      <button id="session-refresh-btn" class="btn" type="button">
+        Refresh Session
+      </button>
+    </div>
+
     <meter id="page-meter" min="0" max="100" value="0"></meter>
-    <button id="session-refresh-btn" type="button">Refresh</button>
   </div>
 
   <div class="dashboard">
@@ -27,7 +33,7 @@
 
         <hr class="muted" aria-hidden="true" />
 
-        <button type="button" class="btn" data-action="logout">Log out</button>
+        <button type="button" class="btn" data-action="logout">Save & Log Out</button>
       </div>
     </aside>
 

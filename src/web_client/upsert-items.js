@@ -14,6 +14,15 @@ import {
 } from "/app/utils.js";
 import { updateProviderDatalist } from "/app/inbound-request.js";
 
+const eraseButtons = new Set();
+
+function refreshEraseButtons() {
+  const ctrlDown = document.body.classList.contains("ctrl-down");
+  for (const btn of eraseButtons) {
+    btn.style.backgroundColor = ctrlDown ? "coral" : "gray";
+  }
+}
+
 export async function revokeGrant(api, grant) {
   return api.revokeAccess({
     requester_id: grant.requester_id,
@@ -31,6 +40,10 @@ function removeLocalItem(store, itemId, tr) {
   store?.ephemeral?.provider?.values?.delete(itemId);
 
   if (tr && tr.parentNode) {
+    const btn = tr.querySelector(".btn-erase");
+    if (btn && eraseButtons.has(btn)) {
+      eraseButtons.delete(btn);
+    }
     tr.parentNode.removeChild(tr);
   }
 }
@@ -202,7 +215,6 @@ async function handleEraseItemClick(api, store, itemId, tr) {
   }
 }
 
-
 export function appendRowToGui(api, store, itemName, valueStr, itemId) {
   const panel = document.querySelector('.panel[data-panel="personal"]');
   const tbody = panel?.querySelector("tbody");
@@ -216,8 +228,12 @@ export function appendRowToGui(api, store, itemName, valueStr, itemId) {
 
   const td2 = document.createElement("td");
   {
+    const rowContainer = document.createElement("div");
+    rowContainer.style.display = "flex";
+    rowContainer.style.alignItems = "center";
+
     const { wrapper } = makePersonalCell(valueStr, "Value");
-    td2.appendChild(wrapper);
+    rowContainer.appendChild(wrapper);
 
     if (api && store && itemId) {
       const eraseBtn = document.createElement("button");
@@ -226,12 +242,19 @@ export function appendRowToGui(api, store, itemName, valueStr, itemId) {
       eraseBtn.textContent = "Erase";
       eraseBtn.style.marginLeft = "0.5rem";
 
-      eraseBtn.addEventListener("click", () => {
+      eraseButtons.add(eraseBtn);
+      const ctrlDown = document.body.classList.contains("ctrl-down");
+      eraseBtn.style.backgroundColor = ctrlDown ? "coral" : "gray";
+
+      eraseBtn.addEventListener("click", (ev) => {
+        if (!(ev.ctrlKey && ev.button === 0)) return;
         void handleEraseItemClick(api, store, itemId, tr);
       });
 
-      td2.appendChild(eraseBtn);
+      rowContainer.appendChild(eraseBtn);
     }
+
+    td2.appendChild(rowContainer);
   }
 
   tr.appendChild(td1);
@@ -448,7 +471,11 @@ export function wireUpItemUpdate({ api, store }) {
     wrapper.classList.add("read-mode");
   };
 
-  const setCtrlDown = (on) => document.body.classList.toggle("ctrl-down", !!on);
+  const setCtrlDown = (on) => {
+    document.body.classList.toggle("ctrl-down", !!on);
+    refreshEraseButtons();
+  };
+
   document.addEventListener("keydown", (ev) => { if (ev.ctrlKey) setCtrlDown(true); });
   document.addEventListener("keyup", (ev) => { if (ev.key === "Control" || !ev.ctrlKey) setCtrlDown(false); });
   window.addEventListener("blur", () => setCtrlDown(false));

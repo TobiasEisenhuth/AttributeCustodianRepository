@@ -26,9 +26,11 @@ function ensureCtrlTracking() {
   const refreshAllForgetButtons = () => {
     for (const btn of forgetButtons) {
       if (ctrlDown) {
-        btn.style.backgroundColor = "coral";
+        btn.classList.add("btn-armed");
+        btn.classList.remove("btn-disarmed");
       } else {
-        btn.style.backgroundColor = "gray";
+        btn.classList.remove("btn-armed");
+        btn.classList.add("btn-disarmed");
       }
     }
   };
@@ -168,9 +170,9 @@ function buildGrantedItemsTable({ table, api, store }) {
 
       forgetButtons.add(forgetBtn);
       if (ctrlDown) {
-        forgetBtn.style.backgroundColor = "coral";
+        forgetBtn.classList.add("btn-armed");
       } else {
-        forgetBtn.style.backgroundColor = "gray";
+        forgetBtn.classList.add("btn-disarmed");
       }
 
       forgetBtn.addEventListener("click", async (ev) => {

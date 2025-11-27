@@ -19,9 +19,16 @@ const eraseButtons = new Set();
 function refreshEraseButtons() {
   const ctrlDown = document.body.classList.contains("ctrl-down");
   for (const btn of eraseButtons) {
-    btn.style.backgroundColor = ctrlDown ? "coral" : "gray";
+    if (ctrlDown) {
+      btn.classList.add("btn-armed");
+      btn.classList.remove("btn-disarmed");
+    } else {
+      btn.classList.remove("btn-armed");
+      btn.classList.add("btn-disarmed");
+    }
   }
 }
+
 
 export async function revokeGrant(api, grant) {
   return api.revokeAccess({
@@ -46,6 +53,11 @@ function removeLocalItem(store, itemId, tr) {
     }
     tr.parentNode.removeChild(tr);
   }
+
+  needsSave(true);
+  // todo - remove for production
+  try { sessionStorage.setItem("crs:store", JSON.stringify(store)); } catch {}
+  updateProviderDatalist(store);
 }
 
 function showEraseBlockedOverlay(api, store, itemId, tr, grants) {
@@ -243,8 +255,13 @@ export function appendRowToGui(api, store, itemName, valueStr, itemId) {
       eraseBtn.style.marginLeft = "0.5rem";
 
       eraseButtons.add(eraseBtn);
+
       const ctrlDown = document.body.classList.contains("ctrl-down");
-      eraseBtn.style.backgroundColor = ctrlDown ? "coral" : "gray";
+      if (ctrlDown) {
+        eraseBtn.classList.add("btn-armed");
+      } else {
+        eraseBtn.classList.add("btn-disarmed");
+      }
 
       eraseBtn.addEventListener("click", (ev) => {
         if (!(ev.ctrlKey && ev.button === 0)) return;

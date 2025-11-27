@@ -76,7 +76,7 @@ body {
 .panel + .panel { border-left: 1px solid #f0f0f0; }
 
 /* Buttons */
-.add-row-btn, .btn {
+.add-row-btn, .btn-erase, .btn-forget, .btn {
   display: inline-block; margin: 0; padding: 6px 10px;
   border: 1px solid #ddd; background: #fff; border-radius: 4px;
   font: inherit; cursor: pointer;
@@ -85,6 +85,17 @@ body {
 .btn.primary { border-color: #999; }
 
 button:disabled { opacity: .6; pointer-events: none; }
+
+/* When "armed" via Ctrl */
+.btn-armed {
+  background: coral;
+}
+
+/* When "idling" but still available */
+.btn-disarmed {
+  opacity: 0.6;
+}
+
 
 /* Tables */
 .data-table { width: 100%; border-collapse: collapse; table-layout: fixed; }

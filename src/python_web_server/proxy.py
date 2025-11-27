@@ -408,7 +408,7 @@ PRE_LOGIN_PATHS = {
 async def gatekeeper(request: Request, call_next):
     path = request.url.path
 
-    # auth Backend always availbale
+    # auth Backend always available
     if path.startswith("/auth/"):
         return await call_next(request)
 
@@ -434,7 +434,15 @@ async def gatekeeper(request: Request, call_next):
     if path in PRE_LOGIN_PATHS:
         if path == LOGIN_PAGE and logged_in:
             return RedirectResponse(DASHBOARD_PAGE, status_code=303)
-        return await call_next(request)
+
+        response = await call_next(request)
+
+        if path == LOGIN_PAGE:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+
+        return response
 
     # not serving anything web without login
     if not logged_in:
@@ -451,6 +459,13 @@ async def gatekeeper(request: Request, call_next):
 
 @app.post("/auth/register")
 def auth_register(req: Request, body: LoginRequest):
+    existing = get_session_user_by_request(req)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="An active session already exists in this browser. Please log out before creating a new account."
+        )
+
     user_id = create_user(body.email, body.password)
     token = create_session(user_id, req)
     resp = _ok({"ok": True})
@@ -461,6 +476,13 @@ DUMMY_HASH = ph.hash("€0nStDumrnyPW-15")
 
 @app.post("/auth/login")
 def auth_login(req: Request, body: LoginRequest):
+    existing = get_session_user_by_request(req)
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="An active session already exists in this browser. Please log out before logging in again."
+        )
+
     user_entry = get_user_by_email(body.email)
     stored_hash = (user_entry or {}).get("password_hash") or DUMMY_HASH
 
@@ -476,7 +498,10 @@ def auth_login(req: Request, body: LoginRequest):
     if ph.check_needs_rehash(stored_hash):
         new_hash = ph.hash(body.password)
         with get_conn() as conn:
-            conn.execute("UPDATE users SET password_hash=%s WHERE user_id=%s", (new_hash, user_entry["user_id"]))
+            conn.execute(
+                "UPDATE users SET password_hash=%s WHERE user_id=%s",
+                (new_hash, user_entry["user_id"])
+            )
 
     token = create_session(user_entry["user_id"], req)
     resp = _ok({"ok": True})

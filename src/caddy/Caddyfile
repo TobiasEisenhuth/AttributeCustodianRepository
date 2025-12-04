@@ -1,11 +1,16 @@
-app.localhost:443 {
-    tls /etc/ssl/local/app.localhost.pem /etc/ssl/local/app.localhost-key.pem
+{
+    email eisenhuth.tobias+letsencrypt@example.com
+}
 
+consently.eu,
+www.consently.eu,
+consently.online,
+www.consently.online,
+ownlyfacts.com,
+www.ownlyfacts.com {
     encode gzip
 
-    # --- Security headers (apply to everything served on this site) ---
     header {
-        # PHASE 1 (non-breaking): allows current inline <script> and inline style attributes.
         Content-Security-Policy "
           default-src 'self';
           script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval';
@@ -19,26 +24,10 @@ app.localhost:443 {
           form-action 'self'
         "
 
-        # When we refactor JS into external files (no inline), switch to this stricter CSP:
-        # Content-Security-Policy "
-        #   default-src 'self';
-        #   script-src 'self';
-        #   style-src  'self';
-        #   img-src    'self' data:;
-        #   font-src   'self' data:;
-        #   connect-src 'self';
-        #   object-src 'none';
-        #   base-uri 'none';
-        #   frame-ancestors 'none';
-        #   form-action 'self';
-        #   require-trusted-types-for 'script'
-        # "
-
         Referrer-Policy        "no-referrer"
         X-Content-Type-Options "nosniff"
         X-Frame-Options        "DENY"
 
-        # Cross-origin isolation hardening (safe since all assets are same-origin)
         Cross-Origin-Opener-Policy  "same-origin"
         Cross-Origin-Embedder-Policy "require-corp"
         Cross-Origin-Resource-Policy "same-origin"

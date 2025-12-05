@@ -159,17 +159,9 @@ def init_db():
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
         """)
-        # todo - remove asap
-        conn.execute("""
-            DROP INDEX CONCURRENTLY IF EXISTS by_provider_and_created;
-        """)
         conn.execute("""
             CREATE INDEX IF NOT EXISTS by_pair_and_created_mixed_ordering
             ON solicitations (provider_id ASC, requester_id ASC, created_at DESC, request_id DESC);
-        """)
-        # todo - remove asap
-        conn.execute("""
-            DROP INDEX CONCURRENTLY IF EXISTS by_pair_and_created;
         """)
     print("[Proxy] DB initialized.")
 

@@ -48,8 +48,7 @@ class SaveToVaultRequest(BaseModel):
     envelope_b64: str
 
 class UpsertInboxKeyRequest(BaseModel):
-    provider_email: EmailStr
-    payload_b64: str
+    inbox_public_key_b64: str
 
 class GetInboxKeyRequest(BaseModel):
     provider_email: EmailStr

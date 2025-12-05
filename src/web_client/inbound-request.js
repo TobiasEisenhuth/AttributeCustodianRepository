@@ -1,5 +1,6 @@
 import {
   dec,
+  enc,
   revisiting,
   setStatus,
   setStateChip,
@@ -7,6 +8,8 @@ import {
   base64ToBytes,
 } from "/app/utils.js";
 import { loadUmbral } from "/app/umbral-loader.js";
+
+// -------------------- Provider datalist --------------------
 
 export function updateProviderDatalist(store) {
   const validProviderIds = new Set();
@@ -30,8 +33,10 @@ export function updateProviderDatalist(store) {
   return validProviderIds;
 }
 
+// -------------------- Store/UI removal helpers --------------------
+
 function removeRequestFromStore(store, requestId) {
-    const list = store?.ephemeral?.provider?.requests;
+  const list = store?.ephemeral?.provider?.requests;
   if (Array.isArray(list)) {
     const idx = list.findIndex(r => r.request_id === requestId);
     if (idx !== -1) list.splice(idx, 1);
@@ -52,9 +57,9 @@ function removeRequestFromUI(requestId) {
   }
   if (!targetForm) return;
 
-  const requestCard     = targetForm.closest('.request-card');
+  const requestCard = targetForm.closest('.request-card');
   const requesterContent = targetForm.closest('.requester-content');
-  const requesterCard   = targetForm.closest('.requester-card');
+  const requesterCard = targetForm.closest('.requester-card');
 
   if (requestCard) {
     requestCard.remove();
@@ -71,12 +76,20 @@ function removeRequestFromUI(requestId) {
   }
 }
 
+// -------------------- Approve/Deny handlers (PRE) --------------------
+
 async function handleApprove(api, store, event) {
   const formEl = event.currentTarget.closest('form.request-form');
   if (!formEl) return;
 
   const requesterId = formEl.dataset.requesterId;
   const requestId = formEl.dataset.requestId;
+
+  if (!requesterId) {
+    setStateChip("Error", "err");
+    setStatus("Missing requester id on this solicitation.", "err");
+    return;
+  }
 
   const formRows = formEl.querySelectorAll('.form-row');
   const items = [];
@@ -205,6 +218,8 @@ async function handleDenyClick(api, store, event) {
   setStateChip("Ready", "ok");
   setStatus(`Request ${requestId} denied.`);
 }
+
+// -------------------- UI helpers --------------------
 
 function validateInput(input, datalist, warn = false) {
   const options = Array.from(datalist.options);
@@ -368,6 +383,128 @@ function populateRequestsWidget(api, store) {
   }
 }
 
+// -------------------- WebCrypto E2EE decryption --------------------
+
+// We stored the inbox private key as: base64(JSON(JWK))
+async function importInboxPrivateKeyFromStore(store) {
+  const sk_b64 = store?.persistent?.private?.inbox?.secret_key_b64;
+  if (!sk_b64) {
+    throw new Error("Missing inbox private key in vault. Please re-login or re-initialize E2EE.");
+  }
+
+  let jwk;
+  try {
+    const jwkJson = dec.decode(base64ToBytes(sk_b64));
+    jwk = JSON.parse(jwkJson);
+  } catch {
+    throw new Error("Inbox private key is not valid JWK JSON.");
+  }
+
+  try {
+    return await crypto.subtle.importKey(
+      "jwk",
+      jwk,
+      { name: "ECDH", namedCurve: "P-256" },
+      false,
+      ["deriveBits"]
+    );
+  } catch {
+    throw new Error("Failed to import inbox private key.");
+  }
+}
+
+async function importEphemeralPublicKey(epk_jwk) {
+  try {
+    return await crypto.subtle.importKey(
+      "jwk",
+      epk_jwk,
+      { name: "ECDH", namedCurve: "P-256" },
+      false,
+      []
+    );
+  } catch {
+    throw new Error("Failed to import requester ephemeral public key.");
+  }
+}
+
+async function deriveAesKeyForDecrypt(sharedBits, infoStr) {
+  const hkdfKey = await crypto.subtle.importKey(
+    "raw",
+    sharedBits,
+    "HKDF",
+    false,
+    ["deriveKey"]
+  );
+
+  const info = enc.encode(infoStr || "crs:solicitation:v1");
+
+  return await crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: new Uint8Array(0),
+      info,
+    },
+    hkdfKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"]
+  );
+}
+
+async function decryptSolicitationEnvelope(encrypted_payload_b64, store) {
+  if (!crypto?.subtle) {
+    throw new Error("WebCrypto not available in this browser.");
+  }
+
+  // 1) Decode envelope JSON
+  let envelope;
+  try {
+    const envBytes = base64ToBytes(encrypted_payload_b64);
+    const envText  = dec.decode(envBytes);
+    envelope = JSON.parse(envText);
+  } catch {
+    throw new Error("Encrypted solicitation envelope is not valid JSON.");
+  }
+
+  if (!envelope?.epk_jwk || !envelope?.iv_b64 || !envelope?.ct_b64) {
+    throw new Error("Encrypted solicitation envelope is missing required fields.");
+  }
+
+  // 2) Import keys
+  const inboxSk = await importInboxPrivateKeyFromStore(store);
+  const epk     = await importEphemeralPublicKey(envelope.epk_jwk);
+
+  // 3) Derive shared secret
+  const sharedBits = await crypto.subtle.deriveBits(
+    { name: "ECDH", public: epk },
+    inboxSk,
+    256
+  );
+
+  // 4) HKDF -> AES key
+  const aesKey = await deriveAesKeyForDecrypt(sharedBits, envelope.info);
+
+  // 5) AES-GCM decrypt
+  const iv = base64ToBytes(envelope.iv_b64);
+  const ct = base64ToBytes(envelope.ct_b64);
+
+  let ptBuf;
+  try {
+    ptBuf = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv },
+      aesKey,
+      ct
+    );
+  } catch {
+    throw new Error("Failed to decrypt solicitation (wrong key or corrupted payload).");
+  }
+
+  return new Uint8Array(ptBuf);
+}
+
+// -------------------- Load inbound requests --------------------
+
 async function loadInboundRequests(api, store) {
   setStateChip("Loading…", "warn");
   setStatus("Loading inbound solicitations…");
@@ -378,59 +515,54 @@ async function loadInboundRequests(api, store) {
   } catch (err) {
     setStateChip("Error", "err");
     setStatus(err?.message || "Failed to load inbound requests.");
+    return;
   }
 
   if (!bundle.has_any) {
     setStateChip("Idle", "muted");
     setStatus("No inbound requests.");
+    populateRequestsWidget(api, store);
+    return;
   }
 
   if (!store.good) {
     setStateChip("Error", "err");
     setStatus("Store not good!");
-  }
-
-  const umbral = await loadUmbral();
-  if (!umbral) {
-    setStateChip("Error", "err");
-    setStatus("Umbral not available.", "err");
     return;
   }
 
   const requests = store.ephemeral.provider.requests;
-
   const existingIds = new Set(requests.map(item => item?.request_id).filter(Boolean));
 
   for (const request of bundle.solicitations) {
+    if (existingIds.has(request.request_id)) continue;
 
     let payload;
     try {
-      const request_bytes = base64ToBytes(request.payload_b64);
-      const request_utf_8 = dec.decode(request_bytes);
-      payload = JSON.parse(request_utf_8);
+      const ptBytes = await decryptSolicitationEnvelope(request.encrypted_payload_b64, store);
+      const ptText  = dec.decode(ptBytes);
+      payload = JSON.parse(ptText);
     } catch (err) {
-      console.error("Failed to decode solicitation payload", err, payload);
+      console.error("Failed to decrypt solicitation payload", err);
       continue;
     }
 
-    if (existingIds.has(request.request_id)) continue;
-
     const items = [];
-    for (const item of payload.items) {
+    for (const item of (payload.items || [])) {
       items.push({
         item_id: item.item_id,
         item_name: item.item_name,
         requester_public_key_b64: item.requester_public_key_b64,
         value_example: item.value_example,
         default_field: item.default_field,
-      })
+      });
     }
 
     requests.push({
       request_id: request.request_id,
       requester_id: request.requester_id,
       info_string: payload.info_string || "",
-      items: items,
+      items,
     });
   }
 

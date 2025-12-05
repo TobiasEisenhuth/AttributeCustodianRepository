@@ -155,7 +155,7 @@ def init_db():
                 request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 requester_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
                 provider_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                payload BYTEA NOT NULL,
+                encrypted_payload BYTEA NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
         """)
@@ -596,6 +596,9 @@ def api_upsert_inbox_public_key(request: Request, body: UpsertInboxKeyRequest):
     except Exception:
         raise HTTPException(status_code=400, detail="bad_base64")
 
+    if len(pk) > 512:
+        raise HTTPException(status_code=400, detail="public_key_too_large")
+
     with get_conn() as conn:
         conn.execute(
             """
@@ -639,13 +642,13 @@ def api_push_solicitation(request: Request, body: PushSolicitationRequest):
     requester_id = request.state.user_id
 
     try:
-        payload = b64decode(body.payload_b64)
+        encrypted_payload = b64decode(body.encrypted_payload_b64)
     except Exception:
         raise HTTPException(status_code=400, detail="bad_base64")
 
-    if len(payload) > MAX_SOLICITATION_BYTES:
+    if len(encrypted_payload) > MAX_SOLICITATION_BYTES:
         return JSONResponse(
-            {"error": "payload_too_large", "max_bytes": MAX_SOLICITATION_BYTES},
+            {"error": "encrypted_payload_too_large", "max_bytes": MAX_SOLICITATION_BYTES},
             status_code=413,
         )
 
@@ -665,11 +668,11 @@ def api_push_solicitation(request: Request, body: PushSolicitationRequest):
 
         cur = conn.execute(
             """
-            INSERT INTO solicitations (requester_id, provider_id, payload)
+            INSERT INTO solicitations (requester_id, provider_id, encrypted_payload)
             VALUES (%s, %s, %s)
             RETURNING request_id, created_at
             """,
-            (requester_id, provider_id, payload),
+            (requester_id, provider_id, encrypted_payload),
         )
         request_id, _ = cur.fetchone()
 
@@ -682,7 +685,7 @@ def api_pull_solicitation_bundle(request: Request):
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT s.request_id, s.requester_id, u.email, s.payload, s.created_at
+            SELECT s.request_id, s.requester_id, u.email, s.encrypted_payload, s.created_at
             FROM solicitations s
             JOIN users u ON u.user_id = s.requester_id
             WHERE s.provider_id = %s
@@ -700,11 +703,11 @@ def api_pull_solicitation_bundle(request: Request):
         }
 
     out = []
-    for request_id, requester_id, requester_email, payload, created_at in rows:
+    for request_id, requester_id, requester_email, encrypted_payload, created_at in rows:
         out.append({
             "request_id": str(request_id),
             "requester_email": requester_email,
-            "payload_b64": _transport_safe_b_string(payload),
+            "encrypted_payload_b64": _transport_safe_b_string(encrypted_payload),
             "created_at": created_at.isoformat(),
         })
 

@@ -78,10 +78,16 @@ export class CRSClient {
   }
 
   // ---------- Post Office (Solicitations) ----------
-  pushSolicitation(provider_email, payload_b64, rest) {
+  upsertInboxPublicKey(inbox_public_key_b64, rest) {
+    return this._fetch("/api/upsert_inbox_public_key", {
+      body: { inbox_public_key_b64 },
+      ...(rest || {}),
+    });
+  }
+  pushSolicitation(provider_email, encrypted_payload_b64, rest) {
     return this._fetch("/api/push_solicitation", {
       method: "PUT",
-      body: { provider_email, payload_b64 },
+      body: { provider_email, encrypted_payload_b64 },
       ...(rest||{}),
     });
   }

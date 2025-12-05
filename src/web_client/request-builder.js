@@ -6,12 +6,112 @@ import {
   nowIso,
   enc,
   bytesToBase64,
+  base64ToBytes,
   generateItemId,
 } from "/app/utils.js";
 import { needsSave } from "/app/save.js";
 import { loadUmbral } from "/app/umbral-loader.js";
 
 const q = (sel, root = document) => root.querySelector(sel);
+
+// ---- WebCrypto helpers for inbox E2EE ----
+async function importProviderInboxPublicKeyFromB64(b64) {
+  const jwkJson = new TextDecoder().decode(base64ToBytes(b64));
+  let jwk;
+  try {
+    jwk = JSON.parse(jwkJson);
+  } catch {
+    throw new Error("Provider inbox key is not valid JWK JSON.");
+  }
+
+  try {
+    return await crypto.subtle.importKey(
+      "jwk",
+      jwk,
+      { name: "ECDH", namedCurve: "P-256" },
+      false,
+      []
+    );
+  } catch {
+    throw new Error("Failed to import provider inbox public key.");
+  }
+}
+
+async function deriveAesKeyFromSharedBits(sharedBits) {
+  const hkdfKey = await crypto.subtle.importKey(
+    "raw",
+    sharedBits,
+    "HKDF",
+    false,
+    ["deriveKey"]
+  );
+
+  return await crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: new Uint8Array(0),
+      info: enc.encode("crs:solicitation:v1"),
+    },
+    hkdfKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt"]
+  );
+}
+
+async function encryptSolicitationForProvider(providerInboxPkCryptoKey, plaintextBytes) {
+  // Ephemeral ECDH keypair
+  const eph = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"]
+  );
+
+  // Shared secret
+  const sharedBits = await crypto.subtle.deriveBits(
+    { name: "ECDH", public: providerInboxPkCryptoKey },
+    eph.privateKey,
+    256
+  );
+
+  const aesKey = await deriveAesKeyFromSharedBits(sharedBits);
+
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ctBuf = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    aesKey,
+    plaintextBytes
+  );
+
+  const epkJwk = await crypto.subtle.exportKey("jwk", eph.publicKey);
+
+  const envelope = {
+    v: 1,
+    alg: "ECDH-P256-HKDF-AESGCM",
+    info: "crs:solicitation:v1",
+    epk_jwk: epkJwk,
+    iv_b64: bytesToBase64(iv),
+    ct_b64: bytesToBase64(new Uint8Array(ctBuf)),
+  };
+
+  const envelopeBytes = enc.encode(JSON.stringify(envelope));
+  return bytesToBase64(envelopeBytes);
+}
+
+async function fetchProviderInboxPublicKeyB64(api, provider_email) {
+  const res = await api._fetch("/api/get_inbox_public_key", {
+    body: { provider_email },
+  });
+
+  const b64 = res?.inbox_public_key_b64;
+  if (!b64) {
+    throw new Error("Provider has no inbox public key on record.");
+  }
+  return b64;
+}
+
+// ---------------- UI table builder ----------------
 
 function buildTableSkeleton(tableEl) {
   tableEl.innerHTML = "";
@@ -158,6 +258,12 @@ export function wireUpRequestBuilder({ api, store }) {
         return;
       }
 
+      if (!crypto?.subtle) {
+        setStateChip("Error", "err");
+        setStatus("WebCrypto not available in this browser.", "err");
+        return;
+      }
+
       const { info, provider_email, inputs } = readForm(table);
       if (!info) throw new Error("Please fill Info String.");
       if (!provider_email) throw new Error("Please fill Addressee.");
@@ -177,8 +283,8 @@ export function wireUpRequestBuilder({ api, store }) {
         }
       }
 
-      const stagedNewItems = [];   // for persistent store
-      const itemsForRequest = [];  // for the wire
+      const stagedNewItems = [];
+      const itemsForRequest = [];
 
       for (const item of inputs) {
         const item_id = generateItemId(existing);
@@ -206,14 +312,32 @@ export function wireUpRequestBuilder({ api, store }) {
 
       const request = { info_string: info, items: itemsForRequest };
       const request_bytes = enc.encode(JSON.stringify(request));
-      const request_b64 = bytesToBase64(request_bytes);
+
+      setStateChip("Encrypting…", "warn");
+      setStatus("Fetching provider inbox key and encrypting solicitation…");
+
+      let providerInboxPkB64;
+      try {
+        providerInboxPkB64 = await fetchProviderInboxPublicKeyB64(api, provider_email);
+      } catch (err) {
+        if (err.status === 404) {
+          throw new Error("Provider not found or has no E2EE inbox key yet.");
+        }
+        throw err;
+      }
+
+      const providerInboxPk = await importProviderInboxPublicKeyFromB64(providerInboxPkB64);
+      const encrypted_payload_b64 = await encryptSolicitationForProvider(
+        providerInboxPk,
+        request_bytes
+      );
 
       setStateChip("Sending…", "warn");
-      setStatus("Pushing solicitation to server…");
+      setStatus("Pushing encrypted solicitation to server…");
 
       let res;
       try {
-        res = await api.pushSolicitation(provider_email, request_b64);
+        res = await api.pushSolicitation(provider_email, encrypted_payload_b64);
       } catch (err) {
         if (err.status === 400 && err.data?.detail === "self_request_forbidden") {
           throw new Error("You cannot send a request to yourself.");
@@ -243,7 +367,7 @@ export function wireUpRequestBuilder({ api, store }) {
       resetBuilderTable(table);
 
       setStateChip("Sent", "ok");
-      setStatus("Solicitation pushed. Form cleared. Remember to save your vault to persist keys.", "ok");
+      setStatus("Encrypted solicitation pushed. Form cleared. Remember to save your vault to persist keys.", "ok");
     } catch (err) {
       setStateChip("Error", "err");
       setStatus(err?.message || "Failed to build/send solicitation.", "err");

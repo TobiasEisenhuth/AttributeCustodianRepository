@@ -7,6 +7,43 @@
   <link rel="icon" href="/app/favicon.ico">
   <link rel="stylesheet" href="/app/style.css">
   <style>
+    .alpha-note details {
+      margin-top: 0.5rem;
+    }
+    .alpha-note summary {
+      cursor: pointer;
+      font-weight: 600;
+      list-style: none;
+    }
+    .alpha-note summary::marker,
+    .alpha-note summary::-webkit-details-marker {
+      display: none;
+    }
+    .alpha-note {
+      color: #333;
+      font-size: 0.8rem;
+      margin-top: 0.75rem;
+    }
+    .alpha-note ul {
+      margin: 0.5rem 0 0 0;
+      padding-left: 1.2rem;
+    }
+    .alpha-note li {
+      margin-bottom: 0.25rem;
+    }
+    .alpha-note .warning-line {
+      color: #b00;
+      font-weight: 600;
+    }
+    .alpha-note a {
+      color: #0a5;
+      font-weight: 600;
+      text-decoration: underline;
+    }
+    .alpha-note a:hover,
+    .alpha-note a:focus {
+      text-decoration: none;
+    }
     .row { display:flex; gap:.5rem; align-items:center; }
     .buttons { display:flex; gap:.5rem; margin-top:.75rem; flex-wrap:wrap; }
     .buttons.right { justify-content:flex-end; }
@@ -57,7 +94,49 @@
 </head>
 <body class="center">
   <div class="card" id="card" aria-live="polite" style="position:relative;">
-    <h1>Welcome</h1>
+    <h1>Welcome to Consently</h1>
+    <p>The origin of your personal digital data.<br/>
+      Maintain your data in one single place and manage who can access what data.
+    </p>
+
+    <div id="alpha-note" class="alpha-note">
+      <details>
+        <summary class="warning-line">Disclaimer and known limitations (click to expand)</summary>
+        <ul>
+          <li>This is an early alpha preview. It is unaudited and NOT SECURE by any standard.</li>
+          <li class="warning-line">DO NOT enter any data you would not be comfortable posting in public.</li>
+          <li>Your user data (plain text and/or cipher) may be deleted at any time without notice.</li>
+          <li>The email address provided at registration is processed and stored in plain text.</li>
+          <li>
+            While a secret's label and value is private and protected by design,
+            who shares which anonymized items with whom — and how many items are shared between — will always be traceable by Consently.
+          </li>
+          <li>
+            In theory, the VM hosting provider can introspect the server’s memory and has full control over the server environment.
+          </li>
+          <li>
+            The chosen re-encryption scheme (Umbral) is based on elliptic-curve cryptography and is therefore NOT post-quantum-safe.
+            (Post-quantum-safe re-encryption schemes are an active research field with promising candidates.
+            Consently intends to upgrade once a suitable implementation is available.)
+          </li>
+          <li>
+            Similarly, the application level E2EE (WebCrypto ECDH P-256) of the request traffic, is like wise based on elliptic-curve cryptography.
+            This is considered acceptable for now (low priority to upgrade).
+          </li>
+          <li>
+            The gloabl HTTPS traffic, that wraps communication between your web client and the consently server,
+            should be encrpted using emerging hybrid algorithms that are potentially post-quantum-safe (maybe, allegedly, hopefully).
+          </li>
+        </ul>
+      </details>
+
+      <p>
+        <a href="https://github.com/TobiasEisenhuth/AttributeCustodianRepository/manual.md"
+          target="_blank" rel="noopener">
+          Check out the user manual on GitHub for usage and workflow.
+        </a>
+      </p>
+    </div>
 
     <div id="chooser" class="buttons" style="justify-content:center; margin-top:1rem;">
       <button id="choose-login"  type="button">Login</button>
@@ -163,10 +242,10 @@
 
   <script type="module">
     import { CRSClient } from "/app/crs-sdk.js";
+
     const api = new CRSClient();
 
     // Elements
-    const card = document.getElementById("card");
     const overlay = document.getElementById("overlay");
     const overlayText = document.getElementById("overlay-text");
     const chooser = document.getElementById("chooser");
@@ -221,8 +300,18 @@
       showHidden(regForm, false);
       error(loginErr,""); error(regErr,""); okay(loginOk,""); okay(regOk,"");
     }
-    chooseLogin.addEventListener("click", () => { showHidden(chooser,false); showHidden(loginForm,true); showHidden(regForm,false); loginEmail.focus(); });
-    chooseRegister.addEventListener("click", () => { showHidden(chooser,false); showHidden(loginForm,false); showHidden(regForm,true); regEmail.focus(); });
+    chooseLogin.addEventListener("click", () => {
+      showHidden(chooser,false);
+      showHidden(loginForm,true);
+      showHidden(regForm,false);
+      loginEmail.focus();
+    });
+    chooseRegister.addEventListener("click", () => {
+      showHidden(chooser,false);
+      showHidden(loginForm,false);
+      showHidden(regForm,true);
+      regEmail.focus();
+    });
     btnBackFromLogin.addEventListener("click", toChooser);
     btnBackFromRegister.addEventListener("click", toChooser);
 
@@ -235,11 +324,30 @@
     });
 
     // ---- Encoding helpers ----
-    function u8(x){ return new Uint8Array(x); }
-    function bytesToBase64(bytes){ let s=""; for (const b of bytes) s+=String.fromCharCode(b); return btoa(s); }
-    function base64ToBytes(b64){ const s=atob(b64); const a=new Uint8Array(s.length); for(let i=0;i<s.length;i++) a[i]=s.charCodeAt(i); return a; }
-    function toBase64Url(bytes){ return bytesToBase64(bytes).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,""); }
-    function makeShortId(n=6){ const a=new Uint8Array(n); crypto.getRandomValues(a); return Array.from(a).map(b=>b.toString(16).padStart(2,"0")).join(""); }
+    function bytesToBase64(bytes){
+      let s = "";
+      for (const b of bytes) s += String.fromCharCode(b);
+      return btoa(s);
+    }
+    function base64ToBytes(b64){
+      const s = atob(b64);
+      const a = new Uint8Array(s.length);
+      for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i);
+      return a;
+    }
+    function toBase64Url(bytes){
+      return bytesToBase64(bytes)
+        .replace(/\+/g,"-")
+        .replace(/\//g,"_")
+        .replace(/=+$/,"");
+    }
+    function makeShortId(n = 6){
+      const a = new Uint8Array(n);
+      crypto.getRandomValues(a);
+      return Array.from(a)
+        .map(b => b.toString(16).padStart(2,"0"))
+        .join("");
+    }
 
     // ---- PBKDF2+HKDF derivation ----
     async function pbkdf2Root(passwordStr, salt, iterations) {
@@ -249,14 +357,15 @@
     }
     async function hkdfExpand(rootBytes, infoStr, outLen) {
       const hkdfKey = await crypto.subtle.importKey("raw", rootBytes, "HKDF", false, ["deriveBits"]);
-      const info = new TextEncoder().encode(infoStr);
+      const info = enc.encode(infoStr);
       const salt = new Uint8Array(0);
       const bits = await crypto.subtle.deriveBits({ name:"HKDF", hash:"SHA-256", salt, info }, hkdfKey, outLen*8);
       return new Uint8Array(bits);
     }
 
     function makeSaltObject(emailStr){
-      const salt = new Uint8Array(16); crypto.getRandomValues(salt);
+      const salt = new Uint8Array(16);
+      crypto.getRandomValues(salt);
       return {
         v: 1,
         kdf: "pbkdf2-sha256",
@@ -271,7 +380,9 @@
       const { salt, ...disk } = saltObj;
       return JSON.stringify(disk, null, 2);
     }
-    function suggestFilename(){ return `crs-salt-${makeShortId()}.json`; }
+    function suggestFilename(){
+      return `crs-salt-${makeShortId()}.json`;
+    }
     function downloadText(filename, text){
       const blob = new Blob([text], { type: "application/json" });
       const a = document.createElement("a");
@@ -279,20 +390,31 @@
       a.download = filename;
       document.body.appendChild(a);
       a.click();
-      setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+      setTimeout(() => {
+        URL.revokeObjectURL(a.href);
+        a.remove();
+      }, 0);
     }
 
     async function deriveFromSaltObj(passwordStr, saltObj) {
       const root = await pbkdf2Root(passwordStr, saltObj.salt, saltObj.iterations);
       const auth = await hkdfExpand(root, "crs:auth", 16);
       const vault = await hkdfExpand(root, "crs:vault", 32);
-      return { auth_material_b64url: toBase64Url(auth), vault_key_b64: bytesToBase64(vault) };
+      return {
+        auth_material_b64url: toBase64Url(auth),
+        vault_key_b64: bytesToBase64(vault)
+      };
     }
 
     async function readSaltFile(file) {
       if (!file) throw new Error("Please choose your salt file.");
       const text = await file.text();
-      let o; try { o = JSON.parse(text); } catch { throw new Error("Salt file is not valid JSON."); }
+      let o;
+      try {
+        o = JSON.parse(text);
+      } catch {
+        throw new Error("Salt file is not valid JSON.");
+      }
       if (o?.kdf !== "pbkdf2-sha256" || typeof o?.iterations !== "number" || !o?.salt_b64) {
         throw new Error("Salt file is missing required fields.");
       }
@@ -301,8 +423,36 @@
       return { ...o, salt };
     }
 
+    // ---- E2EE: Inbox keypair generation (WebCrypto ECDH P-256) ----
+    // We store keys as: base64(JSON(JWK))
+    function jwkToB64(jwk) {
+      const json = JSON.stringify(jwk);
+      const bytes = enc.encode(json);
+      return bytesToBase64(bytes);
+    }
+
+    async function generateInboxKeypair() {
+      if (!crypto?.subtle) {
+        throw new Error("WebCrypto not available for inbox key setup.");
+      }
+
+      const kp = await crypto.subtle.generateKey(
+        { name: "ECDH", namedCurve: "P-256" },
+        true,
+        ["deriveBits"]
+      );
+
+      const publicJwk = await crypto.subtle.exportKey("jwk", kp.publicKey);
+      const privateJwk = await crypto.subtle.exportKey("jwk", kp.privateKey);
+
+      return {
+        secret_key_b64: jwkToB64(privateJwk),
+        public_key_b64: jwkToB64(publicJwk),
+      };
+    }
+
     // ---- Initialize server vault on registration success ----
-    export async function initVaultOnServer(vault_key_b64, email) {
+    export async function initVaultOnServer(vault_key_b64, email, inboxKeys) {
       const now = new Date().toISOString();
 
       const scaffold = {
@@ -310,6 +460,14 @@
         created_at: now,
         updated_at: now,
         private: {
+          inbox: inboxKeys ? {
+            secret_key_b64: inboxKeys.secret_key_b64,
+            public_key_b64: inboxKeys.public_key_b64,
+            created_at: now,
+            algo: "ECDH-P256-JWK",
+            purpose: "solicitation-inbox-e2ee",
+          } : undefined,
+
           provider: {
             items: [],
             groups: {},
@@ -325,9 +483,20 @@
         }
       };
 
-      const key = await crypto.subtle.importKey("raw", base64ToBytes(vault_key_b64), { name:"AES-GCM" }, false, ["encrypt"]);
-      const iv = new Uint8Array(12); crypto.getRandomValues(iv);
-      const pt = new TextEncoder().encode(JSON.stringify(scaffold));
+      if (!scaffold.private.inbox) {
+        delete scaffold.private.inbox;
+      }
+
+      const key = await crypto.subtle.importKey(
+        "raw",
+        base64ToBytes(vault_key_b64),
+        { name:"AES-GCM" },
+        false,
+        ["encrypt"]
+      );
+      const iv = new Uint8Array(12);
+      crypto.getRandomValues(iv);
+      const pt = enc.encode(JSON.stringify(scaffold));
       const ctBuf = await crypto.subtle.encrypt({ name:"AES-GCM", iv }, key, pt);
       const blob = new Uint8Array(iv.length + ctBuf.byteLength);
       blob.set(iv, 0);
@@ -359,10 +528,15 @@
       saltConfirm.onchange = updateProceed;
 
       btnDownloadSalt.onclick = () => downloadText(fname, json);
-      btnContinue.onclick = () => { showGate(false); location.replace("/"); };
+      btnContinue.onclick = () => {
+        showGate(false);
+        location.replace("/");
+      };
       btnGoLogin.onclick = () => {
         showGate(false);
-        showHidden(chooser,false); showHidden(loginForm,true); showHidden(regForm,false);
+        showHidden(chooser,false);
+        showHidden(loginForm,true);
+        showHidden(regForm,false);
         loginEmail.value = regEmail.value.trim();
         loginPassword.focus();
       };
@@ -372,18 +546,28 @@
 
     // ---- Session helpers ----
     function setSessionVaultKey(vault_key_b64, email) {
-      try { sessionStorage.setItem("crs:passkey", vault_key_b64); sessionStorage.setItem("crs:email", email); } catch {}
+      try {
+        sessionStorage.setItem("crs:passkey", vault_key_b64);
+        sessionStorage.setItem("crs:email", email);
+      } catch {}
     }
 
     // ---- Login flow ----
     async function doLogin() {
-      error(loginErr,""); okay(loginOk,"");
+      error(loginErr,"");
+      okay(loginOk,"");
+
+      if (!loginForm.reportValidity()) {
+        return;
+      }
       setBusy(true);
       try {
         const em = loginEmail.value.trim();
         const pw = loginPassword.value;
+
         if (!em) throw new Error("Email is required.");
         if (!pw) throw new Error("Password is required.");
+
         const file = loginSaltfile.files?.[0];
         const saltObj = await readSaltFile(file);
 
@@ -406,11 +590,20 @@
     function buildAbortable(ms) {
       const ac = new AbortController();
       const t = setTimeout(() => ac.abort(), ms);
-      return { signal: ac.signal, cancel: () => clearTimeout(t) };
+      return {
+        signal: ac.signal,
+        cancel: () => clearTimeout(t)
+      };
     }
 
     async function doRegister() {
-      error(regErr,""); okay(regOk,"");
+      error(regErr,"");
+      okay(regOk,"");
+
+      if (!regForm.reportValidity()) {
+        return;
+      }
+
       setBusy(true, "Registering…");
       let abortCtl = null;
       try {
@@ -431,7 +624,6 @@
           await api.register(em, auth_material_b64url, { signal: abortCtl.signal });
         } catch (e) {
           if (e.name === "AbortError") {
-            // TIMEOUT: show salt gate (state unknown). No vault creation attempt here.
             setBusy(false);
             openSaltGate({ mode: "timeout", saltObj: inMemSalt });
             return;
@@ -441,15 +633,27 @@
           abortCtl.cancel();
         }
 
-        // Registration OK — create authoritative empty vault ONCE, server-side
+        // Registration OK — bootstrap inbox keys for E2EE solicitations
+        setBusy(true, "Bootstrapping E2EE keys…");
+        let inboxKeys = null;
         try {
-          await initVaultOnServer(vault_key_b64, em);
+          inboxKeys = await generateInboxKeypair();
+          await api.upsertInboxPublicKey(inboxKeys.public_key_b64);
         } catch (e) {
-          // Not fatal for continuing, but inform the user at next screen (status on dashboard will say "Unsaved")
+          throw new Error(
+            "Account created, but failed to initialize your E2EE inbox keys. " +
+            "Please try logging in again and contact support if this persists."
+          );
+        }
+
+        // Create authoritative empty vault ONCE, server-side, including inbox secret key
+        setBusy(true, "Creating your vault…");
+        try {
+          await initVaultOnServer(vault_key_b64, em, inboxKeys);
+        } catch (e) {
           console.error("Initial vault save failed:", e);
         }
 
-        // Keep session key for dashboard, then show salt gate to force download & confirmation
         setSessionVaultKey(vault_key_b64, em);
         setBusy(false);
         openSaltGate({ mode: "success", saltObj: inMemSalt });
@@ -457,7 +661,8 @@
         if (e?.status === 409 && e?.data?.detail === "Email already registered") {
           inMemSalt = null;
           okay(regOk, "This email already has an account. Please log in.");
-          showHidden(regForm,false); showHidden(loginForm,true);
+          showHidden(regForm,false);
+          showHidden(loginForm,true);
           loginEmail.value = regEmail.value.trim();
           loginPassword.focus();
         } else {
@@ -469,17 +674,30 @@
     }
 
     // Bind buttons
-    document.getElementById("btn-login").addEventListener("click", (e) => { e.preventDefault(); doLogin(); });
-    document.getElementById("btn-register").addEventListener("click", (e) => { e.preventDefault(); doRegister(); });
+    document.getElementById("btn-login").addEventListener("click", (e) => {
+      e.preventDefault();
+      doLogin();
+    });
+    document.getElementById("btn-register").addEventListener("click", (e) => {
+      e.preventDefault();
+      doRegister();
+    });
 
     // Enter key submits whichever form is visible (not inside salt gate)
     document.addEventListener("keydown", (e) => {
       if (saltGate.classList.contains("show")) return;
-      if (e.key === "Enter" && !(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey)) {
-        if (!loginForm.classList.contains("hidden")) { e.preventDefault(); doLogin(); }
-        else if (!regForm.classList.contains("hidden")) { e.preventDefault(); doRegister(); }
+      if (e.key === "Enter" && !(e.ctrlKey || e.metaKey || e.shiftKey || e.altKey)) {
+        if (!loginForm.classList.contains("hidden")) {
+          e.preventDefault();
+          doLogin();
+        } else if (!regForm.classList.contains("hidden")) {
+          e.preventDefault();
+          doRegister();
+        }
       }
     });
+
+    toChooser();
   </script>
 </body>
 </html>

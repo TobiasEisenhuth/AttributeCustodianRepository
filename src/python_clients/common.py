@@ -47,12 +47,17 @@ class DismissGrantRequest(BaseModel):
 class SaveToVaultRequest(BaseModel):
     envelope_b64: str
 
-class PushSolicitationRequest(BaseModel):
-    provider_id: UUID
+class UpsertInboxKeyRequest(BaseModel):
+    provider_email: EmailStr
     payload_b64: str
 
-class PullSolicitationBundleRequest(BaseModel):
-    pass
+class GetInboxKeyRequest(BaseModel):
+    provider_email: EmailStr
+    payload_b64: str
+
+class PushSolicitationRequest(BaseModel):
+    provider_email: EmailStr
+    payload_b64: str
 
 class SolicitationStatusRequest(BaseModel):
     request_id: UUID

@@ -29,7 +29,7 @@ function buildTableSkeleton(tableEl) {
   trAddr.dataset.kind = "addressee";
   const tdAddr = document.createElement("td");
   tdAddr.colSpan = 3;
-  tdAddr.innerHTML = `<input type="text" data-role="addressee" placeholder="Addressee" autocomplete="off" />`;
+  tdAddr.innerHTML = `<input type="text" data-role="addressee" placeholder="Addressee Email" autocomplete="off" />`;
   trAddr.appendChild(tdAddr);
   tbody.appendChild(trAddr);
 
@@ -99,7 +99,7 @@ function resetBuilderTable(tableEl) {
 
 function readForm(tableEl) {
   const info = normalizeText(tableEl.querySelector('input[data-role="info"]')?.value || "");
-  const provider_id = normalizeText(tableEl.querySelector('input[data-role="addressee"]')?.value || "");
+  const provider_email = normalizeText(tableEl.querySelector('input[data-role="addressee"]')?.value || "");
 
   const inputs = [];
   const rows = Array.from(tableEl.querySelectorAll('tbody tr[data-kind="item"]'));
@@ -117,7 +117,7 @@ function readForm(tableEl) {
     inputs.push(item);
   }
 
-  return { info, provider_id, inputs };
+  return { info, provider_email, inputs };
 }
 
 export function wireUpRequestBuilder({ api, store }) {
@@ -158,9 +158,9 @@ export function wireUpRequestBuilder({ api, store }) {
         return;
       }
 
-      const { info, provider_id, inputs } = readForm(table);
+      const { info, provider_email, inputs } = readForm(table);
       if (!info) throw new Error("Please fill Info String.");
-      if (!provider_id) throw new Error("Please fill Addressee.");
+      if (!provider_email) throw new Error("Please fill Addressee.");
       if (inputs.length === 0) throw new Error("Please add at least one item.");
 
       setStateChip("Preparing…", "warn");
@@ -213,7 +213,7 @@ export function wireUpRequestBuilder({ api, store }) {
 
       let res;
       try {
-        res = await api.pushSolicitation(provider_id, request_b64);
+        res = await api.pushSolicitation(provider_email, request_b64);
       } catch (err) {
         if (err.status === 400 && err.data?.detail === "self_request_forbidden") {
           throw new Error("You cannot send a request to yourself.");
@@ -228,10 +228,10 @@ export function wireUpRequestBuilder({ api, store }) {
         }
       }
 
-      let requesterItems = requesterByProvider[provider_id];
+      let requesterItems = requesterByProvider[provider_email];
       if (!Array.isArray(requesterItems)) {
         requesterItems = [];
-        requesterByProvider[provider_id] = requesterItems;
+        requesterByProvider[provider_email] = requesterItems;
       }
       for (const entry of stagedNewItems) {
         requesterItems.push(entry);

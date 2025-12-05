@@ -48,8 +48,9 @@ from common import (
     UpsertItemRequest, EraseItemRequest,
     GrantAccessRequest, RevokeAccessRequest,
     ResolveRequesterItemRequest, RequestItemRequest, DismissGrantRequest,
+    UpsertInboxKeyRequest, GetInboxKeyRequest,
     SaveToVaultRequest, SolicitationStatusRequest,
-    PushSolicitationRequest, PullSolicitationBundleRequest, AckSolicitationRequest
+    PushSolicitationRequest, AckSolicitationRequest
 )
 
 PROXY_HOST = os.getenv("PROXY_HOST", "0.0.0.0")
@@ -138,6 +139,14 @@ def init_db():
                 FOREIGN KEY (provider_id, requester_id, canonical_item_id) 
                     REFERENCES grants(provider_id, requester_id, requester_item_id)
                     ON DELETE CASCADE
+            );
+        """)
+        # user_inbox_e2ee_keys
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_inbox_e2ee_keys (
+                user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                inbox_public_key BYTEA NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
         """)
         # solicitations
@@ -579,13 +588,55 @@ def api_load_from_vault(request: Request):
 
 # ------------------- post office ---------------------
 
+@app.post("/api/upsert_inbox_public_key")
+def api_upsert_inbox_public_key(request: Request, body: UpsertInboxKeyRequest):
+    user_id = request.state.user_id
+    try:
+        pk = b64decode(body.inbox_public_key_b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad_base64")
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_inbox_keys (user_id, inbox_public_key)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                inbox_public_key = EXCLUDED.inbox_public_key,
+                updated_at = now()
+            """,
+            (user_id, pk),
+        )
+    return _ok()
+
+# in common models:
+# class GetInboxKeyRequest(BaseModel):
+#     provider_email: EmailStr
+
+@app.post("/api/get_inbox_public_key")
+def api_get_inbox_public_key(request: Request, body: GetInboxKeyRequest):
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT u.user_id, k.inbox_public_key
+            FROM users u
+            JOIN user_inbox_keys k ON k.user_id = u.user_id
+            WHERE u.email = %s
+            """,
+            (body.provider_email,),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="inbox_key_not_found")
+
+    _, pk = row
+    return {"inbox_public_key_b64": _transport_safe_b_string(pk)}
+
 MAX_SOLICITATION_BYTES = int(os.getenv("MAX_SOLICITATION_BYTES", str(3 * 1024 * 1024)))  # 3 MiB default
 
 @app.put("/api/push_solicitation")
 def api_push_solicitation(request: Request, body: PushSolicitationRequest):
     requester_id = request.state.user_id
-    if requester_id == body.provider_id:
-        raise HTTPException(status_code=400, detail="self_request_forbidden")
 
     try:
         payload = b64decode(body.payload_b64)
@@ -599,31 +650,43 @@ def api_push_solicitation(request: Request, body: PushSolicitationRequest):
         )
 
     with get_conn() as conn:
+        row = conn.execute(
+            "SELECT user_id FROM users WHERE email=%s",
+            (body.provider_email,),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="provider_not_found")
+
+        provider_id = row[0]
+
+        if requester_id == provider_id:
+            raise HTTPException(status_code=400, detail="self_request_forbidden")
+
         cur = conn.execute(
             """
             INSERT INTO solicitations (requester_id, provider_id, payload)
             VALUES (%s, %s, %s)
             RETURNING request_id, created_at
             """,
-            (requester_id, body.provider_id, payload),
+            (requester_id, provider_id, payload),
         )
-        request_id, created_at = cur.fetchone()
+        request_id, _ = cur.fetchone()
 
-    return {
-        "request_id": str(request_id)
-    }
+    return {"request_id": str(request_id)}
 
 @app.post("/api/pull_solicitation_bundle")
-def api_pull_solicitation_bundle(request: Request, body: PullSolicitationBundleRequest):
+def api_pull_solicitation_bundle(request: Request):
     provider_id = request.state.user_id
 
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT request_id, requester_id, payload, created_at
-            FROM solicitations
-            WHERE provider_id = %s
-            ORDER BY requester_id ASC, created_at DESC, request_id DESC
+            SELECT s.request_id, s.requester_id, u.email, s.payload, s.created_at
+            FROM solicitations s
+            JOIN users u ON u.user_id = s.requester_id
+            WHERE s.provider_id = %s
+            ORDER BY s.requester_id ASC, s.created_at DESC, s.request_id DESC
             LIMIT 20
             """,
             (provider_id,),
@@ -637,10 +700,10 @@ def api_pull_solicitation_bundle(request: Request, body: PullSolicitationBundleR
         }
 
     out = []
-    for request_id, requester_id, payload, created_at in rows:
+    for request_id, requester_id, requester_email, payload, created_at in rows:
         out.append({
             "request_id": str(request_id),
-            "requester_id": str(requester_id),
+            "requester_email": requester_email,
             "payload_b64": _transport_safe_b_string(payload),
             "created_at": created_at.isoformat(),
         })
@@ -664,6 +727,25 @@ def api_ack_solicitation(request: Request, body: AckSolicitationRequest):
         )
     return _ok({"deleted": str(body.request_id)})
 
+@app.post("/api/solicitation_status")
+def api_solicitation_status(request: Request, body: SolicitationStatusRequest):
+    requester_id = request.state.user_id
+
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM solicitations
+            WHERE request_id = %s
+              AND requester_id = %s
+            """,
+            (body.request_id, requester_id),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    return {"pending": True}
 
 # ------------------- CRS ---------------------
 
@@ -951,27 +1033,6 @@ def api_dismiss_grant(request: Request, body: DismissGrantRequest):
             raise HTTPException(status_code=404, detail="grant_not_found")
 
     return _ok()
-
-
-@app.post("/api/solicitation_status")
-def api_solicitation_status(request: Request, body: SolicitationStatusRequest):
-    requester_id = request.state.user_id
-
-    with get_conn() as conn:
-        row = conn.execute(
-            """
-            SELECT 1
-            FROM solicitations
-            WHERE request_id = %s
-              AND requester_id = %s
-            """,
-            (body.request_id, requester_id),
-        ).fetchone()
-
-    if not row:
-        raise HTTPException(status_code=404, detail="not_found")
-
-    return {"pending": True}
 
 @app.get("/api/list_my_items")
 def api_list_my_items(request: Request):

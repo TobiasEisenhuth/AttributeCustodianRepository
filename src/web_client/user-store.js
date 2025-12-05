@@ -253,9 +253,6 @@ export async function initUserStore({ api, passkey }) {
     store.persistent.requester = {};
   }
 
-  // todo - remove for production
-  if (Array.isArray(store.persistent.requester.items)) delete store.persistent.requester.items;
-
   if (!store.persistent.requester.items || typeof store.persistent.requester.items !== "object") {
     store.persistent.requester.items = {};
   }

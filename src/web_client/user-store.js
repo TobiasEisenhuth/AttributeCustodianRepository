@@ -33,7 +33,7 @@ async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000,
 }
 
 // todo - set to true for production
-const USE_CRYPTO = false;
+const USE_CRYPTO = true;
 export async function packUserStoreToEnvelope(store, passkey) {
   const persistent = store.persistent;
   const persistent_utf_8 = JSON.stringify(persistent);

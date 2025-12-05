@@ -27,7 +27,6 @@ from datetime import datetime, timedelta, timezone
 # web utils
 import anyio
 import uvicorn
-from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -76,6 +75,7 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.execute("CREATE EXTENSION IF NOT EXISTS citext;")
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
         # users
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -150,13 +150,17 @@ def init_db():
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
         """)
+        # todo - remove asap
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS by_provider_and_created
-            ON solicitations (provider_id, created_at, request_id);
+            DROP INDEX CONCURRENTLY IF EXISTS by_provider_and_created;
         """)
         conn.execute("""
-            CREATE INDEX IF NOT EXISTS by_pair_and_created
-            ON solicitations (provider_id, requester_id, created_at, request_id);
+            CREATE INDEX IF NOT EXISTS by_pair_and_created_mixed_ordering
+            ON solicitations (provider_id ASC, requester_id ASC, created_at DESC, request_id DESC);
+        """)
+        # todo - remove asap
+        conn.execute("""
+            DROP INDEX CONCURRENTLY IF EXISTS by_pair_and_created;
         """)
     print("[Proxy] DB initialized.")
 
@@ -381,8 +385,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CRS Proxy API", lifespan=lifespan)
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["app.localhost"])
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=["app.localhost"])
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=[
+        "consently.eu",
+        "www.consently.eu",
+        "consently.online",
+        "www.consently.online",
+        "ownlyfacts.com",
+        "www.ownlyfacts.com",
+    ],
+)
 
 _base_dir = os.path.dirname(__file__)
 web_dir = os.path.abspath(os.path.join(_base_dir, "web_client"))
@@ -611,6 +624,7 @@ def api_pull_solicitation_bundle(request: Request, body: PullSolicitationBundleR
             FROM solicitations
             WHERE provider_id = %s
             ORDER BY requester_id ASC, created_at DESC, request_id DESC
+            LIMIT 20
             """,
             (provider_id,),
         ).fetchall()

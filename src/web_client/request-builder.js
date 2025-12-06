@@ -105,10 +105,15 @@ async function fetchProviderInboxPublicKeyB64(api, provider_email) {
   });
 
   const b64 = res?.inbox_public_key_b64;
+  const provider_id = res?.provider_id;
+
   if (!b64) {
     throw new Error("Provider has no inbox public key on record.");
   }
-  return b64;
+  if (!provider_id) {
+    throw new Error("Provider id missing in inbox key response.");
+  }
+  return { inbox_public_key_b64: b64, provider_id };
 }
 
 // ---------------- UI table builder ----------------
@@ -298,7 +303,6 @@ export function wireUpRequestBuilder({ api, store }) {
           item_name: item.item_name,
           keys: { secret_key_b64: bytesToBase64(sk.toBEBytes()) },
           last_touched: created_at,
-          // request_id will be attached after server responds
         });
 
         itemsForRequest.push({
@@ -317,8 +321,11 @@ export function wireUpRequestBuilder({ api, store }) {
       setStatus("Fetching provider inbox key and encrypting solicitation…");
 
       let providerInboxPkB64;
+      let provider_id;
       try {
-        providerInboxPkB64 = await fetchProviderInboxPublicKeyB64(api, provider_email);
+        const res = await fetchProviderInboxPublicKeyB64(api, provider_email);
+        providerInboxPkB64 = res.inbox_public_key_b64;
+        provider_id = res.provider_id;
       } catch (err) {
         if (err.status === 404) {
           throw new Error("Provider not found or has no E2EE inbox key yet.");
@@ -352,10 +359,22 @@ export function wireUpRequestBuilder({ api, store }) {
         }
       }
 
-      let requesterItems = requesterByProvider[provider_email];
+      for (const entry of stagedNewItems) {
+        entry.provider_id = provider_id;
+        entry.provider_email = provider_email;
+      }
+
+      let requesterItems = requesterByProvider[provider_id];
       if (!Array.isArray(requesterItems)) {
-        requesterItems = [];
-        requesterByProvider[provider_email] = requesterItems;
+        const legacy = requesterByProvider[provider_email];
+        if (Array.isArray(legacy)) {
+          requesterItems = legacy;
+          delete requesterByProvider[provider_email];
+          requesterByProvider[provider_id] = requesterItems;
+        } else {
+          requesterItems = [];
+          requesterByProvider[provider_id] = requesterItems;
+        }
       }
       for (const entry of stagedNewItems) {
         requesterItems.push(entry);

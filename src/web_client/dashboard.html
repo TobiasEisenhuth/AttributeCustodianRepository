@@ -44,7 +44,7 @@
           <table class="data-table" aria-label="Personal data table">
             <thead>
               <tr>
-                <th scope="col">Field</th>
+                <th scope="col">Label</th>
                 <th scope="col">Value</th>
               </tr>
             </thead>
@@ -60,12 +60,12 @@
 
     <div id="new-item-dialog" class="modal-overlay" aria-hidden="true">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="newItemTitle">
-        <h3 id="newItemTitle" class="modal-title">New Item</h3>
+        <h3 id="newItemTitle" class="modal-title">New Secret</h3>
         <div class="modal-body">
           <table class="data-table modal-table" aria-label="New item form">
             <tbody>
               <tr>
-                <th scope="row">Item Name</th>
+                <th scope="row">Label</th>
                 <td><input type="text" data-field="Item Name" placeholder="" autocomplete="off" /></td>
               </tr>
               <tr>
@@ -86,7 +86,7 @@
               </tr>
             </tbody>
           </table>
-          <p class="modal-hint">Fill Item Name and Value. Press Esc to cancel.</p>
+          <p class="modal-hint">Label and Value required.</p>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn" data-action="cancel-dialog">Cancel</button>

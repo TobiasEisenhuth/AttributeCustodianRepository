@@ -17,7 +17,7 @@ export function updateProviderDatalist(store) {
   if (!datalist) return validProviderIds;
 
   datalist.innerHTML = '';
-  
+
   for (const providerItem of store.persistent.provider.items) {
     const value = store.ephemeral.provider.values.get(providerItem.item_id);
     if (value !== undefined && value !== null) {
@@ -144,7 +144,7 @@ async function handleApprove(api, store, event) {
 
   setStateChip("Granting…", "warn");
   setStatus("Generating re-encryption keys…");
-  
+
   const umbral = await loadUmbral();
   if (!umbral) {
     setStateChip("Error", "err");
@@ -171,7 +171,7 @@ async function handleApprove(api, store, event) {
       }
 
       const kfrags_b64 = kfrags.map(k => bytesToBase64(k.toBytes()));
-      
+
       await api.grantAccess({
         requester_id: requesterId,
         provider_item_id: item.provider_item_id,
@@ -185,10 +185,9 @@ async function handleApprove(api, store, event) {
 
     removeRequestFromStore(store, requestId);
     removeRequestFromUI(requestId);
-    
+
     setStateChip("Synced", "ok");
-    setStatus("Access granted and request acknowledged.");
-    
+    setStatus("Access granted and request acknowledged."); 
   } catch (err) {
     setStateChip("Error", "err");
     setStatus(err?.message || "Failed to grant/acknowledge bundle.", "err");
@@ -245,7 +244,7 @@ function populateRequestsWidget(api, store) {
 
   const container = document.getElementById('requestsContainer');
   const inboundRequests = store.ephemeral.provider.requests;
-  
+
   if (!inboundRequests || inboundRequests.length === 0) {
     container.innerHTML = '<div class="empty-state">No inbound requests at this time</div>';
     return;
@@ -277,7 +276,7 @@ function populateRequestsWidget(api, store) {
       requesterCard.open = true;
 
       const requesterSummary = document.createElement('summary');
-      requesterSummary.textContent = request.requester_id;
+      requesterSummary.textContent = request.requester_email;
       requesterCard.appendChild(requesterSummary);
 
       requesterContent = document.createElement('div');
@@ -287,10 +286,6 @@ function populateRequestsWidget(api, store) {
     const requestCard = document.createElement('article');
     requestCard.className = 'request-card';
 
-    const requestTitle = document.createElement('h4');
-    requestTitle.textContent = request.request_id;
-    requestCard.appendChild(requestTitle);
-
     const form = document.createElement('form');
     form.className = 'request-form';
     form.dataset.requesterId = request.requester_id;
@@ -298,7 +293,7 @@ function populateRequestsWidget(api, store) {
     form.addEventListener('submit', event => event.preventDefault());
 
     const fieldset = document.createElement('fieldset');
-    
+
     const legend = document.createElement('legend');
     legend.textContent = request.info_string || 'Request Details';
     fieldset.appendChild(legend);
@@ -385,11 +380,13 @@ function populateRequestsWidget(api, store) {
 
 // -------------------- WebCrypto E2EE decryption --------------------
 
-// We stored the inbox private key as: base64(JSON(JWK))
 async function importInboxPrivateKeyFromStore(store) {
-  const sk_b64 = store?.persistent?.private?.inbox?.secret_key_b64;
+  const sk_b64 = store?.persistent?.meta?.inbox?.secret_key_b64;
+
   if (!sk_b64) {
-    throw new Error("Missing inbox private key in vault. Please re-login or re-initialize E2EE.");
+    throw new Error(
+      "Missing inbox private key in vault. Expected store.persistent.meta.inbox.secret_key_b64."
+    );
   }
 
   let jwk;
@@ -457,11 +454,10 @@ async function decryptSolicitationEnvelope(encrypted_payload_b64, store) {
     throw new Error("WebCrypto not available in this browser.");
   }
 
-  // 1) Decode envelope JSON
   let envelope;
   try {
     const envBytes = base64ToBytes(encrypted_payload_b64);
-    const envText  = dec.decode(envBytes);
+    const envText = dec.decode(envBytes);
     envelope = JSON.parse(envText);
   } catch {
     throw new Error("Encrypted solicitation envelope is not valid JSON.");
@@ -471,21 +467,17 @@ async function decryptSolicitationEnvelope(encrypted_payload_b64, store) {
     throw new Error("Encrypted solicitation envelope is missing required fields.");
   }
 
-  // 2) Import keys
   const inboxSk = await importInboxPrivateKeyFromStore(store);
-  const epk     = await importEphemeralPublicKey(envelope.epk_jwk);
+  const epk = await importEphemeralPublicKey(envelope.epk_jwk);
 
-  // 3) Derive shared secret
   const sharedBits = await crypto.subtle.deriveBits(
     { name: "ECDH", public: epk },
     inboxSk,
     256
   );
 
-  // 4) HKDF -> AES key
   const aesKey = await deriveAesKeyForDecrypt(sharedBits, envelope.info);
 
-  // 5) AES-GCM decrypt
   const iv = base64ToBytes(envelope.iv_b64);
   const ct = base64ToBytes(envelope.ct_b64);
 
@@ -518,7 +510,7 @@ async function loadInboundRequests(api, store) {
     return;
   }
 
-  if (!bundle.has_any) {
+  if (!bundle?.has_any) {
     setStateChip("Idle", "muted");
     setStatus("No inbound requests.");
     populateRequestsWidget(api, store);
@@ -534,13 +526,13 @@ async function loadInboundRequests(api, store) {
   const requests = store.ephemeral.provider.requests;
   const existingIds = new Set(requests.map(item => item?.request_id).filter(Boolean));
 
-  for (const request of bundle.solicitations) {
+  for (const request of bundle.solicitations || []) {
     if (existingIds.has(request.request_id)) continue;
 
     let payload;
     try {
       const ptBytes = await decryptSolicitationEnvelope(request.encrypted_payload_b64, store);
-      const ptText  = dec.decode(ptBytes);
+      const ptText = dec.decode(ptBytes);
       payload = JSON.parse(ptText);
     } catch (err) {
       console.error("Failed to decrypt solicitation payload", err);
@@ -548,7 +540,7 @@ async function loadInboundRequests(api, store) {
     }
 
     const items = [];
-    for (const item of (payload.items || [])) {
+    for (const item of payload?.items || []) {
       items.push({
         item_id: item.item_id,
         item_name: item.item_name,
@@ -561,6 +553,7 @@ async function loadInboundRequests(api, store) {
     requests.push({
       request_id: request.request_id,
       requester_id: request.requester_id,
+      requester_email: request.requester_email,
       info_string: payload.info_string || "",
       items,
     });

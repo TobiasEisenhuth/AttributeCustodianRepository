@@ -243,6 +243,10 @@ export async function initUserStore({ api, passkey }) {
     setStatus(err.message || "Failed to load from vault", "err");
   }
 
+  if (!store.persistent.meta || typeof store.persistent.meta !== "object") {
+    store.persistent.meta = {};
+  }
+
   if (!store.persistent.provider || typeof store.persistent.provider !== "object") {
     store.persistent.provider = {};
   }
@@ -252,7 +256,6 @@ export async function initUserStore({ api, passkey }) {
   if (!store.persistent.requester || typeof store.persistent.requester !== "object") {
     store.persistent.requester = {};
   }
-
   if (!store.persistent.requester.items || typeof store.persistent.requester.items !== "object") {
     store.persistent.requester.items = {};
   }

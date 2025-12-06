@@ -155,7 +155,7 @@
     </div>
 
     <!-- Login form -->
-    <form id="login-form" class="hidden" autocomplete="on">
+    <form id="login-form" class="hidden" autocomplete="on" method="post" action="/auth/login">
       <div class="row" style="margin-top:.5rem">
         <label style="flex:1">
           <span>Email</span>
@@ -181,7 +181,7 @@
       <div class="buttons" style="justify-content:space-between;">
         <button id="btn-back-from-login" type="button" class="muted">← Back</button>
         <div class="buttons right">
-          <button id="btn-login" type="button">Login</button>
+          <button id="btn-login" type="submit">Login</button>
         </div>
       </div>
       <p id="login-error" class="error" role="alert"></p>
@@ -189,7 +189,7 @@
     </form>
 
     <!-- Register form -->
-    <form id="register-form" class="hidden" autocomplete="on">
+    <form id="register-form" class="hidden" autocomplete="on" method="post" action="/auth/register">
       <div class="row" style="margin-top:.5rem">
         <label style="flex:1">
           <span>Email</span>
@@ -214,7 +214,7 @@
       <div class="buttons" style="justify-content:space-between;">
         <button id="btn-back-from-register" type="button" class="muted">← Back</button>
         <div class="buttons right">
-          <button id="btn-register" type="button">Create account</button>
+          <button id="btn-register" type="submit">Create account</button>
         </div>
       </div>
       <p id="reg-error" class="error" role="alert"></p>
@@ -466,11 +466,14 @@
     export async function initVaultOnServer(vault_key_b64, email, inboxKeys) {
       const now = new Date().toISOString();
 
+      // This is the *persistent root object* that will become store.persistent
       const scaffold = {
-        version: 1,
-        created_at: now,
-        updated_at: now,
-        private: {
+        meta: {
+          version: 1,
+          created_at: now,
+          updated_at: now,
+          schema: "crs/v1",
+          owner: email || "",
           inbox: inboxKeys ? {
             secret_key_b64: inboxKeys.secret_key_b64,
             public_key_b64: inboxKeys.public_key_b64,
@@ -478,43 +481,65 @@
             algo: "ECDH-P256-JWK",
             purpose: "solicitation-inbox-e2ee",
           } : undefined,
-
-          provider: {
-            items: [],
-            groups: {},
-            synonyms: {}
-          },
-          requester: {
-            items: [],
-          }
-        },
-        meta: {
-          schema: "crs/v1",
-          owner: email || ""
         }
       };
 
-      if (!scaffold.private.inbox) {
-        delete scaffold.private.inbox;
+      // --- Build the SAME envelope shape extractStoreFromEnvelope expects ---
+
+      async function deriveAesKeyPBKDF2(passkeyBytes, saltBytes, iterations = 100_000, keyLen = 256) {
+        const keyMaterial = await crypto.subtle.importKey(
+          "raw",
+          passkeyBytes,
+          { name: "PBKDF2" },
+          false,
+          ["deriveKey"]
+        );
+        return crypto.subtle.deriveKey(
+          {
+            name: "PBKDF2",
+            salt: saltBytes,
+            iterations,
+            hash: "SHA-256",
+          },
+          keyMaterial,
+          { name: "AES-GCM", length: keyLen },
+          false,
+          ["encrypt", "decrypt"]
+        );
       }
 
-      const key = await crypto.subtle.importKey(
-        "raw",
-        base64ToBytes(vault_key_b64),
-        { name:"AES-GCM" },
-        false,
-        ["encrypt"]
-      );
-      const iv = new Uint8Array(12);
-      crypto.getRandomValues(iv);
-      const pt = enc.encode(JSON.stringify(scaffold));
-      const ctBuf = await crypto.subtle.encrypt({ name:"AES-GCM", iv }, key, pt);
-      const blob = new Uint8Array(iv.length + ctBuf.byteLength);
-      blob.set(iv, 0);
-      blob.set(new Uint8Array(ctBuf), iv.length);
-      const encrypted_localstore_b64 = bytesToBase64(blob);
+      const persistent_utf_8 = JSON.stringify(scaffold);
+      const persistent_bytes = enc.encode(persistent_utf_8);
 
-      await api.saveToVault(encrypted_localstore_b64);
+      const salt = new Uint8Array(16);
+      crypto.getRandomValues(salt);
+      const nonce = new Uint8Array(12);
+      crypto.getRandomValues(nonce);
+
+      // IMPORTANT: passkey here is the *string* you store in sessionStorage ("crs:passkey")
+      // which is your vault_key_b64.
+      const key = await deriveAesKeyPBKDF2(enc.encode(vault_key_b64), salt, 100_000);
+
+      const ctBuf = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv: nonce },
+        key,
+        persistent_bytes
+      );
+
+      const envelope = {
+        v: 1,
+        enc: "aes-256-gcm",
+        kdf: "pbkdf2-sha256",
+        iterations: 100_000,
+        salt_b64: bytesToBase64(salt),
+        nonce_b64: bytesToBase64(nonce),
+        ct_b64: bytesToBase64(new Uint8Array(ctBuf)),
+      };
+
+      const envelope_bytes = enc.encode(JSON.stringify(envelope));
+      const envelope_b64 = bytesToBase64(envelope_bytes);
+
+      await api.saveToVault(envelope_b64);
     }
 
     // ---- Salt Gate UI ----
@@ -623,13 +648,11 @@
         if (!em) throw new Error("Email is required.");
         if (!pw) throw new Error("Password is required.");
 
-        // Create/retain in-memory salt for this attempt
         if (!inMemSalt || inMemSalt.email !== em) {
           inMemSalt = makeSaltObject(em);
         }
         const { auth_material_b64url, vault_key_b64 } = await deriveFromSaltObj(pw, inMemSalt);
 
-        // Abortable register
         abortCtl = buildAbortable(REG_TIMEOUT_MS);
         try {
           await api.register(em, auth_material_b64url, { signal: abortCtl.signal });
@@ -644,7 +667,6 @@
           abortCtl.cancel();
         }
 
-        // Registration OK — bootstrap inbox keys for E2EE solicitations
         setBusy(true, "Bootstrapping E2EE keys…");
         let inboxKeys = null;
         try {
@@ -657,7 +679,6 @@
           );
         }
 
-        // Create authoritative empty vault ONCE, server-side, including inbox secret key
         setBusy(true, "Creating your vault…");
         try {
           await initVaultOnServer(vault_key_b64, em, inboxKeys);
@@ -684,12 +705,12 @@
       }
     }
 
-    // Bind buttons
-    document.getElementById("btn-login").addEventListener("click", (e) => {
+    loginForm.addEventListener("submit", (e) => {
       e.preventDefault();
       doLogin();
     });
-    document.getElementById("btn-register").addEventListener("click", (e) => {
+
+    regForm.addEventListener("submit", (e) => {
       e.preventDefault();
       doRegister();
     });
@@ -700,10 +721,10 @@
       if (e.key === "Enter" && !(e.ctrlKey || e.metaKey || e.shiftKey || e.altKey)) {
         if (!loginForm.classList.contains("hidden")) {
           e.preventDefault();
-          doLogin();
+          loginForm.requestSubmit(btnLogin);
         } else if (!regForm.classList.contains("hidden")) {
           e.preventDefault();
-          doRegister();
+          regForm.requestSubmit(btnRegister);
         }
       }
     });

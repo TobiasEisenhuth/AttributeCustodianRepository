@@ -594,7 +594,7 @@ def api_upsert_inbox_public_key(request: Request, body: UpsertInboxKeyRequest):
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO user_inbox_keys (user_id, inbox_public_key)
+            INSERT INTO user_inbox_e2ee_keys (user_id, inbox_public_key)
             VALUES (%s, %s)
             ON CONFLICT (user_id) DO UPDATE SET
                 inbox_public_key = EXCLUDED.inbox_public_key,
@@ -604,10 +604,6 @@ def api_upsert_inbox_public_key(request: Request, body: UpsertInboxKeyRequest):
         )
     return _ok()
 
-# in common models:
-# class GetInboxKeyRequest(BaseModel):
-#     provider_email: EmailStr
-
 @app.post("/api/get_inbox_public_key")
 def api_get_inbox_public_key(request: Request, body: GetInboxKeyRequest):
     with get_conn() as conn:
@@ -615,7 +611,7 @@ def api_get_inbox_public_key(request: Request, body: GetInboxKeyRequest):
             """
             SELECT u.user_id, k.inbox_public_key
             FROM users u
-            JOIN user_inbox_keys k ON k.user_id = u.user_id
+            JOIN user_inbox_e2ee_keys k ON k.user_id = u.user_id
             WHERE u.email = %s
             """,
             (body.provider_email,),
@@ -625,7 +621,10 @@ def api_get_inbox_public_key(request: Request, body: GetInboxKeyRequest):
         raise HTTPException(status_code=404, detail="inbox_key_not_found")
 
     _, pk = row
-    return {"inbox_public_key_b64": _transport_safe_b_string(pk)}
+    return {
+        "provider_id": str(row[0]),
+        "inbox_public_key_b64": _transport_safe_b_string(pk),
+    }
 
 MAX_SOLICITATION_BYTES = int(os.getenv("MAX_SOLICITATION_BYTES", str(3 * 1024 * 1024)))  # 3 MiB default
 
@@ -698,6 +697,7 @@ def api_pull_solicitation_bundle(request: Request):
     for request_id, requester_id, requester_email, encrypted_payload, created_at in rows:
         out.append({
             "request_id": str(request_id),
+            "requester_id": str(requester_id),
             "requester_email": requester_email,
             "encrypted_payload_b64": _transport_safe_b_string(encrypted_payload),
             "created_at": created_at.isoformat(),

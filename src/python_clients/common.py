@@ -52,11 +52,10 @@ class UpsertInboxKeyRequest(BaseModel):
 
 class GetInboxKeyRequest(BaseModel):
     provider_email: EmailStr
-    payload_b64: str
 
 class PushSolicitationRequest(BaseModel):
     provider_email: EmailStr
-    payload_b64: str
+    encrypted_payload_b64: str
 
 class SolicitationStatusRequest(BaseModel):
     request_id: UUID

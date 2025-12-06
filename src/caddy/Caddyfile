@@ -8,6 +8,10 @@ consently.online,
 www.consently.online,
 ownlyfacts.com,
 www.ownlyfacts.com {
+    tls {
+        curves x25519mlkem768 x25519
+    }
+
     encode gzip
 
     header {
@@ -40,4 +44,3 @@ www.ownlyfacts.com {
         header_up X-Forwarded-For   {remote}
     }
 }
-

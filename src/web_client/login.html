@@ -109,34 +109,34 @@
           <li>Your user data (plain text and/or cipher) may be deleted at any time without notice.</li>
           <li>The email address provided at registration is processed and stored in plain text.</li>
           <li>
-            While each secret's <code>label</code> and <code>value</code> are private and protected by design,
+            While each secret's <code>label</code> and <code>value</code> are private and protected by design,<br>
             Consently can still trace who shares which secret (anonymized by ID) with whom.
           </li>
           <li>
-            Hypothetically, a dishonest cloud provider could introspect Consently's virtual server's memory,
-            and/or serve anything (including a malicious Consently clone) to an unsuspecting user.
-            Eventually, Consently will have to move to a device-agnostic client.
+            Hypothetically, a dishonest cloud provider could introspect Consently's virtual server's memory, and/or serve anything<br>
+            (including a malicious Consently clone) to an unsuspecting user. Eventually, Consently will have to move to a device-agnostic client.
           </li>
           <li>
-            The chosen re-encryption scheme (Umbral) is based on elliptic-curve cryptography and is therefore NOT post-quantum safe.
+            The chosen re-encryption scheme (Umbral) is based on elliptic-curve cryptography and is therefore NOT post-quantum safe.<br>
             (Post-quantum-safe re-encryption schemes are an active research field. Consently intends to upgrade once a suitable implementation is available.)
           </li>
           <li>
-            Similarly, the application-level E2EE (WebCrypto ECDH P-256) of the request traffic is likewise based on elliptic-curve cryptography.
+            Similarly, the application-level E2EE of the request traffic is likewise based on elliptic-curve cryptography (WebCrypto ECDH P-256).<br>
             This is considered acceptable for now (low priority to upgrade).
           </li>
           <li>
-            The global HTTPS traffic on the other hand, which wraps communication between your web client and the Consently server,
-            is supposed to use a post-quantum safe key agreement (x25519mlkem768), provided you are using a modern browser (x25519 else - not post-quantum safe).
-            This protects the most vulnerable and critical stage of public key cryptography in a post-quantum safe manner (maybe, hopefully, allegedly, potentially).
+            The global HTTPS traffic on the other hand, which wraps communication between your web client and the Consently server, is supposed to<br>
+            use a post-quantum safe key agreement (x25519mlkem768), provided using a modern browser (x25519 else - not post-quantum safe).<br>
+            This protects the most vulnerable stage of public key cryptography in a post-quantum safe manner (maybe, hopefully, allegedly, potentially).
           </li>
           <li>
-            Your user store containing your labels and secret keys is encrypted symmetrically (AES-GCM) on the client-side before being saved to the server,
-            which is considered practically safe. BOTH your password AND authentication (salt) file are absolutely required to decrypt your user store after fetching it from Consently.
+            Your user store containing your labels and secret keys is encrypted symmetrically (AES-GCM) on the client-side before being saved to the server,<br>
+            which is practically safe. BOTH your password AND salt file are absolutely required to decrypt your user store after fetching it from Consently.
           </li>
           <li>
-            Running the web client will, unavoidably, have the browser (and by extension the operating system) deal with secrets in plain text in storage and memory.
-            Be sure to use a trustworthy device (personal phone, laptop, desktop), or boot your own OS (e.g. "Tails" from a USB stick), to access consently.online from a foreign device.
+            Using the web client will, unavoidably, have the browser (and by extension the operating system) deal with secrets in plain text in and memory.<br>
+            Be sure to use a trustworthy personal device (phone, laptop, desktop), or boot your own live OS (like "Tails"), to access consently.online<br>
+            from a foreign device.
           </li>
         </ul>
       </details>

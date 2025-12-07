@@ -486,14 +486,32 @@ export function wireUpItemUpdate({ api, store }) {
     wrapper.classList.add("read-mode");
   };
 
+  let ctrlDown = false;
+
   const setCtrlDown = (on) => {
-    document.body.classList.toggle("ctrl-down", !!on);
+    const next = !!on;
+    if (ctrlDown === next) return;
+    ctrlDown = next;
+    document.body.classList.toggle("ctrl-down", ctrlDown);
     refreshEraseButtons();
   };
 
-  document.addEventListener("keydown", (ev) => { if (ev.ctrlKey) setCtrlDown(true); });
-  document.addEventListener("keyup", (ev) => { if (ev.key === "Control" || !ev.ctrlKey) setCtrlDown(false); });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Control") setCtrlDown(true);
+  });
+
+  document.addEventListener("keyup", (ev) => {
+    if (ev.key === "Control") setCtrlDown(false);
+  });
+
   window.addEventListener("blur", () => setCtrlDown(false));
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) setCtrlDown(false);
+  });
+
+  setCtrlDown(false);
+
 
   const personalPanel = document.querySelector('.panel[data-panel="personal"]');
 

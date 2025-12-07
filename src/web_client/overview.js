@@ -94,34 +94,40 @@ export function wireUpOverview({ api, store }) {
       return;
     }
 
-    // Jump helpers (used by ctrl+click in child rows)
-    const jumpToRequester = (requesterId) => {
+    const jumpToRequester = (requesterId, contextItemId = null) => {
       if (!requesterId) return;
       currentMode = "by-requester";
       updateModeButtonState();
-      renderOverview({ focusRequesterId: requesterId }).catch((err) =>
+      renderOverview({
+        focusRequesterId: requesterId,
+        focusItemId: contextItemId,
+      }).catch((err) =>
         console.error("Overview render failed on jumpToRequester", err)
       );
     };
 
-    const jumpToItem = (itemId) => {
+    const jumpToItem = (itemId, contextRequesterId = null) => {
       if (!itemId) return;
       currentMode = "by-item";
       updateModeButtonState();
-      renderOverview({ focusItemId: itemId }).catch((err) =>
+      renderOverview({
+        focusItemId: itemId,
+        focusRequesterId: contextRequesterId,
+      }).catch((err) =>
         console.error("Overview render failed on jumpToItem", err)
       );
     };
 
+
     if (currentMode === "by-requester") {
       renderByRequester(tbody, grants, { onJumpToItem: jumpToItem });
       if (focusRequesterId) {
-        focusAndExpandRequesterRow(tbody, focusRequesterId);
+        focusAndExpandRequesterRow(tbody, focusRequesterId, focusItemId);
       }
     } else {
       renderByItem(tbody, grants, { onJumpToRequester: jumpToRequester });
       if (focusItemId) {
-        focusAndExpandItemRow(tbody, focusItemId);
+        focusAndExpandItemRow(tbody, focusItemId, focusRequesterId);
       }
     }
   }
@@ -261,7 +267,7 @@ function renderByItem(tbody, grants, opts = {}) {
         ev.preventDefault();
         ev.stopPropagation();
         if (typeof onJumpToRequester === "function") {
-          onJumpToRequester(g.requester_id);
+          onJumpToRequester(g.requester_id, group.itemId);
         }
       });
     }
@@ -370,7 +376,7 @@ function renderByRequester(tbody, grants, opts = {}) {
         ev.preventDefault();
         ev.stopPropagation();
         if (typeof onJumpToItem === "function") {
-          onJumpToItem(g.provider_item_id);
+          onJumpToItem(g.provider_item_id, group.requesterId);
         }
       });
     }
@@ -415,7 +421,7 @@ function clearOverviewHighlight(tbody) {
   }
 }
 
-function focusAndExpandItemRow(tbody, itemId) {
+function focusAndExpandItemRow(tbody, itemId, highlightRequesterId = null) {
   if (!itemId) return;
   const prow = tbody.querySelector(
     `tr.overview-item-row[data-item-id="${itemId}"]`
@@ -437,16 +443,24 @@ function focusAndExpandItemRow(tbody, itemId) {
   }
 
   clearOverviewHighlight(tbody);
-  prow.classList.add("overview-highlight");
 
-  if (!prow.hasAttribute("tabindex")) {
-    prow.setAttribute("tabindex", "-1");
+  if (!highlightRequesterId) return;
+
+  const crow = tbody.querySelector(
+    `tr.overview-item-grant-row[data-item-id="${itemId}"][data-requester-id="${highlightRequesterId}"]`
+  );
+  if (!crow) return;
+
+  crow.classList.add("overview-highlight");
+
+  if (!crow.hasAttribute("tabindex")) {
+    crow.setAttribute("tabindex", "-1");
   }
-  prow.focus({ preventScroll: false });
-  prow.scrollIntoView({ block: "nearest" });
+  crow.focus({ preventScroll: false });
+  crow.scrollIntoView({ block: "nearest" });
 }
 
-function focusAndExpandRequesterRow(tbody, requesterId) {
+function focusAndExpandRequesterRow(tbody, requesterId, highlightItemId = null) {
   if (!requesterId) return;
   const prow = tbody.querySelector(
     `tr.overview-requester-row[data-requester-id="${requesterId}"]`
@@ -468,13 +482,21 @@ function focusAndExpandRequesterRow(tbody, requesterId) {
   }
 
   clearOverviewHighlight(tbody);
-  prow.classList.add("overview-highlight");
 
-  if (!prow.hasAttribute("tabindex")) {
-    prow.setAttribute("tabindex", "-1");
+  if (!highlightItemId) return;
+
+  const crow = tbody.querySelector(
+    `tr.overview-requester-grant-row[data-requester-id="${requesterId}"][data-item-id="${highlightItemId}"]`
+  );
+  if (!crow) return;
+
+  crow.classList.add("overview-highlight");
+
+  if (!crow.hasAttribute("tabindex")) {
+    crow.setAttribute("tabindex", "-1");
   }
-  prow.focus({ preventScroll: false });
-  prow.scrollIntoView({ block: "nearest" });
+  crow.focus({ preventScroll: false });
+  crow.scrollIntoView({ block: "nearest" });
 }
 
 /* ---------- Small helper ---------- */

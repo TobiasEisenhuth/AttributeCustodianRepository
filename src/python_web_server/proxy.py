@@ -776,10 +776,15 @@ def api_erase_item(request: Request, body: EraseItemRequest):
         with get_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT provider_id, requester_id, provider_item_id, requester_item_id
-                FROM grants
-                WHERE provider_id = %s AND provider_item_id = %s
-                ORDER BY requester_id, requester_item_id
+                SELECT g.provider_id,
+                    g.requester_id,
+                    u.email,
+                    g.provider_item_id,
+                    g.requester_item_id
+                FROM grants g
+                JOIN users u ON u.user_id = g.requester_id
+                WHERE g.provider_id = %s AND g.provider_item_id = %s
+                ORDER BY g.requester_id, g.requester_item_id
                 """,
                 (user_id, body.item_id),
             ).fetchall()
@@ -789,8 +794,9 @@ def api_erase_item(request: Request, body: EraseItemRequest):
                     {
                         "provider_id": str(r[0]),
                         "requester_id": str(r[1]),
-                        "provider_item_id": r[2],
-                        "requester_item_id": r[3],
+                        "requester_email": r[2],
+                        "provider_item_id": r[3],
+                        "requester_item_id": r[4],
                     }
                     for r in rows
                 ]

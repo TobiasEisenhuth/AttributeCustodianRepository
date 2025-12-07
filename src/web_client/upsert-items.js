@@ -29,7 +29,6 @@ function refreshEraseButtons() {
   }
 }
 
-
 export async function revokeGrant(api, grant) {
   return api.revokeAccess({
     requester_id: grant.requester_id,
@@ -92,8 +91,7 @@ function showEraseBlockedOverlay(api, store, itemId, tr, grants) {
   const list = document.createElement("ul");
   for (const g of grants) {
     const li = document.createElement("li");
-    li.textContent =
-      `requester_id=${g.requester_id}, requester_item_id=${g.requester_item_id}`;
+    li.textContent = g.requester_email;
     list.appendChild(li);
   }
 

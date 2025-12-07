@@ -1060,10 +1060,11 @@ def api_list_my_grants(request: Request):
     with get_conn() as conn:
         rows = conn.execute(
             """
-            SELECT requester_id, provider_item_id, requester_item_id
-            FROM grants
-            WHERE provider_id = %s
-            ORDER BY provider_item_id, requester_id, requester_item_id
+            SELECT g.requester_id, u.email, g.provider_item_id, g.requester_item_id
+            FROM grants g
+            JOIN users u ON u.user_id = g.requester_id
+            WHERE g.provider_id = %s
+            ORDER BY g.provider_item_id, g.requester_id, g.requester_item_id
             """,
             (provider_id,),
         ).fetchall()
@@ -1071,8 +1072,9 @@ def api_list_my_grants(request: Request):
     grants = [
         {
             "requester_id": str(row[0]),
-            "provider_item_id": row[1],
-            "requester_item_id": row[2],
+            "requester_email": row[1],
+            "provider_item_id": row[2],
+            "requester_item_id": row[3],
         }
         for row in rows
     ]

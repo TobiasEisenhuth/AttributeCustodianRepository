@@ -128,7 +128,7 @@ function buildGrantedItemsTable({ table, api, store }) {
 
     const pcell = document.createElement("td");
     pcell.colSpan = 2;
-    pcell.textContent = providerId;
+    pcell.textContent = items[0].provider_email;
     pcell.style.fontWeight = "600";
     pcell.style.cursor = "pointer";
 
@@ -165,7 +165,7 @@ function buildGrantedItemsTable({ table, api, store }) {
       const forgetBtn = document.createElement("button");
       forgetBtn.type = "button";
       forgetBtn.className = "btn";
-      forgetBtn.textContent = "Forget";
+      forgetBtn.textContent = "Drop";
       forgetBtn.style.marginLeft = "0.5rem";
 
       forgetButtons.add(forgetBtn);

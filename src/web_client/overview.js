@@ -85,6 +85,7 @@ export function wireUpOverview({ api, store }) {
         provider_item_name: itemName,
         provider_valueStr: valueStr,
         requester_id: String(g.requester_id),
+        requester_email: g.requester_email
       };
     });
 
@@ -167,7 +168,8 @@ export function wireUpOverview({ api, store }) {
  *   provider_item_id: string,
  *   provider_item_name: string,
  *   provider_valueStr?: string,
- *   requester_id: string
+ *   requester_id: string,
+ *   requester_email?: string
  * }
  */
 
@@ -242,7 +244,7 @@ function renderByItem(tbody, grants, opts = {}) {
 
       const primary = document.createElement("td");
       // Tree-ish: prefix with arrow and indent
-      primary.textContent = `↳ ${g.requester_id}`;
+      primary.textContent = `↳ ${g.requester_email}`;
       primary.style.paddingLeft = "1.5rem";
 
       const secondary = document.createElement("td");
@@ -295,9 +297,14 @@ function renderByRequester(tbody, grants, opts = {}) {
     if (!slot) {
       slot = {
         requesterId: key,
+        requesterEmail: g.requester_email,
         grants: [],
       };
       byRequester.set(key, slot);
+    } else {
+      if (!slot.requesterEmail && g.requester_email) {
+        slot.requesterEmail = g.requester_email;
+      }
     }
     slot.grants.push(g);
   }
@@ -322,7 +329,7 @@ function renderByRequester(tbody, grants, opts = {}) {
     prow.dataset.open = "0";
 
     const nameCell = document.createElement("td");
-    nameCell.dataset.labelBase = group.requesterId;
+    nameCell.dataset.labelBase = group.requesterEmail;
 
     const countCell = document.createElement("td");
     const count = group.grants.length;
